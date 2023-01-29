@@ -700,6 +700,19 @@ if(LLVM_INTEGRATED_CRT_ALLOC)
   endif()
 endif()
 
+set(LLVM_ENABLE_RPMALLOC "" CACHE BOOL "Replace the CRT allocator with rpmalloc.")
+if(LLVM_ENABLE_RPMALLOC)
+  if(NOT (CMAKE_SYSTEM_NAME MATCHES "Windows|Linux"))
+    message(FATAL_ERROR "LLVM_ENABLE_RPMALLOC is only supported on Windows and Linux.")
+  endif()
+  if(LLVM_USE_SANITIZER)
+    message(FATAL_ERROR "LLVM_ENABLE_RPMALLOC cannot be used along with LLVM_USE_SANITIZER!")
+  endif()
+  if(WIN32 AND CMAKE_BUILD_TYPE AND uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG")
+    message(FATAL_ERROR "The Debug target isn't supported along with LLVM_ENABLE_RPMALLOC!")
+  endif()
+endif()
+
 # Define options to control the inclusion and default build behavior for
 # components which may not strictly be necessary (tools, examples, and tests).
 #

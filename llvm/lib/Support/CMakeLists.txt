@@ -91,6 +91,11 @@ if(LLVM_WITH_Z3)
   set(system_libs ${system_libs} ${Z3_LIBRARIES})
 endif()
 
+# Override the C runtime allocator with the in-tree rpmalloc
+if(LLVM_ENABLE_RPMALLOC)
+  set(LLVM_INTEGRATED_CRT_ALLOC "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 # Override the C runtime allocator on Windows and embed it into LLVM tools & libraries
 if(LLVM_INTEGRATED_CRT_ALLOC)
   if (NOT CMAKE_MSVC_RUNTIME_LIBRARY OR CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL$")
@@ -103,7 +108,7 @@ if(LLVM_INTEGRATED_CRT_ALLOC)
     message(FATAL_ERROR "Cannot find the path to `git clone` for the CRT allocator! (${LLVM_INTEGRATED_CRT_ALLOC}). Currently, rpmalloc, snmalloc and mimalloc are supported.")
   endif()
 
-  if(LLVM_INTEGRATED_CRT_ALLOC MATCHES "rpmalloc$")
+  if((LLVM_INTEGRATED_CRT_ALLOC MATCHES "rpmalloc$") OR LLVM_ENABLE_RPMALLOC)
     add_compile_definitions(ENABLE_OVERRIDE ENABLE_PRELOAD)
     set(ALLOCATOR_FILES "${LLVM_INTEGRATED_CRT_ALLOC}/rpmalloc/rpmalloc.c")
   elseif(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")

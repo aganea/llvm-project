@@ -66,6 +66,9 @@ Changes to LLVM infrastructure
 Changes to building LLVM
 ------------------------
 
+* LLVM now supports rpmalloc in-tree, as a replacement C allocator for hosted
+  toolchains.
+
 Changes to TableGen
 -------------------
 
