@@ -152,7 +152,7 @@ static std::future<MBErrPair> createFutureForFile(std::string path) {
 StringRef LinkerDriver::mangle(StringRef sym) {
   assert(ctx.config.machine != IMAGE_FILE_MACHINE_UNKNOWN);
   if (ctx.config.machine == I386)
-    return saver().save("_" + sym);
+    return ctx.saver.save("_" + sym);
   return sym;
 }
 
@@ -383,9 +383,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     Export exp = parseExport(e);
     if (ctx.config.machine == I386 && ctx.config.mingw) {
       if (!isDecorated(exp.name))
-        exp.name = saver().save("_" + exp.name);
+        exp.name = ctx.saver.save("_" + exp.name);
       if (!exp.extName.empty() && !isDecorated(exp.extName))
-        exp.extName = saver().save("_" + exp.extName);
+        exp.extName = ctx.saver.save("_" + exp.extName);
     }
     exp.directives = true;
     ctx.config.exports.push_back(exp);
@@ -476,7 +476,7 @@ StringRef LinkerDriver::doFindFile(StringRef filename) {
   auto getFilename = [this](StringRef filename) -> StringRef {
     if (ctx.config.vfs)
       if (auto statOrErr = ctx.config.vfs->status(filename))
-        return saver().save(statOrErr->getName());
+        return ctx.saver.save(statOrErr->getName());
     return filename;
   };
 
@@ -489,12 +489,12 @@ StringRef LinkerDriver::doFindFile(StringRef filename) {
     sys::path::append(path, filename);
     path = SmallString<128>{getFilename(path.str())};
     if (sys::fs::exists(path.str()))
-      return saver().save(path.str());
+      return ctx.saver.save(path.str());
     if (!hasExt) {
       path.append(".obj");
       path = SmallString<128>{getFilename(path.str())};
       if (sys::fs::exists(path.str()))
-        return saver().save(path.str());
+        return ctx.saver.save(path.str());
     }
   }
   return filename;
@@ -531,7 +531,7 @@ StringRef LinkerDriver::doFindLibMinGW(StringRef filename) {
 
   SmallString<128> s = filename;
   sys::path::replace_extension(s, ".a");
-  StringRef libName = saver().save("lib" + s.str());
+  StringRef libName = ctx.saver.save("lib" + s.str());
   return doFindFile(libName);
 }
 
@@ -540,7 +540,7 @@ StringRef LinkerDriver::doFindLib(StringRef filename) {
   // Add ".lib" to Filename if that has no file extension.
   bool hasExt = filename.contains('.');
   if (!hasExt)
-    filename = saver().save(filename + ".lib");
+    filename = ctx.saver.save(filename + ".lib");
   StringRef ret = doFindFile(filename);
   // For MinGW, if the find above didn't turn up anything, try
   // looking for a MinGW formatted library name.
@@ -639,12 +639,12 @@ void LinkerDriver::addWinSysRootLibSearchPaths() {
   if (!diaPath.empty()) {
     // The DIA SDK always uses the legacy vc arch, even in new MSVC versions.
     path::append(diaPath, "lib", archToLegacyVCArch(getArch()));
-    searchPaths.push_back(saver().save(diaPath.str()));
+    searchPaths.push_back(ctx.saver.save(diaPath.str()));
   }
   if (useWinSysRootLibPath) {
-    searchPaths.push_back(saver().save(getSubDirectoryPath(
+    searchPaths.push_back(ctx.saver.save(getSubDirectoryPath(
         SubDirectoryType::Lib, vsLayout, vcToolChainPath, getArch())));
-    searchPaths.push_back(saver().save(
+    searchPaths.push_back(ctx.saver.save(
         getSubDirectoryPath(SubDirectoryType::Lib, vsLayout, vcToolChainPath,
                             getArch(), "atlmfc")));
   }
@@ -652,14 +652,14 @@ void LinkerDriver::addWinSysRootLibSearchPaths() {
     StringRef ArchName = archToWindowsSDKArch(getArch());
     if (!ArchName.empty()) {
       path::append(universalCRTLibPath, ArchName);
-      searchPaths.push_back(saver().save(universalCRTLibPath.str()));
+      searchPaths.push_back(ctx.saver.save(universalCRTLibPath.str()));
     }
   }
   if (!windowsSdkLibPath.empty()) {
     std::string path;
     if (appendArchToWindowsSDKLibPath(sdkMajor, windowsSdkLibPath, getArch(),
                                       path))
-      searchPaths.push_back(saver().save(path));
+      searchPaths.push_back(ctx.saver.save(path));
   }
 }
 
@@ -668,7 +668,7 @@ void LinkerDriver::addLibSearchPaths() {
   std::optional<std::string> envOpt = Process::GetEnv("LIB");
   if (!envOpt)
     return;
-  StringRef env = saver().save(*envOpt);
+  StringRef env = ctx.saver.save(*envOpt);
   while (!env.empty()) {
     StringRef path;
     std::tie(path, env) = env.split(';');
@@ -1018,8 +1018,8 @@ void LinkerDriver::parseModuleDefs(StringRef path) {
   ctx.driver.takeBuffer(std::move(mb));
 
   if (ctx.config.outputFile.empty())
-    ctx.config.outputFile = std::string(saver().save(m.OutputFile));
-  ctx.config.importName = std::string(saver().save(m.ImportName));
+    ctx.config.outputFile = std::string(ctx.saver.save(m.OutputFile));
+  ctx.config.importName = std::string(ctx.saver.save(m.ImportName));
   if (m.ImageBase)
     ctx.config.imageBase = m.ImageBase;
   if (m.StackReserve)
@@ -1047,14 +1047,14 @@ void LinkerDriver::parseModuleDefs(StringRef path) {
     // DLL instead. This is supported by both MS and GNU linkers.
     if (!e1.ExtName.empty() && e1.ExtName != e1.Name &&
         StringRef(e1.Name).contains('.')) {
-      e2.name = saver().save(e1.ExtName);
-      e2.forwardTo = saver().save(e1.Name);
+      e2.name = ctx.saver.save(e1.ExtName);
+      e2.forwardTo = ctx.saver.save(e1.Name);
       ctx.config.exports.push_back(e2);
       continue;
     }
-    e2.name = saver().save(e1.Name);
-    e2.extName = saver().save(e1.ExtName);
-    e2.aliasTarget = saver().save(e1.AliasTarget);
+    e2.name = ctx.saver.save(e1.Name);
+    e2.extName = ctx.saver.save(e1.ExtName);
+    e2.aliasTarget = ctx.saver.save(e1.AliasTarget);
     e2.ordinal = e1.Ordinal;
     e2.noname = e1.Noname;
     e2.data = e1.Data;
@@ -1469,7 +1469,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     StringRef s = arg->getValue();
     if (s.getAsInteger(10, n))
       error(arg->getSpelling() + " number expected, but got " + s);
-    errorHandler().errorLimit = n;
+    ctx.e.errorLimit = n;
   }
 
   config->vfs = getVFS(args);
@@ -1564,7 +1564,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /verbose
   if (args.hasArg(OPT_verbose))
     config->verbose = true;
-  errorHandler().verbose = config->verbose;
+  ctx.e.verbose = config->verbose;
 
   // Handle /force or /force:unresolved
   if (args.hasArg(OPT_force, OPT_force_unresolved))
@@ -2093,9 +2093,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     Export e = parseExport(arg->getValue());
     if (config->machine == I386) {
       if (!isDecorated(e.name))
-        e.name = saver().save("_" + e.name);
+        e.name = ctx.saver.save("_" + e.name);
       if (!e.extName.empty() && !isDecorated(e.extName))
-        e.extName = saver().save("_" + e.extName);
+        e.extName = ctx.saver.save("_" + e.extName);
     }
     config->exports.push_back(e);
   }

@@ -190,11 +190,12 @@ void lld::coff::writeDefFile(StringRef name,
   }
 }
 
-static StringRef mangle(Twine sym, MachineTypes machine) {
+static StringRef mangle(COFFLinkerContext &ctx, Twine sym,
+                        MachineTypes machine) {
   assert(machine != IMAGE_FILE_MACHINE_UNKNOWN);
   if (machine == I386)
-    return saver().save("_" + sym);
-  return saver().save(sym);
+    return ctx.saver.save("_" + sym);
+  return ctx.saver.save(sym);
 }
 
 // Handles -wrap option.
@@ -216,10 +217,10 @@ lld::coff::addWrappedSymbols(COFFLinkerContext &ctx, opt::InputArgList &args) {
     if (!sym)
       continue;
 
-    Symbol *real =
-        ctx.symtab.addUndefined(mangle("__real_" + name, ctx.config.machine));
-    Symbol *wrap =
-        ctx.symtab.addUndefined(mangle("__wrap_" + name, ctx.config.machine));
+    Symbol *real = ctx.symtab.addUndefined(
+        mangle(ctx, "__real_" + name, ctx.config.machine));
+    Symbol *wrap = ctx.symtab.addUndefined(
+        mangle(ctx, "__wrap_" + name, ctx.config.machine));
     v.push_back({sym, real, wrap});
 
     // These symbols may seem undefined initially, but don't bail out
@@ -260,7 +261,7 @@ void lld::coff::wrapSymbols(COFFLinkerContext &ctx,
       // referenced it or not, though.)
       if (imp) {
         DefinedLocalImport *wrapimp = make<DefinedLocalImport>(
-            ctx, saver().save("__imp_" + w.wrap->getName()), d);
+            ctx, ctx.saver.save("__imp_" + w.wrap->getName()), d);
         ctx.symtab.localImportChunks.push_back(wrapimp->getChunk());
         map[imp] = wrapimp;
       }

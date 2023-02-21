@@ -199,8 +199,8 @@ public:
 // The writer writes a SymbolTable result to a file.
 class Writer {
 public:
-  Writer(COFFLinkerContext &c)
-      : buffer(errorHandler().outputBuffer), delayIdata(c), edata(c), ctx(c) {}
+  Writer(COFFLinkerContext &ctx)
+      : ctx(ctx), buffer(ctx.e.outputBuffer), delayIdata(ctx), edata(ctx) {}
   void run();
 
 private:
@@ -265,6 +265,8 @@ private:
   void checkLoadConfig();
   template <typename T> void checkLoadConfigGuardData(const T *loadConfig);
 
+  COFFLinkerContext &ctx;
+
   std::unique_ptr<FileOutputBuffer> &buffer;
   std::map<PartialSectionKey, PartialSection *> partialSections;
   std::vector<char> strtab;
@@ -315,8 +317,6 @@ private:
   // files, so we need to keep track of them separately.
   Chunk *firstPdata = nullptr;
   Chunk *lastPdata;
-
-  COFFLinkerContext &ctx;
 };
 } // anonymous namespace
 
@@ -499,7 +499,7 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     MutableArrayRef<coff_relocation> newRelocs;
     if (originalRelocs.data() == curRelocs.data()) {
       newRelocs = MutableArrayRef(
-          bAlloc().Allocate<coff_relocation>(originalRelocs.size()),
+          ctx.bAlloc.Allocate<coff_relocation>(originalRelocs.size()),
           originalRelocs.size());
     } else {
       newRelocs = MutableArrayRef(

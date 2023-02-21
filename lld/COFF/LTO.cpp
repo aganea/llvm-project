@@ -235,8 +235,8 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
     StringRef ltoObjName;
     if (bitcodeFilePath == "ld-temp.o") {
       ltoObjName =
-          saver().save(Twine(ctx.config.outputFile) + ".lto" +
-                       (i == 0 ? Twine("") : Twine('.') + Twine(i)) + ".obj");
+          ctx.saver.save(Twine(ctx.config.outputFile) + ".lto" +
+                         (i == 0 ? Twine("") : Twine('.') + Twine(i)) + ".obj");
     } else {
       StringRef directory = sys::path::parent_path(bitcodeFilePath);
       StringRef baseName = sys::path::filename(bitcodeFilePath);
@@ -245,7 +245,7 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
       sys::path::append(path, directory,
                         outputFileBaseName + ".lto." + baseName);
       sys::path::remove_dots(path, true);
-      ltoObjName = saver().save(path.str());
+      ltoObjName = ctx.saver.save(path.str());
     }
     if (ctx.config.saveTemps)
       saveBuffer(buf[i].second, ltoObjName);

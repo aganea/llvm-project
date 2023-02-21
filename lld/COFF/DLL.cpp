@@ -746,7 +746,7 @@ void DelayLoadContents::create(Defined *h) {
         // Add a synthetic symbol for this load thunk, using the "__imp___load"
         // prefix, in case this thunk needs to be added to the list of valid
         // call targets for Control Flow Guard.
-        StringRef symName = saver().save("__imp___load_" + extName);
+        StringRef symName = ctx.saver.save("__imp___load_" + extName);
         s->loadThunkSym =
             cast<DefinedSynthetic>(ctx.symtab.addSynthetic(symName, t));
       }
@@ -755,7 +755,7 @@ void DelayLoadContents::create(Defined *h) {
     if (pdataChunk)
       pdata.push_back(pdataChunk);
     StringRef tmName =
-        saver().save("__tailMerge_" + syms[0]->getDLLName().lower());
+        ctx.saver.save("__tailMerge_" + syms[0]->getDLLName().lower());
     ctx.symtab.addSynthetic(tmName, tm);
     // Terminate with null values.
     addresses.push_back(make<NullChunk>(8));

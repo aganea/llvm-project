@@ -912,7 +912,7 @@ ObjFile::getVariableLocation(StringRef var) {
       dwarf->getVariableLoc(var);
   if (!ret)
     return std::nullopt;
-  return std::make_pair(saver().save(ret->first), ret->second);
+  return std::make_pair(ctx.saver.save(ret->first), ret->second);
 }
 
 // Used only for DWARF debug info, which is not common (except in MinGW
@@ -950,8 +950,8 @@ void ImportFile::parse() {
     fatal("broken import library");
 
   // Read names and create an __imp_ symbol.
-  StringRef name = saver().save(StringRef(buf + sizeof(*hdr)));
-  StringRef impName = saver().save("__imp_" + name);
+  StringRef name = ctx.saver.save(StringRef(buf + sizeof(*hdr)));
+  StringRef impName = ctx.saver.save("__imp_" + name);
   const char *nameStart = buf + sizeof(coff_import_header) + name.size() + 1;
   dllName = std::string(StringRef(nameStart));
   StringRef extName;
@@ -1008,11 +1008,11 @@ BitcodeFile::BitcodeFile(COFFLinkerContext &ctx, MemoryBufferRef mb,
   // symbols later in the link stage). So we append file offset to make
   // filename unique.
   MemoryBufferRef mbref(mb.getBuffer(),
-                        saver().save(archiveName.empty()
-                                         ? path
-                                         : archiveName +
-                                               sys::path::filename(path) +
-                                               utostr(offsetInArchive)));
+                        ctx.saver.save(archiveName.empty()
+                                           ? path
+                                           : archiveName +
+                                                 sys::path::filename(path) +
+                                                 utostr(offsetInArchive)));
 
   obj = check(lto::InputFile::create(mbref));
 }
@@ -1020,7 +1020,7 @@ BitcodeFile::BitcodeFile(COFFLinkerContext &ctx, MemoryBufferRef mb,
 BitcodeFile::~BitcodeFile() = default;
 
 void BitcodeFile::parse() {
-  llvm::StringSaver &saver = lld::saver();
+  llvm::StringSaver &saver = ctx.saver;
 
   std::vector<std::pair<Symbol *, bool>> comdat(obj->getComdatTable().size());
   for (size_t i = 0; i != obj->getComdatTable().size(); ++i)
@@ -1142,11 +1142,11 @@ void DLLFile::parse() {
     s->nameType = ImportNameType::IMPORT_NAME;
 
     if (coffObj->getMachine() == I386) {
-      s->symbolName = symbolName = saver().save("_" + symbolName);
+      s->symbolName = symbolName = ctx.saver.save("_" + symbolName);
       s->nameType = ImportNameType::IMPORT_NAME_NOPREFIX;
     }
 
-    StringRef impName = saver().save("__imp_" + symbolName);
+    StringRef impName = ctx.saver.save("__imp_" + symbolName);
     ctx.symtab.addLazyDLLSymbol(this, s, impName);
     if (code)
       ctx.symtab.addLazyDLLSymbol(this, s, symbolName);
@@ -1165,7 +1165,7 @@ void DLLFile::makeImport(DLLFile::Symbol *s) {
 
   size_t impSize = s->dllName.size() + s->symbolName.size() + 2; // +2 for NULs
   size_t size = sizeof(coff_import_header) + impSize;
-  char *buf = bAlloc().Allocate<char>(size);
+  char *buf = ctx.bAlloc.Allocate<char>(size);
   memset(buf, 0, size);
   char *p = buf;
   auto *imp = reinterpret_cast<coff_import_header *>(p);
