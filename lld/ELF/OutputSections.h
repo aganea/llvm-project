@@ -107,7 +107,7 @@ public:
 
   void finalize();
   template <class ELFT>
-  void writeTo(uint8_t *buf, llvm::parallel::TaskGroup &tg);
+  void writeTo(uint8_t *buf, llvm::ThreadPoolTaskGroup &tg);
   // Check that the addends for dynamic relocations were written correctly.
   void checkDynRelAddends(const uint8_t *bufStart);
   template <class ELFT> void maybeCompress();

@@ -13,6 +13,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
 
 #include <algorithm>
@@ -23,6 +24,8 @@
 namespace llvm {
 
 namespace parallel {
+
+#if 0
 
 // Strategy for the default executor used by the parallel routines provided by
 // this file. It defaults to using all hardware threads and should be
@@ -106,6 +109,8 @@ public:
   bool isParallel() const { return Parallel; }
 };
 
+#endif // 0
+
 namespace detail {
 
 #if LLVM_ENABLE_THREADS
@@ -126,7 +131,8 @@ RandomAccessIterator medianOf3(RandomAccessIterator Start,
 
 template <class RandomAccessIterator, class Comparator>
 void parallel_quick_sort(RandomAccessIterator Start, RandomAccessIterator End,
-                         const Comparator &Comp, TaskGroup &TG, size_t Depth) {
+                         const Comparator &Comp, ThreadPoolTaskGroup &TG,
+                         size_t Depth) {
   // Do a sequential sort for small inputs.
   if (std::distance(Start, End) < detail::MinParallelSize || Depth == 0) {
     llvm::sort(Start, End, Comp);
@@ -144,7 +150,7 @@ void parallel_quick_sort(RandomAccessIterator Start, RandomAccessIterator End,
   std::swap(*Pivot, *(End - 1));
 
   // Recurse.
-  TG.spawn([=, &Comp, &TG] {
+  TG.async([=, &Comp, &TG] {
     parallel_quick_sort(Start, Pivot, Comp, TG, Depth - 1);
   });
   parallel_quick_sort(Pivot + 1, End, Comp, TG, Depth - 1);
@@ -153,7 +159,7 @@ void parallel_quick_sort(RandomAccessIterator Start, RandomAccessIterator End,
 template <class RandomAccessIterator, class Comparator>
 void parallel_sort(RandomAccessIterator Start, RandomAccessIterator End,
                    const Comparator &Comp) {
-  TaskGroup TG;
+  ThreadPoolTaskGroup TG;
   parallel_quick_sort(Start, End, Comp, TG,
                       llvm::Log2_64(std::distance(Start, End)) + 1);
 }
@@ -180,13 +186,13 @@ ResultTy parallel_transform_reduce(IterTy Begin, IterTy End, ResultTy Init,
     // Each task processes either TaskSize or TaskSize+1 inputs. Any inputs
     // remaining after dividing them equally amongst tasks are distributed as
     // one extra input over the first tasks.
-    TaskGroup TG;
+    ThreadPoolTaskGroup TG;
     size_t TaskSize = NumInputs / NumTasks;
     size_t RemainingInputs = NumInputs % NumTasks;
     IterTy TBegin = Begin;
     for (size_t TaskId = 0; TaskId < NumTasks; ++TaskId) {
       IterTy TEnd = TBegin + TaskSize + (TaskId < RemainingInputs ? 1 : 0);
-      TG.spawn([=, &Transform, &Reduce, &Results] {
+      TG.async([=, &Transform, &Reduce, &Results] {
         // Reduce the result of transformation eagerly within each task.
         ResultTy R = Init;
         for (IterTy It = TBegin; It != TEnd; ++It)
@@ -219,7 +225,7 @@ template <class RandomAccessIterator,
 void parallelSort(RandomAccessIterator Start, RandomAccessIterator End,
                   const Comparator &Comp = Comparator()) {
 #if LLVM_ENABLE_THREADS
-  if (parallel::strategy.ThreadsRequested != 1) {
+  if (getGlobalTP().getThreadCount() != 1) {
     parallel::detail::parallel_sort(Start, End, Comp);
     return;
   }
@@ -240,7 +246,7 @@ ResultTy parallelTransformReduce(IterTy Begin, IterTy End, ResultTy Init,
                                  ReduceFuncTy Reduce,
                                  TransformFuncTy Transform) {
 #if LLVM_ENABLE_THREADS
-  if (parallel::strategy.ThreadsRequested != 1) {
+  if (getGlobalTP().getThreadCount() != 1) {
     return parallel::detail::parallel_transform_reduce(Begin, End, Init, Reduce,
                                                        Transform);
   }

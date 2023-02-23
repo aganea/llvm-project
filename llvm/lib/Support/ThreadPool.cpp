@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/ManagedStatic.h"
 
 #include "llvm/Config/llvm-config.h"
 
@@ -21,9 +22,34 @@
 #include "llvm/Support/raw_ostream.h"
 #endif
 
+#include <stack>
+
 using namespace llvm;
 
+static ThreadPoolStrategy GlobalTPStrategy = hardware_concurrency();
+
+void llvm::setGlobalTPStrategy(ThreadPoolStrategy S) { GlobalTPStrategy = S; }
+
+ThreadPoolStrategy llvm::getGlobalTPStrategy() { return GlobalTPStrategy; }
+
+ThreadPool &llvm::getGlobalTP() {
+  struct Creator {
+    static void *call() { return new ThreadPool(GlobalTPStrategy); }
+  };
+  static ManagedStatic<ThreadPool, Creator> TP;
+  return *TP;
+}
+
+ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {}
+
 #if LLVM_ENABLE_THREADS
+
+#ifdef _WIN32
+static thread_local unsigned GlobalTPThreadIndex;
+#else
+thread_local unsigned GlobalThreadIndex;
+#endif
+unsigned llvm::getGlobalTPThreadIndex() { return GlobalTPThreadIndex; }
 
 // A note on thread groups: Tasks are by default in no group (represented
 // by nullptr ThreadPoolTaskGroup pointer in the Tasks queue) and functionality
@@ -45,6 +71,7 @@ void ThreadPool::grow(int requested) {
     int ThreadID = Threads.size();
     Threads.emplace_back([this, ThreadID] {
       set_thread_name(formatv("llvm-worker-{0}", ThreadID));
+      GlobalTPThreadIndex = ThreadID;
       Strategy.apply_thread_strategy(ThreadID);
       processTasks(nullptr);
     });
@@ -75,6 +102,11 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
       // Exit condition
       if (!EnableFlag && Tasks.empty())
         return;
+
+      // Ensure the 'workCompletedForGroup' boolean is evaluated.
+      if (!Tasks.empty() && WaitingForGroup != nullptr)
+        workCompletedForGroup = workCompletedUnlocked(WaitingForGroup);
+
       if (WaitingForGroup != nullptr && workCompletedForGroup)
         return;
       // Yeah, we have a task, grab it and release the lock on the queue
@@ -82,14 +114,31 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
       // We first need to signal that we are active before popping the queue
       // in order for wait() to properly detect that even if the queue is
       // empty, there is still a task in flight.
-      ++ActiveThreads;
-      Task = std::move(Tasks.front().first);
-      GroupOfTask = Tasks.front().second;
-      // Need to count active threads in each group separately, ActiveThreads
+      ++ActiveTasks;
+
+      std::deque<std::pair<std::function<void()>,
+                           ThreadPoolTaskGroup *>>::iterator it = Tasks.end();
+
+      if (WaitingForGroup != nullptr) {
+        // If we're waiting for a specific group to finish, give its tasks a
+        // priority boost, so that the group finishes as soon as possible.
+        it = llvm::find_if(Tasks, [WaitingForGroup](const auto &T) {
+          return T.second == WaitingForGroup;
+        });
+      }
+      if (it == Tasks.end())
+        it = Tasks.begin();
+
+      // Since we're here, we must have at leask one task pending.
+      assert(it != Tasks.end());
+      Task = std::move((*it).first);
+      GroupOfTask = (*it).second;
+      Tasks.erase(it);
+
+      // Need to count active threads in each group separately, ActiveTasks
       // would never be 0 if waiting for another group inside a wait.
       if (GroupOfTask != nullptr)
         ++ActiveGroups[GroupOfTask]; // Increment or set to 1 if new item
-      Tasks.pop_front();
     }
 #ifndef NDEBUG
     if (CurrentThreadTaskGroups == nullptr)
@@ -111,9 +160,9 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
     bool Notify;
     bool NotifyGroup;
     {
-      // Adjust `ActiveThreads`, in case someone waits on ThreadPool::wait()
+      // Adjust `ActiveTasks`, in case someone waits on ThreadPool::wait()
       std::lock_guard<std::mutex> LockGuard(QueueLock);
-      --ActiveThreads;
+      --ActiveTasks;
       if (GroupOfTask != nullptr) {
         auto A = ActiveGroups.find(GroupOfTask);
         if (--(A->second) == 0)
@@ -136,7 +185,7 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
 
 bool ThreadPool::workCompletedUnlocked(ThreadPoolTaskGroup *Group) const {
   if (Group == nullptr)
-    return !ActiveThreads && Tasks.empty();
+    return !ActiveTasks && Tasks.empty();
   return ActiveGroups.count(Group) == 0 &&
          !llvm::any_of(Tasks,
                        [Group](const auto &T) { return T.second == Group; });
@@ -188,7 +237,43 @@ ThreadPool::~ThreadPool() {
     Worker.join();
 }
 
+thread_local std::stack<ThreadPoolContext *> *TPContexts;
+
+ThreadPoolContext::ThreadPoolContext() {
+  if (!TPContexts)
+    TPContexts = new std::stack<ThreadPoolContext *>();
+  TPContexts->push(this);
+}
+
+ThreadPoolContext::~ThreadPoolContext() {
+  assert(TPContexts->top() == this);
+  TPContexts->pop();
+}
+
+ThreadPoolContext *ThreadPool::captureContext() {
+  if (!TPContexts || TPContexts->empty())
+    return nullptr;
+  return TPContexts->top();
+}
+
+void ThreadPool::enterContext(ThreadPoolContext *Ctx) {
+  Ctx->PreTask();
+  // Also push ourselves on the stack, to keep tracking the context in case of
+  // recursive calls to Parallel.h functions.
+  if (!TPContexts)
+    TPContexts = new std::stack<ThreadPoolContext *>();
+  TPContexts->push(Ctx);
+}
+
+void ThreadPool::exitContext(ThreadPoolContext *Ctx) {
+  Ctx->PostTask();
+  assert(TPContexts->top() == Ctx);
+  TPContexts->pop();
+}
+
 #else // LLVM_ENABLE_THREADS Disabled
+
+unsigned llvm::getGlobalTPThreadIndex() { return 0; }
 
 // No threads are launched, issue a warning if ThreadCount is not 0
 ThreadPool::ThreadPool(ThreadPoolStrategy S) : MaxThreadCount(1) {
@@ -219,5 +304,9 @@ bool ThreadPool::isWorkerThread() const {
 }
 
 ThreadPool::~ThreadPool() { wait(); }
+
+ThreadPoolContext::ThreadPoolContext() {}
+
+ThreadPoolContext::~ThreadPoolContext() {}
 
 #endif

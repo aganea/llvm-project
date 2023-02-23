@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#if 0
+
 llvm::ThreadPoolStrategy llvm::parallel::strategy;
 
 namespace llvm {
@@ -224,10 +226,12 @@ void TaskGroup::spawn(std::function<void()> F, bool Sequential) {
 } // namespace parallel
 } // namespace llvm
 
+#endif // 0
+
 void llvm::parallelFor(size_t Begin, size_t End,
                        llvm::function_ref<void(size_t)> Fn) {
 #if LLVM_ENABLE_THREADS
-  if (parallel::strategy.ThreadsRequested != 1) {
+  if (getGlobalTP().getThreadCount() != 1) {
     auto NumItems = End - Begin;
     // Limit the number of tasks to MaxTasksPerGroup to limit job scheduling
     // overhead on large inputs.
@@ -235,15 +239,15 @@ void llvm::parallelFor(size_t Begin, size_t End,
     if (TaskSize == 0)
       TaskSize = 1;
 
-    parallel::TaskGroup TG;
+    ThreadPoolTaskGroup TG;
     for (; Begin + TaskSize < End; Begin += TaskSize) {
-      TG.spawn([=, &Fn] {
+      TG.async([=, &Fn] {
         for (size_t I = Begin, E = Begin + TaskSize; I != E; ++I)
           Fn(I);
       });
     }
     if (Begin != End) {
-      TG.spawn([=, &Fn] {
+      TG.async([=, &Fn] {
         for (size_t I = Begin; I != End; ++I)
           Fn(I);
       });

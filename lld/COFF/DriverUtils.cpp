@@ -51,17 +51,18 @@ const uint16_t RT_MANIFEST = 24;
 
 class Executor {
 public:
-  explicit Executor(StringRef s) : prog(saver().save(s)) {}
-  void add(StringRef s) { args.push_back(saver().save(s)); }
-  void add(std::string &s) { args.push_back(saver().save(s)); }
-  void add(Twine s) { args.push_back(saver().save(s)); }
-  void add(const char *s) { args.push_back(saver().save(s)); }
+  explicit Executor(COFFLinkerContext &ctx, StringRef s)
+      : ctx(ctx), prog(ctx.saver.save(s)) {}
+  void add(StringRef s) { args.push_back(ctx.saver.save(s)); }
+  void add(std::string &s) { args.push_back(ctx.saver.save(s)); }
+  void add(Twine s) { args.push_back(ctx.saver.save(s)); }
+  void add(const char *s) { args.push_back(ctx.saver.save(s)); }
 
   void run() {
     ErrorOr<std::string> exeOrErr = sys::findProgramByName(prog);
     if (auto ec = exeOrErr.getError())
       fatal("unable to find " + prog + " in PATH: " + ec.message());
-    StringRef exe = saver().save(*exeOrErr);
+    StringRef exe = ctx.saver.save(*exeOrErr);
     args.insert(args.begin(), exe);
 
     if (sys::ExecuteAndWait(args[0], args) != 0)
@@ -70,6 +71,7 @@ public:
   }
 
 private:
+  COFFLinkerContext &ctx;
   StringRef prog;
   std::vector<StringRef> args;
 };
@@ -441,7 +443,7 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
   // enabled, we must shell out to Microsoft's mt.exe tool.
   TemporaryFile user("user", "manifest");
 
-  Executor e("mt.exe");
+  Executor e(ctx, "mt.exe");
   e.add("/manifest");
   e.add(Default.path);
   for (StringRef filename : ctx.config.manifestInput) {
@@ -627,21 +629,21 @@ static StringRef undecorate(COFFLinkerContext &ctx, StringRef sym) {
 
 // Convert stdcall/fastcall style symbols into unsuffixed symbols,
 // with or without a leading underscore. (MinGW specific.)
-static StringRef killAt(StringRef sym, bool prefix) {
+static StringRef killAt(COFFLinkerContext &ctx, StringRef sym, bool prefix) {
   if (sym.empty())
     return sym;
   // Strip any trailing stdcall suffix
   sym = sym.substr(0, sym.find('@', 1));
   if (!sym.starts_with("@")) {
     if (prefix && !sym.starts_with("_"))
-      return saver().save("_" + sym);
+      return ctx.saver.save("_" + sym);
     return sym;
   }
   // For fastcall, remove the leading @ and replace it with an
   // underscore, if prefixes are used.
   sym = sym.substr(1);
   if (prefix)
-    sym = saver().save("_" + sym);
+    sym = ctx.saver.save("_" + sym);
   return sym;
 }
 
@@ -680,10 +682,10 @@ void LinkerDriver::fixupExports() {
 
   if (ctx.config.killAt && ctx.config.machine == I386) {
     for (Export &e : ctx.config.exports) {
-      e.name = killAt(e.name, true);
-      e.exportName = killAt(e.exportName, false);
-      e.extName = killAt(e.extName, true);
-      e.symbolName = killAt(e.symbolName, true);
+      e.name = killAt(ctx, e.name, true);
+      e.exportName = killAt(ctx, e.exportName, false);
+      e.extName = killAt(ctx, e.extName, true);
+      e.symbolName = killAt(ctx, e.symbolName, true);
     }
   }
 
@@ -882,9 +884,8 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
                                               argv.data() + argv.size());
   if (!args.hasArg(OPT_lldignoreenv))
     addLINK(expandedArgv);
-  cl::ExpandResponseFiles(saver(), getQuotingStyle(args), expandedArgv);
-  args = ctx.optTable.ParseArgs(ArrayRef(expandedArgv).drop_front(),
-                                missingIndex, missingCount);
+  cl::ExpandResponseFiles(ctx.saver, getQuotingStyle(args), expandedArgv);
+  args = ctx.optTable.ParseArgs(expandedArgv, missingIndex, missingCount);
 
   // Print the real command line if response files are expanded.
   if (args.hasArg(OPT_verbose) && argv.size() != expandedArgv.size()) {
@@ -904,7 +905,7 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
   }
 
   // Handle /WX early since it converts missing argument warnings to errors.
-  errorHandler().fatalWarnings = args.hasFlag(OPT_WX, OPT_WX_no, false);
+  ctx.e.fatalWarnings = args.hasFlag(OPT_WX, OPT_WX_no, false);
 
   if (missingCount)
     fatal(Twine(args.getArgString(missingIndex)) + ": missing argument");
@@ -934,7 +935,7 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
   // Handle /EXPORT and /INCLUDE in a fast path. These directives can appear for
   // potentially every symbol in the object, so they must be handled quickly.
   SmallVector<StringRef, 16> tokens;
-  cl::TokenizeWindowsCommandLineNoCopy(s, saver(), tokens);
+  cl::TokenizeWindowsCommandLineNoCopy(s, ctx.saver, tokens);
   for (StringRef tok : tokens) {
     if (tok.starts_with_insensitive("/export:") ||
         tok.starts_with_insensitive("-export:"))
@@ -950,7 +951,7 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
       // already copied quoted arguments for us, so those do not need to be
       // copied again.
       bool HasNul = tok.end() != s.end() && tok.data()[tok.size()] == '\0';
-      rest.push_back(HasNul ? tok.data() : saver().save(tok).data());
+      rest.push_back(HasNul ? tok.data() : ctx.saver.save(tok).data());
     }
   }
 
@@ -984,7 +985,7 @@ void ArgParser::addLINK(SmallVector<const char *, 256> &argv) {
 
 std::vector<const char *> ArgParser::tokenize(StringRef s) {
   SmallVector<const char *, 16> tokens;
-  cl::TokenizeWindowsCommandLine(s, saver(), tokens);
+  cl::TokenizeWindowsCommandLine(s, ctx.saver, tokens);
   return std::vector<const char *>(tokens.begin(), tokens.end());
 }
 

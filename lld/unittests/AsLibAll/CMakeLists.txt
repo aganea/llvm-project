@@ -4,6 +4,7 @@
 
 add_lld_unittests(LLDAsLibAllTests
   AllDrivers.cpp
+  ParallelLink.cpp
 )
 
 target_link_libraries(LLDAsLibAllTests

@@ -31,6 +31,7 @@
 namespace llvm {
 
 class ThreadPoolTaskGroup;
+class ThreadPoolContext;
 
 /// A ThreadPool for asynchronous parallel execution on a defined number of
 /// threads.
@@ -113,6 +114,14 @@ public:
   bool isWorkerThread() const;
 
 private:
+  /// This will be called when the Task is pushed (not executed) on the
+  /// ThreadPool.
+  static ThreadPoolContext *captureContext();
+
+  /// These will be called when the Task is executed.
+  static void enterContext(ThreadPoolContext *Ctx);
+  static void exitContext(ThreadPoolContext *Ctx);
+
   /// Helpers to create a promise and a callable wrapper of \p Task that sets
   /// the result of the promise. Returns the callable and a future to access the
   /// result.
@@ -122,17 +131,28 @@ private:
     std::shared_ptr<std::promise<ResTy>> Promise =
         std::make_shared<std::promise<ResTy>>();
     auto F = Promise->get_future();
-    return {
-        [Promise = std::move(Promise), Task]() { Promise->set_value(Task()); },
-        std::move(F)};
+    auto Ctx = captureContext();
+    return {[Promise = std::move(Promise), Task, Ctx]() {
+              if (Ctx)
+                enterContext(Ctx);
+              Promise->set_value(Task());
+              if (Ctx)
+                exitContext(Ctx);
+            },
+            std::move(F)};
   }
   static std::pair<std::function<void()>, std::future<void>>
   createTaskAndFuture(std::function<void()> Task) {
     std::shared_ptr<std::promise<void>> Promise =
         std::make_shared<std::promise<void>>();
     auto F = Promise->get_future();
-    return {[Promise = std::move(Promise), Task]() {
+    auto Ctx = captureContext();
+    return {[Promise = std::move(Promise), Task, Ctx]() {
+              if (Ctx)
+                enterContext(Ctx);
               Task();
+              if (Ctx)
+                exitContext(Ctx);
               Promise->set_value();
             },
             std::move(F)};
@@ -161,7 +181,7 @@ private:
       // Don't allow enqueueing after disabling the pool
       assert(EnableFlag && "Queuing a thread during ThreadPool destruction");
       Tasks.emplace_back(std::make_pair(std::move(R.first), Group));
-      requestedThreads = ActiveThreads + Tasks.size();
+      requestedThreads = ActiveTasks + Tasks.size();
     }
     QueueCondition.notify_one();
     grow(requestedThreads);
@@ -186,7 +206,7 @@ private:
   void processTasks(ThreadPoolTaskGroup *WaitingForGroup);
 #endif
 
-  /// Threads in flight
+  /// Threads in scheduled but not running.
   std::vector<llvm::thread> Threads;
   /// Lock protecting access to the Threads vector.
   mutable llvm::sys::RWMutex ThreadsLock;
@@ -201,8 +221,8 @@ private:
   /// Signaling for job completion (all tasks or all tasks in a group).
   std::condition_variable CompletionCondition;
 
-  /// Keep track of the number of thread actually busy
-  unsigned ActiveThreads = 0;
+  /// Keep track of the number of tasks being executed.
+  unsigned ActiveTasks = 0;
   /// Number of threads active for tasks in the given group (only non-zero).
   DenseMap<ThreadPoolTaskGroup *, unsigned> ActiveGroups;
 
@@ -217,12 +237,25 @@ private:
   const unsigned MaxThreadCount;
 };
 
+/// We can set the strategy before the pool is created.
+void setGlobalTPStrategy(ThreadPoolStrategy S);
+
+ThreadPoolStrategy getGlobalTPStrategy();
+
+/// Get or create the global (application) ThreadPool.
+ThreadPool &getGlobalTP();
+
+/// When called from within a thread, returns the thread ID.
+unsigned getGlobalTPThreadIndex();
+
 /// A group of tasks to be run on a thread pool. Thread pool tasks in different
 /// groups can run on the same threadpool but can be waited for separately.
 /// It is even possible for tasks of one group to submit and wait for tasks
 /// of another group, as long as this does not form a loop.
 class ThreadPoolTaskGroup {
 public:
+  /// The default is to use the global ThreadPool.
+  ThreadPoolTaskGroup();
   /// The ThreadPool argument is the thread pool to forward calls to.
   ThreadPoolTaskGroup(ThreadPool &Pool) : Pool(Pool) {}
 
@@ -242,6 +275,18 @@ public:
 
 private:
   ThreadPool &Pool;
+};
+
+// Instructs all new async functions created (but not executed) on this
+// thread, to call pre- and post-
+// functions around each Task, essentially to allow setting a custom
+// thread-local data.
+class ThreadPoolContext {
+public:
+  ThreadPoolContext();
+  ~ThreadPoolContext();
+
+  std::function<void()> PreTask, PostTask;
 };
 
 } // namespace llvm

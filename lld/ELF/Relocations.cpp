@@ -883,7 +883,7 @@ static void addRelativeReloc(InputSectionBase &isec, uint64_t offsetInSec,
   if (part.relrDyn && isec.addralign >= 2 && offsetInSec % 2 == 0) {
     isec.addReloc({expr, type, offsetInSec, addend, &sym});
     if (shard)
-      part.relrDyn->relocsVec[parallel::getThreadIndex()].push_back(
+      part.relrDyn->relocsVec[llvm::getGlobalTPThreadIndex()].push_back(
           {&isec, offsetInSec});
     else
       part.relrDyn->relocs.push_back({&isec, offsetInSec});
@@ -1550,7 +1550,7 @@ template <class ELFT> void elf::scanRelocations() {
   // for parallelism.
   bool serial = !config->zCombreloc || config->emachine == EM_MIPS ||
                 config->emachine == EM_PPC64;
-  parallel::TaskGroup tg;
+  ThreadPoolTaskGroup tg;
   for (ELFFileBase *f : ctx.objectFiles) {
     auto fn = [f]() {
       RelocationScanner scanner;
@@ -1561,10 +1561,10 @@ template <class ELFT> void elf::scanRelocations() {
           scanner.template scanSection<ELFT>(*s);
       }
     };
-    tg.spawn(fn, serial);
+    tg.async(fn, serial);
   }
 
-  tg.spawn([] {
+  tg.async([] {
     RelocationScanner scanner;
     for (Partition &part : partitions) {
       for (EhInputSection *sec : part.ehFrame->sections)

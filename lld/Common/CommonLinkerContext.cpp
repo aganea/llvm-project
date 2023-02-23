@@ -11,21 +11,26 @@
 #include "lld/Common/Memory.h"
 
 #include "llvm/CodeGen/CommandFlags.h"
+#include "llvm/Support/ThreadPool.h"
 
 using namespace llvm;
 using namespace lld;
 
-// Reference to the current LLD instance. This is a temporary situation, until
-// we pass this context everywhere by reference, or we make it a thread_local,
-// as in https://reviews.llvm.org/D108850?id=370678 where each thread can be
-// associated with a LLD instance. Only then will LLD be free of global
-// state.
-static CommonLinkerContext *lctx;
+// Reference to the current LLD instance. This is thread-local because LLD
+// supports linking with multiple contexts in a global thread pool.
+thread_local CommonLinkerContext *lctx;
 
 CommonLinkerContext::CommonLinkerContext() {
   lctx = this;
   // Fire off the static initializations in CGF's constructor.
   codegen::RegisterCodeGenFlags CGF;
+  // Instruct the global ThreadPool to call us whenever a task is spawed on the
+  // same thread after this context was created. This allows setting a
+  // thread-local pointer to this context. This is used in some rare cases where
+  // we can't carry ctx around on the callstack, for example when calling
+  // lld::error().
+  tctx.PreTask = [ctx = this]() { lctx = ctx; };
+  tctx.PostTask = [ctx = lctx] { lctx = ctx; };
 }
 
 CommonLinkerContext::~CommonLinkerContext() {

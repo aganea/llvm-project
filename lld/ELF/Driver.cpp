@@ -1532,7 +1532,7 @@ static void readConfigs(opt::InputArgList &args) {
     if (!llvm::to_integer(v, threads, 0) || threads == 0)
       error(arg->getSpelling() + ": expected a positive integer, but got '" +
             arg->getValue() + "'");
-    parallel::strategy = hardware_concurrency(threads);
+    llvm::setGlobalTPStrategy(hardware_concurrency(threads));
     config->thinLTOJobs = v;
   } else if (parallel::strategy.compute_thread_count() > 16) {
     log("set maximum concurrency to 16, specify --threads= to change");
@@ -1540,7 +1540,7 @@ static void readConfigs(opt::InputArgList &args) {
   }
   if (auto *arg = args.getLastArg(OPT_thinlto_jobs_eq))
     config->thinLTOJobs = arg->getValue();
-  config->threadCount = parallel::strategy.compute_thread_count();
+  config->threadCount = llvm::getGlobalTPStrategy().compute_thread_count();
 
   if (config->ltoPartitions == 0)
     error("--lto-partitions: number of threads must be > 0");

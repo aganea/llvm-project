@@ -22,6 +22,7 @@
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "llvm/Support/StringSaver.h"
+#include "llvm/Support/ThreadPool.h"
 
 namespace llvm {
 class raw_ostream;
@@ -41,6 +42,7 @@ public:
   llvm::DenseMap<void *, SpecificAllocBase *> instances;
 
   ErrorHandler e;
+  llvm::ThreadPoolContext tctx;
 };
 
 // Retrieve the global state. Currently only one state can exist per process,

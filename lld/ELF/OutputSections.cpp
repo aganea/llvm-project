@@ -339,7 +339,7 @@ template <class ELFT> void OutputSection::maybeCompress() {
   auto buf = std::make_unique<uint8_t[]>(size);
   // Write uncompressed data to a temporary zero-initialized buffer.
   {
-    parallel::TaskGroup tg;
+    ThreadPoolTaskGroup tg;
     writeTo<ELFT>(buf.get(), tg);
   }
 
@@ -357,8 +357,9 @@ template <class ELFT> void OutputSection::maybeCompress() {
 
     ZSTD_CCtx *cctx = ZSTD_createCCtx();
     // Ignore error if zstd was not built with ZSTD_MULTITHREAD.
-    (void)ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers,
-                                 parallel::strategy.compute_thread_count());
+    (void)ZSTD_CCtx_setParameter(
+        cctx, ZSTD_c_nbWorkers,
+        llvm::getGlobalTPStrategy().compute_thread_count());
     ZSTD_outBuffer zob = {out.data(), out.size(), 0};
     ZSTD_EndDirective directive = ZSTD_e_continue;
     const size_t blockSize = ZSTD_CStreamInSize();
@@ -443,7 +444,7 @@ static void writeInt(uint8_t *buf, uint64_t data, uint64_t size) {
 }
 
 template <class ELFT>
-void OutputSection::writeTo(uint8_t *buf, parallel::TaskGroup &tg) {
+void OutputSection::writeTo(uint8_t *buf, ThreadPoolTaskGroup &tg) {
   llvm::TimeTraceScope timeScope("Write sections", name);
   if (type == SHT_NOBITS)
     return;
@@ -542,7 +543,7 @@ void OutputSection::writeTo(uint8_t *buf, parallel::TaskGroup &tg) {
     taskSize += sections[i]->getSize();
     bool done = ++i == numSections;
     if (done || taskSize >= taskSizeLimit) {
-      tg.spawn([=] { fn(begin, i); });
+      tg.async([=] { fn(begin, i); });
       if (done)
         break;
       begin = i;
@@ -769,13 +770,13 @@ template void OutputSection::writeHeaderTo<ELF64LE>(ELF64LE::Shdr *Shdr);
 template void OutputSection::writeHeaderTo<ELF64BE>(ELF64BE::Shdr *Shdr);
 
 template void OutputSection::writeTo<ELF32LE>(uint8_t *,
-                                              llvm::parallel::TaskGroup &);
+                                              llvm::ThreadPoolTaskGroup &);
 template void OutputSection::writeTo<ELF32BE>(uint8_t *,
-                                              llvm::parallel::TaskGroup &);
+                                              llvm::ThreadPoolTaskGroup &);
 template void OutputSection::writeTo<ELF64LE>(uint8_t *,
-                                              llvm::parallel::TaskGroup &);
+                                              llvm::ThreadPoolTaskGroup &);
 template void OutputSection::writeTo<ELF64BE>(uint8_t *,
-                                              llvm::parallel::TaskGroup &);
+                                              llvm::ThreadPoolTaskGroup &);
 
 template void OutputSection::maybeCompress<ELF32LE>();
 template void OutputSection::maybeCompress<ELF32BE>();

@@ -530,7 +530,7 @@ static void readConfigs(opt::InputArgList &args) {
     if (!llvm::to_integer(v, threads, 0) || threads == 0)
       error(arg->getSpelling() + ": expected a positive integer, but got '" +
             arg->getValue() + "'");
-    parallel::strategy = hardware_concurrency(threads);
+    llvm::setGlobalTPStrategy(hardware_concurrency(threads));
     config->thinLTOJobs = v;
   }
   if (auto *arg = args.getLastArg(OPT_thinlto_jobs))

@@ -74,7 +74,7 @@ void lld::unlinkAsync(StringRef path) {
   }
   sys::fs::remove(path);
 #else
-  if (parallel::strategy.ThreadsRequested == 1)
+  if (llvm::getGlobalTPStrategy().ThreadsRequested == 1)
     return;
 
   // We cannot just remove path from a different thread because we are now going
