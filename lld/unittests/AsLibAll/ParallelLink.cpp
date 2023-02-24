@@ -14,7 +14,7 @@
 #include "llvm/Support/ThreadPool.h"
 #include "gmock/gmock.h"
 
-LLD_HAS_DRIVER(coff);
+LLD_HAS_DRIVER(coff)
 
 using namespace llvm;
 using namespace lld;
@@ -34,7 +34,7 @@ static const char *expand(const char *path, StringSaver &saver) {
   size_t coff = expanded.find("%coff_tests");
   if (coff != std::string::npos) {
     std::string coff_tests = thisFile.str();
-    coff_tests += "\\..\\..\\test\\COFF";
+    coff_tests += "/../../test/COFF";
     expanded.replace(coff, 11, coff_tests.data(), coff_tests.size());
   }
 

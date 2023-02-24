@@ -1459,14 +1459,14 @@ int main(int Argc, char **Argv) {
   ExecutableName = Args.getLastArgValue(OPT_o, "a.out");
   CudaBinaryPath = Args.getLastArgValue(OPT_cuda_path_EQ).str();
 
-  parallel::strategy = hardware_concurrency(1);
+  llvm::setGlobalTPStrategy(hardware_concurrency(1));
   if (auto *Arg = Args.getLastArg(OPT_wrapper_jobs)) {
     unsigned Threads = 0;
     if (!llvm::to_integer(Arg->getValue(), Threads) || Threads == 0)
       reportError(createStringError(
           inconvertibleErrorCode(), "%s: expected a positive integer, got '%s'",
           Arg->getSpelling().data(), Arg->getValue()));
-    parallel::strategy = hardware_concurrency(Threads);
+    llvm::setGlobalTPStrategy(hardware_concurrency(Threads));
   }
 
   if (Args.hasArg(OPT_wrapper_time_trace_eq)) {

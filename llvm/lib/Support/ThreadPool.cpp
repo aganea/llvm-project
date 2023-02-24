@@ -26,15 +26,18 @@
 
 using namespace llvm;
 
-static ThreadPoolStrategy GlobalTPStrategy = hardware_concurrency();
+static ThreadPoolStrategy &GlobalTPStrategy() {
+  static ThreadPoolStrategy S = hardware_concurrency();
+  return S;
+}
 
-void llvm::setGlobalTPStrategy(ThreadPoolStrategy S) { GlobalTPStrategy = S; }
+void llvm::setGlobalTPStrategy(ThreadPoolStrategy S) { GlobalTPStrategy() = S; }
 
-ThreadPoolStrategy llvm::getGlobalTPStrategy() { return GlobalTPStrategy; }
+ThreadPoolStrategy llvm::getGlobalTPStrategy() { return GlobalTPStrategy(); }
 
 ThreadPool &llvm::getGlobalTP() {
   struct Creator {
-    static void *call() { return new ThreadPool(GlobalTPStrategy); }
+    static void *call() { return new ThreadPool(GlobalTPStrategy()); }
   };
   static ManagedStatic<ThreadPool, Creator> TP;
   return *TP;
@@ -47,7 +50,7 @@ ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {}
 #ifdef _WIN32
 static thread_local unsigned GlobalTPThreadIndex;
 #else
-thread_local unsigned GlobalThreadIndex;
+thread_local unsigned GlobalTPThreadIndex;
 #endif
 unsigned llvm::getGlobalTPThreadIndex() { return GlobalTPThreadIndex; }
 
