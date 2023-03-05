@@ -876,19 +876,18 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
   // --rsp-quoting and /lldignoreenv.
   // (This means --rsp-quoting can't be added through %LINK%.)
   opt::InputArgList args =
-      ctx.optTable.ParseArgs(argv, missingIndex, missingCount);
+      ctx.optTable.ParseArgs(argv.slice(1), missingIndex, missingCount);
 
   // Expand response files (arguments in the form of @<filename>) and insert
   // flags from %LINK% and %_LINK_%, and then parse the argument again.
-  SmallVector<const char *, 256> expandedArgv(argv.data(),
-                                              argv.data() + argv.size());
+  SmallVector<const char *, 256> expandedArgv(argv.slice(1));
   if (!args.hasArg(OPT_lldignoreenv))
     addLINK(expandedArgv);
   cl::ExpandResponseFiles(ctx.saver, getQuotingStyle(args), expandedArgv);
   args = ctx.optTable.ParseArgs(expandedArgv, missingIndex, missingCount);
 
   // Print the real command line if response files are expanded.
-  if (args.hasArg(OPT_verbose) && argv.size() != expandedArgv.size()) {
+  if (args.hasArg(OPT_verbose) && (argv.size() - 1) != expandedArgv.size()) {
     std::string msg = "Command line:";
     for (const char *s : expandedArgv)
       msg += " " + std::string(s);
@@ -975,11 +974,11 @@ void ArgParser::addLINK(SmallVector<const char *, 256> &argv) {
   // Concatenate LINK env and command line arguments, and then parse them.
   if (std::optional<std::string> s = Process::GetEnv("LINK")) {
     std::vector<const char *> v = tokenize(*s);
-    argv.insert(std::next(argv.begin()), v.begin(), v.end());
+    argv.insert(argv.begin(), v.begin(), v.end());
   }
   if (std::optional<std::string> s = Process::GetEnv("_LINK_")) {
     std::vector<const char *> v = tokenize(*s);
-    argv.insert(std::next(argv.begin()), v.begin(), v.end());
+    argv.insert(argv.begin(), v.begin(), v.end());
   }
 }
 
