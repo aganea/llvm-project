@@ -120,6 +120,10 @@ typedef uint_t uint;
 
 using namespace llvm;
 
+void llvm::initPathOptions() {
+  // This is only needed on Windows for now.
+}
+
 namespace llvm {
 namespace sys {
 namespace fs {

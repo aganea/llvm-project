@@ -774,8 +774,8 @@ public:
 // This avoids difficulties in creating exactly equivalent in-memory FSes,
 // as often needed in multithreaded programs.
 static sys::fs::UniqueID getUniqueID(hash_code Hash) {
-  return sys::fs::UniqueID(std::numeric_limits<uint64_t>::max(),
-                           uint64_t(size_t(Hash)));
+  return sys::fs::UniqueID::inMemory(std::numeric_limits<uint64_t>::max(),
+                                     uint64_t(size_t(Hash)));
 }
 static sys::fs::UniqueID getFileID(sys::fs::UniqueID Parent,
                                    llvm::StringRef Name,
@@ -2619,7 +2619,7 @@ UniqueID vfs::getNextVirtualUniqueID() {
   unsigned ID = ++UID;
   // The following assumes that uint64_t max will never collide with a real
   // dev_t value from the OS.
-  return UniqueID(std::numeric_limits<uint64_t>::max(), ID);
+  return UniqueID::inMemory(std::numeric_limits<uint64_t>::max(), ID);
 }
 
 void YAMLVFSWriter::addEntry(StringRef VirtualPath, StringRef RealPath,

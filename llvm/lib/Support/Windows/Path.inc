@@ -16,17 +16,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/WindowsError.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#include "../DebugOptions.h"
 
 // These two headers must be included last, and make sure shlobj is required
 // after Windows.h to make sure it picks up our definition of _WIN32_WINNT
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wchar.h>
 
 #undef max
 
@@ -57,6 +62,35 @@ static bool is_separator(const wchar_t value) {
     return false;
   }
 }
+
+static HANDLE duplicateHandle(HANDLE Handle) {
+  if (Handle == INVALID_HANDLE_VALUE)
+    return INVALID_HANDLE_VALUE;
+  HANDLE NewHandle;
+  if (!::DuplicateHandle(::GetCurrentProcess(), Handle, ::GetCurrentProcess(),
+                         &NewHandle, 0, 0, DUPLICATE_SAME_ACCESS)) {
+    return INVALID_HANDLE_VALUE;
+  }
+  return NewHandle;
+}
+
+static bool DisableStableIDs = false;
+
+namespace {
+struct CreateDisableStableIDs {
+  static void *call() {
+    return new cl::opt<bool, true>(
+        "disable-stable-fileids",
+        cl::desc("Avoids locking file handles to make file ids unique."),
+        cl::Hidden, cl::location(DisableStableIDs));
+  }
+};
+} // namespace
+
+static ManagedStatic<cl::opt<bool, true>, CreateDisableStableIDs>
+    DisableStableIDsOpt;
+
+void llvm::initPathOptions() { *DisableStableIDsOpt; }
 
 namespace llvm {
 namespace sys {
@@ -124,6 +158,8 @@ std::error_code widenPath(const Twine &Path8, SmallVectorImpl<wchar_t> &Path16,
   return UTF8ToUTF16(FullPath, Path16);
 }
 
+void CommonHandleTraits::Close(handle_type h) { ::CloseHandle((HANDLE)h); }
+
 } // end namespace windows
 
 namespace fs {
@@ -157,14 +193,7 @@ std::string getMainExecutable(const char *argv0, void *MainExecAddr) {
   return std::string(PathNameUTF8.data());
 }
 
-UniqueID file_status::getUniqueID() const {
-  // The file is uniquely identified by the volume serial number along
-  // with the 64-bit file identifier.
-  uint64_t FileID = (static_cast<uint64_t>(FileIndexHigh) << 32ULL) |
-                    static_cast<uint64_t>(FileIndexLow);
-
-  return UniqueID(VolumeSerialNumber, FileID);
-}
+UniqueID file_status::getUniqueID() const { return FileID; }
 
 ErrorOr<space_info> disk_space(const Twine &Path) {
   ULARGE_INTEGER Avail, Total, Free;
@@ -647,12 +676,10 @@ bool can_execute(const Twine &Path) {
 
 bool equivalent(file_status A, file_status B) {
   assert(status_known(A) && status_known(B));
-  return A.FileIndexHigh == B.FileIndexHigh &&
-         A.FileIndexLow == B.FileIndexLow && A.FileSizeHigh == B.FileSizeHigh &&
+  return A.FileID == B.FileID && A.FileSizeHigh == B.FileSizeHigh &&
          A.FileSizeLow == B.FileSizeLow &&
          A.LastWriteTimeHigh == B.LastWriteTimeHigh &&
-         A.LastWriteTimeLow == B.LastWriteTimeLow &&
-         A.VolumeSerialNumber == B.VolumeSerialNumber;
+         A.LastWriteTimeLow == B.LastWriteTimeLow;
 }
 
 std::error_code equivalent(const Twine &A, const Twine &B, bool &result) {
@@ -697,9 +724,20 @@ static perms perms_from_attrs(DWORD Attrs) {
   return (Attrs & FILE_ATTRIBUTE_READONLY) ? (all_read | all_exe) : all_all;
 }
 
+static std::error_code handleStatusError(file_status &Result) {
+  DWORD LastError = ::GetLastError();
+  if (LastError == ERROR_FILE_NOT_FOUND || LastError == ERROR_PATH_NOT_FOUND)
+    Result = file_status(file_type::file_not_found);
+  else if (LastError == ERROR_SHARING_VIOLATION)
+    Result = file_status(file_type::type_unknown);
+  else
+    Result = file_status(file_type::status_error);
+  return mapWindowsError(LastError);
+}
+
 static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   if (FileHandle == INVALID_HANDLE_VALUE)
-    goto handle_status_error;
+    return handleStatusError(Result);
 
   switch (::GetFileType(FileHandle)) {
   default:
@@ -721,28 +759,57 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
     return std::error_code();
   }
 
+  DWORD FileSystemFlags;
+  SmallVector<wchar_t, MAX_PATH + 1> FileSystemNameBuffer;
+  if (!::GetVolumeInformationByHandleW(
+          FileHandle, NULL, 0, NULL, NULL, &FileSystemFlags,
+          FileSystemNameBuffer.begin(), MAX_PATH + 1))
+    return handleStatusError(Result);
+
   BY_HANDLE_FILE_INFORMATION Info;
   if (!::GetFileInformationByHandle(FileHandle, &Info))
-    goto handle_status_error;
+    return handleStatusError(Result);
+
+  uint64_t FileID = ((uint64_t)Info.nFileIndexHigh << 32) | Info.nFileIndexLow;
+  if (!FileID || FileID == ULLONG_MAX) {
+    // As a fallback, if the device doesn't support a FileID for this file, we
+    // just hash the file name.
+    SmallVector<wchar_t, MAX_PATH + 1> FilePath;
+    if (!::GetFinalPathNameByHandleW(FileHandle, FilePath.begin(), MAX_PATH + 1,
+                                     FILE_NAME_NORMALIZED))
+      return handleStatusError(Result);
+
+    FileID = (uint64_t)hash_combine_range(
+        FilePath.begin(), FilePath.begin() + wcslen(FilePath.begin()));
+  }
+
+  // Only these specific locally-mounted file systems support stable FileIDs.
+  // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d4bc551b-7aaf-4b4f-ba0e-3a75e7c528f0#Appendix_A_10
+  bool DontKeepHandlesOpen =
+      DisableStableIDs ||
+      _wcsnicmp(FileSystemNameBuffer.begin(), L"ntfs", 4) == 0 ||
+      _wcsnicmp(FileSystemNameBuffer.begin(), L"refs", 4) == 0 ||
+      _wcsnicmp(FileSystemNameBuffer.begin(), L"udfs", 4) == 0;
+
+  // If the FileID isn't stable, we need to keep a file handle open for the
+  // entire lifetime of a UniqueID. It's the only way the API guarantees
+  // stability.
+  // "To determine whether two *open handles* represent the same file, combine
+  // the identifier and the volume serial number for each file and compare
+  // them."
+  // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information
+  HANDLE UniqueIDHandle =
+      DontKeepHandlesOpen ? INVALID_HANDLE_VALUE : duplicateHandle(FileHandle);
 
   Result = file_status(
       file_type_from_attrs(Info.dwFileAttributes),
       perms_from_attrs(Info.dwFileAttributes), Info.nNumberOfLinks,
       Info.ftLastAccessTime.dwHighDateTime, Info.ftLastAccessTime.dwLowDateTime,
       Info.ftLastWriteTime.dwHighDateTime, Info.ftLastWriteTime.dwLowDateTime,
-      Info.dwVolumeSerialNumber, Info.nFileSizeHigh, Info.nFileSizeLow,
-      Info.nFileIndexHigh, Info.nFileIndexLow);
+      Info.nFileSizeHigh, Info.nFileSizeLow,
+      llvm::sys::fs::UniqueID(Info.dwVolumeSerialNumber, FileID,
+                              (uint64_t)UniqueIDHandle));
   return std::error_code();
-
-handle_status_error:
-  DWORD LastError = ::GetLastError();
-  if (LastError == ERROR_FILE_NOT_FOUND || LastError == ERROR_PATH_NOT_FOUND)
-    Result = file_status(file_type::file_not_found);
-  else if (LastError == ERROR_SHARING_VIOLATION)
-    Result = file_status(file_type::type_unknown);
-  else
-    Result = file_status(file_type::status_error);
-  return mapWindowsError(LastError);
 }
 
 std::error_code status(const Twine &path, file_status &result, bool Follow) {

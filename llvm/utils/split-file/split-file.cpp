@@ -162,14 +162,16 @@ int main(int argc, const char **argv) {
 
   // Delete output if it is a file or an empty directory, so that we can create
   // a directory.
-  sys::fs::file_status status;
-  if (std::error_code ec = sys::fs::status(output, status))
-    if (ec.value() != static_cast<int>(std::errc::no_such_file_or_directory))
-      fatal(output, ec.message());
-  if (status.type() != sys::fs::file_type::file_not_found &&
-      status.type() != sys::fs::file_type::directory_file &&
-      status.type() != sys::fs::file_type::regular_file)
-    fatal(output, "output cannot be a special file");
+  {
+    sys::fs::file_status status;
+    if (std::error_code ec = sys::fs::status(output, status))
+      if (ec.value() != static_cast<int>(std::errc::no_such_file_or_directory))
+        fatal(output, ec.message());
+    if (status.type() != sys::fs::file_type::file_not_found &&
+        status.type() != sys::fs::file_type::directory_file &&
+        status.type() != sys::fs::file_type::regular_file)
+      fatal(output, "output cannot be a special file");
+  }
   if (std::error_code ec = sys::fs::remove(output, /*IgnoreNonExisting=*/true))
     if (ec.value() != static_cast<int>(std::errc::directory_not_empty) &&
         ec.value() != static_cast<int>(std::errc::file_exists))

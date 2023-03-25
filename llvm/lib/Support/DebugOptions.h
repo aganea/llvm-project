@@ -25,5 +25,6 @@ void initTypeSizeOptions();
 void initWithColorOptions();
 void initDebugOptions();
 void initRandomSeedOptions();
+void initPathOptions();
 
 } // namespace llvm

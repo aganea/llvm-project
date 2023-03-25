@@ -24,20 +24,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem/UniqueID.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/VirtualFileSystem.h"
 
 #include <optional>
 #include <utility>
-
-namespace llvm {
-
-class MemoryBuffer;
-
-namespace vfs {
-
-class File;
-
-} // namespace vfs
-} // namespace llvm
 
 namespace clang {
 
@@ -353,7 +344,7 @@ inline bool operator!=(const OptionalFileEntryRef &LHS, const FileEntry *RHS) {
 class FileEntry {
   friend class FileManager;
   friend class FileEntryTestHelper;
-  FileEntry();
+  FileEntry() = default;
   FileEntry(const FileEntry &) = delete;
   FileEntry &operator=(const FileEntry &) = delete;
 

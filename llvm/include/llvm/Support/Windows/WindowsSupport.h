@@ -43,6 +43,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/VersionTuple.h"
+#include "llvm/Support/Windows/ScopedHandle.h"
 #include <cassert>
 #include <string>
 #include <system_error>
@@ -52,6 +53,8 @@
 #include <wincrypt.h>
 
 namespace llvm {
+
+using namespace sys::windows;
 
 /// Determines if the program is running on Windows 8 or newer. This
 /// reimplements one of the helpers in the Windows 8.1 SDK, which are intended
@@ -77,116 +80,48 @@ bool MakeErrMsg(std::string *ErrMsg, const std::string &prefix);
   llvm::report_fatal_error(Twine(ErrMsg));
 }
 
-template <typename HandleTraits>
-class ScopedHandle {
-  typedef typename HandleTraits::handle_type handle_type;
-  handle_type Handle;
+struct TypedHandleTraits {
+  using handle_type = HANDLE;
 
-  ScopedHandle(const ScopedHandle &other) = delete;
-  void operator=(const ScopedHandle &other) = delete;
-public:
-  ScopedHandle()
-    : Handle(HandleTraits::GetInvalid()) {}
-
-  explicit ScopedHandle(handle_type h)
-    : Handle(h) {}
-
-  ~ScopedHandle() {
-    if (HandleTraits::IsValid(Handle))
-      HandleTraits::Close(Handle);
-  }
-
-  handle_type take() {
-    handle_type t = Handle;
-    Handle = HandleTraits::GetInvalid();
-    return t;
-  }
-
-  ScopedHandle &operator=(handle_type h) {
-    if (HandleTraits::IsValid(Handle))
-      HandleTraits::Close(Handle);
-    Handle = h;
-    return *this;
-  }
-
-  // True if Handle is valid.
-  explicit operator bool() const {
-    return HandleTraits::IsValid(Handle) ? true : false;
-  }
-
-  operator handle_type() const {
-    return Handle;
-  }
-};
-
-struct CommonHandleTraits {
-  typedef HANDLE handle_type;
-
-  static handle_type GetInvalid() {
-    return INVALID_HANDLE_VALUE;
-  }
+  static handle_type GetInvalid() { return INVALID_HANDLE_VALUE; }
 
   static void Close(handle_type h) {
-    ::CloseHandle(h);
-  }
-
-  static bool IsValid(handle_type h) {
-    return h != GetInvalid();
+    CommonHandleTraits::Close((CommonHandleTraits::handle_type)h);
   }
 };
 
-struct JobHandleTraits : CommonHandleTraits {
-  static handle_type GetInvalid() {
-    return NULL;
-  }
+struct JobHandleTraits : TypedHandleTraits {
+  static handle_type GetInvalid() { return NULL; }
 };
 
-struct CryptContextTraits : CommonHandleTraits {
-  typedef HCRYPTPROV handle_type;
+struct CryptContextTraits : TypedHandleTraits {
+  using handle_type = HCRYPTPROV;
 
-  static handle_type GetInvalid() {
-    return 0;
-  }
+  static handle_type GetInvalid() { return 0; }
 
-  static void Close(handle_type h) {
-    ::CryptReleaseContext(h, 0);
-  }
-
-  static bool IsValid(handle_type h) {
-    return h != GetInvalid();
-  }
+  static void Close(handle_type h) { ::CryptReleaseContext(h, 0); }
 };
 
-struct RegTraits : CommonHandleTraits {
-  typedef HKEY handle_type;
+struct RegTraits : TypedHandleTraits {
+  using handle_type = HKEY;
 
-  static handle_type GetInvalid() {
-    return NULL;
-  }
+  static handle_type GetInvalid() { return NULL; }
 
-  static void Close(handle_type h) {
-    ::RegCloseKey(h);
-  }
-
-  static bool IsValid(handle_type h) {
-    return h != GetInvalid();
-  }
+  static void Close(handle_type h) { ::RegCloseKey(h); }
 };
 
-struct FindHandleTraits : CommonHandleTraits {
-  static void Close(handle_type h) {
-    ::FindClose(h);
-  }
+struct FindHandleTraits : TypedHandleTraits {
+  static void Close(handle_type h) { ::FindClose((HANDLE)h); }
 };
 
-struct FileHandleTraits : CommonHandleTraits {};
+struct FileHandleTraits : TypedHandleTraits {};
 
-typedef ScopedHandle<CommonHandleTraits> ScopedCommonHandle;
-typedef ScopedHandle<FileHandleTraits>   ScopedFileHandle;
+typedef ScopedHandle<TypedHandleTraits> ScopedCommonHandle;
+typedef ScopedHandle<FileHandleTraits> ScopedFileHandle;
 typedef ScopedHandle<CryptContextTraits> ScopedCryptContext;
-typedef ScopedHandle<RegTraits>          ScopedRegHandle;
-typedef ScopedHandle<FindHandleTraits>   ScopedFindHandle;
-typedef ScopedHandle<JobHandleTraits>    ScopedJobHandle;
+typedef ScopedHandle<RegTraits> ScopedRegHandle;
+typedef ScopedHandle<FindHandleTraits> ScopedFindHandle;
+typedef ScopedHandle<JobHandleTraits> ScopedJobHandle;
 
 template <class T>
 class SmallVectorImpl;

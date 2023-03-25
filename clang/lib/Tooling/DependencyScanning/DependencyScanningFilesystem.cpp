@@ -101,8 +101,7 @@ DependencyScanningFilesystemSharedCache::getShardForFilename(
 DependencyScanningFilesystemSharedCache::CacheShard &
 DependencyScanningFilesystemSharedCache::getShardForUID(
     llvm::sys::fs::UniqueID UID) const {
-  auto Hash = llvm::hash_combine(UID.getDevice(), UID.getFile());
-  return CacheShards[Hash % NumShards];
+  return CacheShards[UID.getHashValue() % NumShards];
 }
 
 const CachedFileSystemEntry *
@@ -180,8 +179,8 @@ const CachedFileSystemEntry &
 DependencyScanningWorkerFilesystem::getOrEmplaceSharedEntryForUID(
     TentativeEntry TEntry) {
   auto &Shard = SharedCache.getShardForUID(TEntry.Status.getUniqueID());
-  return Shard.getOrEmplaceEntryForUID(TEntry.Status.getUniqueID(),
-                                       std::move(TEntry.Status),
+  llvm::sys::fs::UniqueID Id = TEntry.Status.getUniqueID();
+  return Shard.getOrEmplaceEntryForUID(Id, std::move(TEntry.Status),
                                        std::move(TEntry.Contents));
 }
 

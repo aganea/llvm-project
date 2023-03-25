@@ -232,10 +232,8 @@ class file_status : public basic_file_status {
   ino_t fs_st_ino = 0;
   #elif defined (_WIN32)
   uint32_t NumLinks = 0;
-  uint32_t VolumeSerialNumber = 0;
-  uint32_t FileIndexHigh = 0;
-  uint32_t FileIndexLow = 0;
-  #endif
+  sys::fs::UniqueID FileID;
+#endif
 
 public:
   file_status() = default;
@@ -254,15 +252,13 @@ public:
   file_status(file_type Type, perms Perms, uint32_t LinkCount,
               uint32_t LastAccessTimeHigh, uint32_t LastAccessTimeLow,
               uint32_t LastWriteTimeHigh, uint32_t LastWriteTimeLow,
-              uint32_t VolumeSerialNumber, uint32_t FileSizeHigh,
-              uint32_t FileSizeLow, uint32_t FileIndexHigh,
-              uint32_t FileIndexLow)
+              uint32_t FileSizeHigh, uint32_t FileSizeLow,
+              sys::fs::UniqueID FileID)
       : basic_file_status(Type, Perms, LastAccessTimeHigh, LastAccessTimeLow,
                           LastWriteTimeHigh, LastWriteTimeLow, FileSizeHigh,
                           FileSizeLow),
-        NumLinks(LinkCount), VolumeSerialNumber(VolumeSerialNumber),
-        FileIndexHigh(FileIndexHigh), FileIndexLow(FileIndexLow) {}
-  #endif
+        NumLinks(LinkCount), FileID(FileID) {}
+#endif
 
   UniqueID getUniqueID() const;
   uint32_t getLinkCount() const;

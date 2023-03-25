@@ -705,6 +705,7 @@ TEST_F(FileSystemTest, Unique) {
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D));
   ASSERT_NE(D, F1);
   ::close(FileDescriptor2);
+  D = fs::UniqueID();
 
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
 
@@ -715,6 +716,7 @@ TEST_F(FileSystemTest, Unique) {
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D2));
   ASSERT_EQ(D2, F1);
 
+  D2 = fs::UniqueID();
   ::close(FileDescriptor);
 
   SmallString<128> Dir1;
@@ -729,6 +731,10 @@ TEST_F(FileSystemTest, Unique) {
      fs::createUniqueDirectory("dir2", Dir2));
   ASSERT_NO_ERROR(fs::getUniqueID(Dir2.c_str(), F2));
   ASSERT_NE(F1, F2);
+
+  F1 = fs::UniqueID();
+  F2 = fs::UniqueID();
+
   ASSERT_NO_ERROR(fs::remove(Dir1));
   ASSERT_NO_ERROR(fs::remove(Dir2));
   ASSERT_NO_ERROR(fs::remove(TempPath2));
@@ -887,6 +893,10 @@ TEST_F(FileSystemTest, TempFiles) {
   EXPECT_FALSE(fs::equivalent(A, B));
 
   ::close(FD2);
+  // Also close the file statuses which contain instances of UniqueID, which on
+  // Windows keep the file handle alive. See comment in UniqueID.h
+  A = fs::file_status();
+  B = fs::file_status();
 
   // Remove Temp2.
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
@@ -915,6 +925,11 @@ TEST_F(FileSystemTest, TempFiles) {
   ASSERT_NO_ERROR(fs::status(Twine(TempPath), A));
   ASSERT_NO_ERROR(fs::status(Twine(TempPath2), B));
   EXPECT_TRUE(fs::equivalent(A, B));
+
+  // Also close the file statuses which contain instances of UniqueID, which on
+  // Windows keep the file handle alive. See comment in UniqueID.h
+  A = fs::file_status();
+  B = fs::file_status();
 
   // Remove Temp1.
   ::close(FileDescriptor);

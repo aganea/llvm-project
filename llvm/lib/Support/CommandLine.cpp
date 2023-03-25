@@ -2671,6 +2671,7 @@ static void initCommonOptions() {
   initWithColorOptions();
   initDebugOptions();
   initRandomSeedOptions();
+  initPathOptions();
 }
 
 OptionCategory &cl::getGeneralCategory() {

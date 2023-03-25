@@ -33,7 +33,7 @@ TEST(FSTests, PreambleStatusCache) {
   // Main file is not cached.
   EXPECT_FALSE(StatCache.lookup(testPath("main")).has_value());
 
-  llvm::vfs::Status S("fake", llvm::sys::fs::UniqueID(123, 456),
+  llvm::vfs::Status S("fake", llvm::sys::fs::UniqueID::inMemory(123, 456),
                       std::chrono::system_clock::now(), 0, 0, 1024,
                       llvm::sys::fs::file_type::regular_file,
                       llvm::sys::fs::all_all);

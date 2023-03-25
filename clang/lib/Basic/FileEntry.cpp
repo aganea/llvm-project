@@ -17,8 +17,6 @@
 
 using namespace clang;
 
-FileEntry::FileEntry() : UniqueID(0, 0) {}
-
 FileEntry::~FileEntry() = default;
 
 void FileEntry::closeFile() const { File.reset(); }

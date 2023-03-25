@@ -151,24 +151,23 @@ public:
     return FilesAndDirs.find(std::string(P.str()));
   }
 
+  UniqueID makeUniqueID() { return UniqueID::inMemory(FSID, FileID++); }
+
   void addRegularFile(StringRef Path, sys::fs::perms Perms = sys::fs::all_all) {
-    vfs::Status S(Path, UniqueID(FSID, FileID++),
-                  std::chrono::system_clock::now(), 0, 0, 1024,
-                  sys::fs::file_type::regular_file, Perms);
+    vfs::Status S(Path, makeUniqueID(), std::chrono::system_clock::now(), 0, 0,
+                  1024, sys::fs::file_type::regular_file, Perms);
     addEntry(Path, S);
   }
 
   void addDirectory(StringRef Path, sys::fs::perms Perms = sys::fs::all_all) {
-    vfs::Status S(Path, UniqueID(FSID, FileID++),
-                  std::chrono::system_clock::now(), 0, 0, 0,
-                  sys::fs::file_type::directory_file, Perms);
+    vfs::Status S(Path, makeUniqueID(), std::chrono::system_clock::now(), 0, 0,
+                  0, sys::fs::file_type::directory_file, Perms);
     addEntry(Path, S);
   }
 
   void addSymlink(StringRef Path) {
-    vfs::Status S(Path, UniqueID(FSID, FileID++),
-                  std::chrono::system_clock::now(), 0, 0, 0,
-                  sys::fs::file_type::symlink_file, sys::fs::all_all);
+    vfs::Status S(Path, makeUniqueID(), std::chrono::system_clock::now(), 0, 0,
+                  0, sys::fs::file_type::symlink_file, sys::fs::all_all);
     addEntry(Path, S);
   }
 

@@ -72,7 +72,7 @@ class PPRegion {
   time_t ModTime;
   unsigned Offset;
 public:
-  PPRegion() : UniqueID(0, 0), ModTime(), Offset() {}
+  PPRegion() : ModTime(), Offset() {}
   PPRegion(llvm::sys::fs::UniqueID UniqueID, unsigned offset, time_t modTime)
       : UniqueID(UniqueID), ModTime(modTime), Offset(offset) {}
 
@@ -95,10 +95,10 @@ namespace llvm {
   template <>
   struct DenseMapInfo<PPRegion> {
     static inline PPRegion getEmptyKey() {
-      return PPRegion(llvm::sys::fs::UniqueID(0, 0), unsigned(-1), 0);
+    return PPRegion(llvm::sys::fs::UniqueID(), unsigned(-1), 0);
     }
     static inline PPRegion getTombstoneKey() {
-      return PPRegion(llvm::sys::fs::UniqueID(0, 0), unsigned(-2), 0);
+    return PPRegion(llvm::sys::fs::UniqueID(), unsigned(-2), 0);
     }
 
     static unsigned getHashValue(const PPRegion &S) {
