@@ -16,7 +16,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/Parallel.h"
+#include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/xxhash.h"
 #include <atomic>
@@ -103,7 +103,7 @@ class ConcurrentHashTableByPtr {
 public:
   ConcurrentHashTableByPtr(
       AllocatorTy &Allocator, uint64_t EstimatedSize = 100000,
-      size_t ThreadsNum = parallel::strategy.compute_thread_count(),
+      size_t ThreadsNum = getGlobalTPStrategy().compute_thread_count(),
       size_t InitialNumberOfBuckets = 128)
       : MultiThreadAllocator(Allocator) {
     assert((ThreadsNum > 0) && "ThreadsNum must be greater than 0");
