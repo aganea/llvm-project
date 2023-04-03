@@ -18,7 +18,7 @@ using namespace lld;
 
 // Reference to the current LLD instance. This is thread-local because LLD
 // supports linking with multiple contexts in a global thread pool.
-thread_local CommonLinkerContext *lctx;
+LLVM_THREAD_LOCAL CommonLinkerContext *lctx;
 
 CommonLinkerContext::CommonLinkerContext() {
   lctx = this;
