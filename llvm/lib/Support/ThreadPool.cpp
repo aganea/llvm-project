@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/ManagedStatic.h"
 
 #include "llvm/Config/llvm-config.h"
@@ -43,7 +44,9 @@ ThreadPool &llvm::getGlobalTP() {
   return *TP;
 }
 
-ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {}
+ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {
+  Parent = ActualProcessGroup;
+}
 
 #if LLVM_ENABLE_THREADS
 
@@ -54,6 +57,8 @@ thread_local unsigned GlobalTPThreadIndex;
 #endif
 unsigned llvm::getGlobalTPThreadIndex() { return GlobalTPThreadIndex; }
 
+static llvm::thread::id MainThreadId;
+
 // A note on thread groups: Tasks are by default in no group (represented
 // by nullptr ThreadPoolTaskGroup pointer in the Tasks queue) and functionality
 // here normally works on all tasks regardless of their group (functions
@@ -63,22 +68,67 @@ unsigned llvm::getGlobalTPThreadIndex() { return GlobalTPThreadIndex; }
 // pointer.
 
 ThreadPool::ThreadPool(ThreadPoolStrategy S)
-    : Strategy(S), MaxThreadCount(S.compute_thread_count()) {}
+    : Strategy(S), MaxThreadCount(S.compute_thread_count()) {
+  // Assume the ThreadPool always starts on the main thread.
+  MainThreadId = llvm::this_thread::get_id();
+}
 
-void ThreadPool::grow(int requested) {
-  llvm::sys::ScopedWriter LockGuard(ThreadsLock);
-  if (Threads.size() >= MaxThreadCount)
-    return; // Already hit the max thread pool size.
-  int newThreadCount = std::min<int>(requested, MaxThreadCount);
-  while (static_cast<int>(Threads.size()) < newThreadCount) {
-    int ThreadID = Threads.size();
-    Threads.emplace_back([this, ThreadID] {
-      set_thread_name(formatv("llvm-worker-{0}", ThreadID));
-      GlobalTPThreadIndex = ThreadID;
-      Strategy.apply_thread_strategy(ThreadID);
+// When using several LLVM tools in the same process, this is used to
+// automatically bind the context of each LLVM tool to a task group. This is to
+// be able to track down which tasks to cancel when a LLVM tool ends
+// unexpectingly.
+LLVM_THREAD_LOCAL ThreadPoolTaskGroup *ActualProcessGroup;
+
+void ThreadPool::queueTask(std::function<void()> Task,
+                           ThreadPoolTaskGroup *Group) {
+  if (Stop)
+    return;
+
+  // Enclose the task in the top-level group.
+  if (!Group)
+    Group = ActualProcessGroup;
+
+  int requested;
+  {
+    // Lock the queue and push the new task
+    std::unique_lock<std::mutex> LockGuard(QueueLock);
+    Tasks.emplace_back(std::make_pair(std::move(Task), Group));
+    requested = ActiveTasks + Tasks.size();
+  }
+  requested = std::min<int>(requested, MaxThreadCount);
+
+  // Signal that there's work available.
+  QueueCondition.notify_one();
+
+  // Grow the number of worker threads, if needed.
+  unsigned available;
+  do {
+    available = AvailableThreads.load(std::memory_order_relaxed);
+    if (available >= MaxThreadCount)
+      return; // Already hit the max thread pool size.
+
+    if (available >= requested)
+      return; // Someone already beat us and raised the number of threads.
+
+    if (AvailableThreads.compare_exchange_weak(available, requested))
+      break;
+  } while (1);
+
+  std::vector<llvm::thread> newThreads;
+  newThreads.reserve(requested - available);
+  for (unsigned i = available; i < requested; ++i) {
+    newThreads.emplace_back([this, i] {
+      set_thread_name(formatv("llvm-worker-{0}", i));
+      GlobalTPThreadIndex = i;
+      Strategy.apply_thread_strategy(i);
       processTasks(nullptr);
     });
   }
+
+  // Finally move our newly created threads into the thread pool.
+  llvm::sys::ScopedWriter LockGuard(ThreadsLock);
+  Threads.reserve(Threads.size() + newThreads.size());
+  std::move(newThreads.begin(), newThreads.end(), std::back_inserter(Threads));
 }
 
 #ifndef NDEBUG
@@ -89,7 +139,7 @@ static LLVM_THREAD_LOCAL std::vector<ThreadPoolTaskGroup *>
 
 // WaitingForGroup == nullptr means all tasks regardless of their group.
 void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
-  while (true) {
+  while (!Stop) {
     std::function<void()> Task;
     ThreadPoolTaskGroup *GroupOfTask;
     {
@@ -97,20 +147,19 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
       bool workCompletedForGroup = false; // Result of workCompletedUnlocked()
       // Wait for tasks to be pushed in the queue
       QueueCondition.wait(LockGuard, [&] {
-        return !EnableFlag || !Tasks.empty() ||
-               (WaitingForGroup != nullptr &&
+        return Stop || !Tasks.empty() ||
+               (WaitingForGroup &&
                 (workCompletedForGroup =
                      workCompletedUnlocked(WaitingForGroup)));
       });
-      // Exit condition
-      if (!EnableFlag && Tasks.empty())
+      if (Stop)
         return;
 
       // Ensure the 'workCompletedForGroup' boolean is evaluated.
-      if (!Tasks.empty() && WaitingForGroup != nullptr)
+      if (!Tasks.empty() && WaitingForGroup)
         workCompletedForGroup = workCompletedUnlocked(WaitingForGroup);
 
-      if (WaitingForGroup != nullptr && workCompletedForGroup)
+      if (WaitingForGroup && workCompletedForGroup)
         return;
       // Yeah, we have a task, grab it and release the lock on the queue
 
@@ -122,7 +171,7 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
       std::deque<std::pair<std::function<void()>,
                            ThreadPoolTaskGroup *>>::iterator it = Tasks.end();
 
-      if (WaitingForGroup != nullptr) {
+      if (WaitingForGroup) {
         // If we're waiting for a specific group to finish, give its tasks a
         // priority boost, so that the group finishes as soon as possible.
         it = llvm::find_if(Tasks, [WaitingForGroup](const auto &T) {
@@ -140,11 +189,11 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
 
       // Need to count active threads in each group separately, ActiveTasks
       // would never be 0 if waiting for another group inside a wait.
-      if (GroupOfTask != nullptr)
+      if (GroupOfTask)
         ++ActiveGroups[GroupOfTask]; // Increment or set to 1 if new item
     }
 #ifndef NDEBUG
-    if (CurrentThreadTaskGroups == nullptr)
+    if (!CurrentThreadTaskGroups)
       CurrentThreadTaskGroups = new std::vector<ThreadPoolTaskGroup *>;
     CurrentThreadTaskGroups->push_back(GroupOfTask);
 #endif
@@ -166,13 +215,13 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
       // Adjust `ActiveTasks`, in case someone waits on ThreadPool::wait()
       std::lock_guard<std::mutex> LockGuard(QueueLock);
       --ActiveTasks;
-      if (GroupOfTask != nullptr) {
+      if (GroupOfTask) {
         auto A = ActiveGroups.find(GroupOfTask);
         if (--(A->second) == 0)
           ActiveGroups.erase(A);
       }
       Notify = workCompletedUnlocked(GroupOfTask);
-      NotifyGroup = GroupOfTask != nullptr && Notify;
+      NotifyGroup = GroupOfTask && Notify;
     }
     // Notify task completion if this is the last active thread, in case
     // someone waits on ThreadPool::wait().
@@ -187,7 +236,7 @@ void ThreadPool::processTasks(ThreadPoolTaskGroup *WaitingForGroup) {
 }
 
 bool ThreadPool::workCompletedUnlocked(ThreadPoolTaskGroup *Group) const {
-  if (Group == nullptr)
+  if (!Group)
     return !ActiveTasks && Tasks.empty();
   return ActiveGroups.count(Group) == 0 &&
          !llvm::any_of(Tasks,
@@ -211,7 +260,7 @@ void ThreadPool::wait(ThreadPoolTaskGroup &Group) {
     return;
   }
   // Make sure to not deadlock waiting for oneself.
-  assert(CurrentThreadTaskGroups == nullptr ||
+  assert(!CurrentThreadTaskGroups ||
          !llvm::is_contained(*CurrentThreadTaskGroups, &Group));
   // Handle the case of recursive call from another task in a different group,
   // in which case process tasks while waiting to keep the thread busy and avoid
@@ -220,21 +269,19 @@ void ThreadPool::wait(ThreadPoolTaskGroup &Group) {
 }
 
 bool ThreadPool::isWorkerThread() const {
-  llvm::sys::ScopedReader LockGuard(ThreadsLock);
-  llvm::thread::id CurrentThreadId = llvm::this_thread::get_id();
-  for (const llvm::thread &Thread : Threads)
-    if (CurrentThreadId == Thread.get_id())
-      return true;
-  return false;
+  return llvm::this_thread::get_id() != MainThreadId);
 }
 
 // The destructor joins all threads, waiting for completion.
 ThreadPool::~ThreadPool() {
+  assert(!isWorkerThread() && "The ThreadPool shall be destroyed on the main thread!");
   {
     std::unique_lock<std::mutex> LockGuard(QueueLock);
-    EnableFlag = false;
+    Stop = true;
   }
   QueueCondition.notify_all();
+
+  // Wait for all threads to complete.
   llvm::sys::ScopedReader LockGuard(ThreadsLock);
   for (auto &Worker : Threads)
     Worker.join();
@@ -300,10 +347,6 @@ void ThreadPool::wait(ThreadPoolTaskGroup &) {
   // Simply wait for all, this works even if recursive (the running task
   // is already removed from the queue).
   wait();
-}
-
-bool ThreadPool::isWorkerThread() const {
-  report_fatal_error("LLVM compiled without multithreading");
 }
 
 ThreadPool::~ThreadPool() { wait(); }

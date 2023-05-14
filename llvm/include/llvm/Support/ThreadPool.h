@@ -110,10 +110,10 @@ public:
   // number of threads!
   unsigned getThreadCount() const { return MaxThreadCount; }
 
+private:
   /// Returns true if the current thread is a worker thread of this thread pool.
   bool isWorkerThread() const;
 
-private:
   /// This will be called when the Task is pushed (not executed) on the
   /// ThreadPool.
   static ThreadPoolContext *captureContext();
@@ -172,19 +172,7 @@ private:
     /// Wrap the Task in a std::function<void()> that sets the result of the
     /// corresponding future.
     auto R = createTaskAndFuture(Task);
-
-    int requestedThreads;
-    {
-      // Lock the queue and push the new task
-      std::unique_lock<std::mutex> LockGuard(QueueLock);
-
-      // Don't allow enqueueing after disabling the pool
-      assert(EnableFlag && "Queuing a thread during ThreadPool destruction");
-      Tasks.emplace_back(std::make_pair(std::move(R.first), Group));
-      requestedThreads = ActiveTasks + Tasks.size();
-    }
-    QueueCondition.notify_one();
-    grow(requestedThreads);
+    queueTask(R.first, Group);
     return R.second.share();
 
 #else // LLVM_ENABLE_THREADS Disabled
@@ -199,17 +187,15 @@ private:
   }
 
 #if LLVM_ENABLE_THREADS
-  // Grow to ensure that we have at least `requested` Threads, but do not go
-  // over MaxThreadCount.
-  void grow(int requested);
+  void queueTask(std::function<void()> Task, ThreadPoolTaskGroup *Group);
 
   void processTasks(ThreadPoolTaskGroup *WaitingForGroup);
 #endif
 
-  /// Threads in scheduled but not running.
+  /// Worker threads.
+  std::atomic<unsigned> AvailableThreads;
   std::vector<llvm::thread> Threads;
-  /// Lock protecting access to the Threads vector.
-  mutable llvm::sys::RWMutex ThreadsLock;
+  std::mutex ThreadsLock;
 
   /// Tasks waiting for execution in the pool.
   std::deque<std::pair<std::function<void()>, ThreadPoolTaskGroup *>> Tasks;
@@ -228,7 +214,7 @@ private:
 
 #if LLVM_ENABLE_THREADS // avoids warning for unused variable
   /// Signal for the destruction of the pool, asking thread to exit.
-  bool EnableFlag = true;
+  bool Stop = false;
 #endif
 
   const ThreadPoolStrategy Strategy;
@@ -275,6 +261,7 @@ public:
 
 private:
   ThreadPool &Pool;
+  ThreadPoolTaskGroup *Parent{};
 };
 
 // Instructs all new async functions created (but not executed) on this
