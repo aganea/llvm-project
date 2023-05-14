@@ -44,10 +44,6 @@ ThreadPool &llvm::getGlobalTP() {
   return *TP;
 }
 
-ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {
-  Parent = ActualProcessGroup;
-}
-
 #if LLVM_ENABLE_THREADS
 
 #ifdef _WIN32
@@ -88,7 +84,7 @@ void ThreadPool::queueTask(std::function<void()> Task,
   if (!Group)
     Group = ActualProcessGroup;
 
-  int requested;
+  unsigned requested;
   {
     // Lock the queue and push the new task
     std::unique_lock<std::mutex> LockGuard(QueueLock);
@@ -126,7 +122,7 @@ void ThreadPool::queueTask(std::function<void()> Task,
   }
 
   // Finally move our newly created threads into the thread pool.
-  llvm::sys::ScopedWriter LockGuard(ThreadsLock);
+  llvm::sys::SmartScopedWriter<true> LockGuard(ThreadsLock);
   Threads.reserve(Threads.size() + newThreads.size());
   std::move(newThreads.begin(), newThreads.end(), std::back_inserter(Threads));
 }
@@ -269,7 +265,7 @@ void ThreadPool::wait(ThreadPoolTaskGroup &Group) {
 }
 
 bool ThreadPool::isWorkerThread() const {
-  return llvm::this_thread::get_id() != MainThreadId);
+  return llvm::this_thread::get_id() != MainThreadId;
 }
 
 // The destructor joins all threads, waiting for completion.
@@ -282,7 +278,7 @@ ThreadPool::~ThreadPool() {
   QueueCondition.notify_all();
 
   // Wait for all threads to complete.
-  llvm::sys::ScopedReader LockGuard(ThreadsLock);
+  llvm::sys::SmartScopedReader<true> LockGuard(ThreadsLock);
   for (auto &Worker : Threads)
     Worker.join();
 }
@@ -356,3 +352,7 @@ ThreadPoolContext::ThreadPoolContext() {}
 ThreadPoolContext::~ThreadPoolContext() {}
 
 #endif
+
+ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {
+  Parent = ActualProcessGroup;
+}

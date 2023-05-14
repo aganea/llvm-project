@@ -195,7 +195,7 @@ private:
   /// Worker threads.
   std::atomic<unsigned> AvailableThreads;
   std::vector<llvm::thread> Threads;
-  std::mutex ThreadsLock;
+  llvm::sys::SmartRWMutex<true> ThreadsLock;
 
   /// Tasks waiting for execution in the pool.
   std::deque<std::pair<std::function<void()>, ThreadPoolTaskGroup *>> Tasks;
