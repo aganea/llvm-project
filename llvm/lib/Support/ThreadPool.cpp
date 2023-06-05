@@ -354,5 +354,7 @@ ThreadPoolContext::~ThreadPoolContext() {}
 #endif
 
 ThreadPoolTaskGroup::ThreadPoolTaskGroup() : Pool(getGlobalTP()) {
+#if LLVM_ENABLE_THREADS
   Parent = ActualProcessGroup;
+#endif
 }

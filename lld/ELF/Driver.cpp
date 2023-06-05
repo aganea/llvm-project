@@ -1534,9 +1534,9 @@ static void readConfigs(opt::InputArgList &args) {
             arg->getValue() + "'");
     llvm::setGlobalTPStrategy(hardware_concurrency(threads));
     config->thinLTOJobs = v;
-  } else if (parallel::strategy.compute_thread_count() > 16) {
+  } else if (llvm::getGlobalTPStrategy().compute_thread_count() > 16) {
     log("set maximum concurrency to 16, specify --threads= to change");
-    parallel::strategy = hardware_concurrency(16);
+    llvm::setGlobalTPStrategy(hardware_concurrency(16));
   }
   if (auto *arg = args.getLastArg(OPT_thinlto_jobs_eq))
     config->thinLTOJobs = arg->getValue();
