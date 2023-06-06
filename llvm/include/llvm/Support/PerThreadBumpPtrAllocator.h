@@ -28,7 +28,7 @@ class PerThreadAllocator
     : public AllocatorBase<PerThreadAllocator<AllocatorTy>> {
 public:
   PerThreadAllocator()
-      : NumOfAllocators(parallel::getThreadCount()),
+      : NumOfAllocators(llvm::getGlobalTP().getThreadCount()),
         Allocators(std::make_unique<AllocatorTy[]>(NumOfAllocators)) {}
 
   /// \defgroup Methods which could be called asynchronously:
@@ -41,21 +41,21 @@ public:
 
   /// Allocate \a Size bytes of \a Alignment aligned memory.
   void *Allocate(size_t Size, size_t Alignment) {
-    assert(getThreadIndex() < NumOfAllocators);
-    return Allocators[getThreadIndex()].Allocate(Size, Alignment);
+    assert(llvm::getGlobalTPThreadIndex() < NumOfAllocators);
+    return Allocators[llvm::getGlobalTPThreadIndex()].Allocate(Size, Alignment);
   }
 
   /// Deallocate \a Ptr to \a Size bytes of memory allocated by this
   /// allocator.
   void Deallocate(const void *Ptr, size_t Size, size_t Alignment) {
-    assert(getThreadIndex() < NumOfAllocators);
-    return Allocators[getThreadIndex()].Deallocate(Ptr, Size, Alignment);
+    assert(llvm::getGlobalTPThreadIndex() < NumOfAllocators);
+    return Allocators[llvm::getGlobalTPThreadIndex()].Deallocate(Ptr, Size, Alignment);
   }
 
   /// Return allocator corresponding to the current thread.
   AllocatorTy &getThreadLocalAllocator() {
-    assert(getThreadIndex() < NumOfAllocators);
-    return Allocators[getThreadIndex()];
+    assert(llvm::getGlobalTPThreadIndex() < NumOfAllocators);
+    return Allocators[llvm::getGlobalTPThreadIndex()];
   }
 
   // Return number of used allocators.
