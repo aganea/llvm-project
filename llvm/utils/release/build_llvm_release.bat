@@ -187,7 +187,7 @@ set cmake_flags=^
   -DLIBXML2_INCLUDE_DIRS=%libxmldir%/include/libxml2 ^
   -DLIBXML2_LIBRARIES=%libxmldir%/lib/libxml2s.lib
 
-cmake -GNinja %cmake_flags% ..\llvm-project\llvm || exit /b 1
+cmake -GNinja %cmake_flags% ..\..\llvm-project\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 REM ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
 REM ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
@@ -209,7 +209,7 @@ set cmake_flags=%all_cmake_flags:\=/%
 
 mkdir build32
 cd build32
-cmake -GNinja %cmake_flags% ..\llvm-project\llvm || exit /b 1
+cmake -GNinja %cmake_flags% ..\..\llvm-project\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 REM ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
 REM ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
@@ -243,7 +243,7 @@ set cmake_flags=^
   -DLIBXML2_INCLUDE_DIRS=%libxmldir%/include/libxml2 ^
   -DLIBXML2_LIBRARIES=%libxmldir%/lib/libxml2s.lib
 
-cmake -GNinja %cmake_flags% ..\llvm-project\llvm || exit /b 1
+cmake -GNinja %cmake_flags% ..\..\llvm-project\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 ninja check-openmp || ninja check-openmp || ninja check-openmp || exit /b 1
 ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
@@ -269,7 +269,7 @@ set cmake_flags=%all_cmake_flags:\=/%
 mkdir build64
 cd build64
 call :do_generate_profile || exit /b 1
-cmake -GNinja %cmake_flags% %cmake_profile_flag% ..\llvm-project\llvm || exit /b 1
+cmake -GNinja %cmake_flags% %cmake_profile_flag% ..\..\llvm-project\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
 ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
@@ -309,7 +309,7 @@ REM We need to build stage0 compiler-rt with clang-cl (msvc lacks some builtins)
 cmake -GNinja %cmake_flags% ^
   -DCMAKE_C_COMPILER=clang-cl.exe ^
   -DCMAKE_CXX_COMPILER=clang-cl.exe ^
-  ..\llvm-project\llvm || exit /b 1
+  ..\..\llvm-project\llvm || exit /b 1
 ninja || exit /b 1
 ::ninja check-llvm || exit /b 1
 ::ninja check-clang || exit /b 1
@@ -334,7 +334,7 @@ set cmake_flags=%all_cmake_flags:\=/%
 
 mkdir build_arm64
 cd build_arm64
-cmake -GNinja %cmake_flags% ..\llvm-project\llvm || exit /b 1
+cmake -GNinja %cmake_flags% ..\..\llvm-project\llvm || exit /b 1
 ninja || exit /b 1
 REM Check but do not fail on errors.
 ninja check-lldb
@@ -404,7 +404,7 @@ REM Build Clang with instrumentation.
 mkdir instrument
 cd instrument
 cmake -GNinja %cmake_flags% -DLLVM_TARGETS_TO_BUILD=Native ^
-  -DLLVM_BUILD_INSTRUMENTED=IR ..\..\llvm-project\llvm || exit /b 1
+  -DLLVM_BUILD_INSTRUMENTED=IR ..\..\..\llvm-project\llvm || exit /b 1
 ninja clang || ninja clang || ninja clang || exit /b 1
 set instrumented_clang=%cd:\=/%/bin/clang-cl.exe
 cd ..
@@ -416,7 +416,7 @@ cmake -GNinja %cmake_flags% ^
   -DCMAKE_CXX_COMPILER=%instrumented_clang% ^
   -DLLVM_ENABLE_PROJECTS=clang ^
   -DLLVM_TARGETS_TO_BUILD=Native ^
-  ..\..\llvm-project\llvm || exit /b 1
+  ..\..\..\llvm-project\llvm || exit /b 1
 REM Drop profiles generated from running cmake; those are not representative.
 del ..\instrument\profiles\*.profraw
 ninja tools/clang/lib/Sema/CMakeFiles/obj.clangSema.dir/Sema.cpp.obj
