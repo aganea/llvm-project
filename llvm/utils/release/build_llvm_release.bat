@@ -106,8 +106,8 @@ echo Using VS devcmd: %vsdevcmd%
 :: start echoing what we do
 @echo on
 
-set python32_dir=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python310-32
-set python64_dir=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python310
+set python32_dir=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311-32
+set python64_dir=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311
 set pythonarm64_dir=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python311-arm64
 
 set revision=llvmorg-%version%
@@ -127,15 +127,16 @@ mkdir %build_dir%
 cd %build_dir% || exit /b 1
 
 echo Checking out %revision%
-curl -L https://github.com/llvm/llvm-project/archive/%revision%.zip -o src.zip || exit /b 1
-7z x src.zip || exit /b 1
-mv llvm-project-* llvm-project || exit /b 1
+rem curl -L https://github.com/llvm/llvm-project/archive/%revision%.zip -o src.zip || exit /b 1
+rem 7z x src.zip || exit /b 1
+rem mv llvm-project-* llvm-project || exit /b 1
 
 curl -O https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.9.12/libxml2-v2.9.12.tar.gz || exit /b 1
 tar zxf libxml2-v2.9.12.tar.gz
 
 REM Setting CMAKE_CL_SHOWINCLUDES_PREFIX to work around PR27226.
 REM Common flags for all builds.
+set common_compiler_flags=-DLIBXML_STATIC
 set common_cmake_flags=^
   -DCMAKE_BUILD_TYPE=Release ^
   -DLLVM_ENABLE_ASSERTIONS=OFF ^
@@ -150,8 +151,8 @@ set common_cmake_flags=^
   -DLLVM_ENABLE_LIBXML2=FORCE_ON ^
   -DLLDB_ENABLE_LIBXML2=OFF ^
   -DCLANG_ENABLE_LIBXML2=OFF ^
-  -DCMAKE_C_FLAGS="-DLIBXML_STATIC" ^
-  -DCMAKE_CXX_FLAGS="-DLIBXML_STATIC" ^
+  -DCMAKE_C_FLAGS="%common_compiler_flags%" ^
+  -DCMAKE_CXX_FLAGS="%common_compiler_flags%" ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;compiler-rt;lldb;openmp"
 
 set cmake_profile_flag=""
@@ -421,7 +422,10 @@ ninja tools/clang/lib/Sema/CMakeFiles/obj.clangSema.dir/Sema.cpp.obj
 cd ..
 set profile=%cd:\=/%/profile.profdata
 %stage0_bin_dir%\llvm-profdata merge -output=%profile% instrument\profiles\*.profraw || exit /b 1
-set cmake_profile_flag=-DLLVM_PROFDATA_FILE=%profile%
+set common_compiler_flags=%common_compiler_flags% -Wno-backend-plugin
+set cmake_profile_flag=-DLLVM_PROFDATA_FILE=%profile% ^
+  -DCMAKE_C_FLAGS="%common_compiler_flags%" ^
+  -DCMAKE_CXX_FLAGS="%common_compiler_flags%"
 exit /b 0
 
 ::=============================================================================
