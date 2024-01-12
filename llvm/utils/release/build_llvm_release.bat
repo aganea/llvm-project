@@ -245,6 +245,7 @@ set cmake_flags=^
 
 cmake -GNinja %cmake_flags% ..\..\llvm-project\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
+ninja check-lldb || ninja check-lldb || ninja check-lldb || exit /b 1
 ninja check-openmp || ninja check-openmp || ninja check-openmp || exit /b 1
 ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
 ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
