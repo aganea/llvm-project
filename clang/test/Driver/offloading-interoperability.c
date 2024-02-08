@@ -1,8 +1,8 @@
 //
 // Verify that CUDA device commands do not get OpenMP flags.
 //
-// RUN: %clang -### -x cuda --target=powerpc64le-linux-gnu -std=c++11 --cuda-gpu-arch=sm_35 -nocudainc -nocudalib -fopenmp=libomp %s 2>&1 \
-// RUN:   | FileCheck %s --check-prefix NO-OPENMP-FLAGS-FOR-CUDA-DEVICE
+// RUN: %clang -### -x cuda --target=powerpc64le-linux-gnu -std=c++11 --cuda-gpu-arch=sm_35 -nocudainc -nocudalib -fopenmp=libomp \
+// RUN:   -fno-integrated-cc1%s 2>&1 | FileCheck %s --check-prefix NO-OPENMP-FLAGS-FOR-CUDA-DEVICE
 //
 // NO-OPENMP-FLAGS-FOR-CUDA-DEVICE:      "-cc1" "-triple" "nvptx64-nvidia-cuda"
 // NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-NOT:  -fopenmp
@@ -11,3 +11,18 @@
 // NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-NEXT: "-cc1" "-triple" "powerpc64le-unknown-linux-gnu"
 // NO-OPENMP-FLAGS-FOR-CUDA-DEVICE:      -fopenmp
 // NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-NEXT: {{ld(.exe)?"}} {{.*}}"-m" "elf64lppc"
+
+//
+// Same as above, but ensure things work the same when executing in-process.
+//
+// RUN: not %clang -### -x cuda --target=powerpc64le-linux-gnu -std=c++11 --cuda-gpu-arch=sm_35 -fopenmp=libomp \
+// RUN:   -fintegrated-cc1 %s 2>&1 | FileCheck %s --check-prefix NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS
+//
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS:      "-cc1" "-triple" "nvptx64-nvidia-cuda"
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NOT:  -fopenmp
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NEXT: ptxas" "-m64"
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NEXT: fatbinary"{{( "--cuda")?}} "-64"
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NEXT:  (in-process)
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NEXT: "-cc1" "-triple" "powerpc64le-unknown-linux-gnu"
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS:      -fopenmp
+// NO-OPENMP-FLAGS-FOR-CUDA-DEVICE-IN-PROCESS-NEXT: {{ld(.exe)?"}} {{.*}}"-m" "elf64lppc"

@@ -99,6 +99,7 @@ static_library("Support") {
     "KnownBits.cpp",
     "LEB128.cpp",
     "LineIterator.cpp",
+    "LLVMDriver.cpp",
     "Locale.cpp",
     "LockFileManager.cpp",
     "MD5.cpp",

@@ -72,7 +72,7 @@ LLD_HAS_DRIVER(mingw)
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(wasm)
 
-int lld_main(int argc, char **argv, const llvm::ToolContext &) {
+int lld_main(int argc, char **argv, const llvm::ToolContext &TC) {
   sys::Process::UseANSIEscapeCodes(true);
 
   if (::getenv("FORCE_LLD_DIAGNOSTICS_CRASH")) {
@@ -88,7 +88,7 @@ int lld_main(int argc, char **argv, const llvm::ToolContext &) {
   if (!inTestVerbosity()) {
     int r =
         lld::unsafeLldMain(args, llvm::outs(), llvm::errs(), LLD_ALL_DRIVERS,
-                           /*exitEarly=*/true);
+                           /*exitEarly=*/!TC.Cleanup);
     return r;
   }
 

@@ -197,10 +197,9 @@ static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
 
 static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
                           const llvm::ToolContext &ToolContext) {
-  // If we call the cc1 tool from the clangDriver library (through
-  // Driver::CC1Main), we need to clean up the options usage count. The options
-  // are currently global, and they might have been used previously by the
-  // driver.
+  // If we call the cc1 tool in-process from the clangDriver library, we need
+  // to clean up the options usage count. The options are currently global, and
+  // they might have been used previously by the driver.
   llvm::cl::ResetAllOptionOccurrences();
 
   llvm::BumpPtrAllocator A;
@@ -300,7 +299,7 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
                                  &llvm::errs());
   }
 
-  std::string Path = GetExecutablePath(ToolContext.Path, CanonicalPrefixes);
+  std::string Path = GetExecutablePath(Argv[0], CanonicalPrefixes);
 
   // Whether the cc1 tool should be called inside the current process, or if we
   // should spawn a new clang subprocess (old behavior).
@@ -337,13 +336,7 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
   Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
-  // If -canonical-prefixes is set, GetExecutablePath will have resolved Path
-  // to the llvm driver binary, not clang. In this case, we need to use
-  // PrependArg which should be clang-*. Checking just CanonicalPrefixes is
-  // safe even in the normal case because PrependArg will be null so
-  // setPrependArg will be a no-op.
-  if (ToolContext.NeedsPrependArg || CanonicalPrefixes)
-    TheDriver.setPrependArg(ToolContext.PrependArg);
+  TheDriver.setToolContext(ToolContext);
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
 
@@ -351,10 +344,8 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
     return 1;
 
   if (!UseNewCC1Process) {
-    TheDriver.CC1Main = [ToolContext](SmallVectorImpl<const char *> &ArgV) {
-      return ExecuteCC1Tool(ArgV, ToolContext);
-    };
-    // Ensure the CC1Command actually catches cc1 crashes
+    TheDriver.InProcess = true;
+    // Ensure the InProcessCommand actually catches cc1 crashes
     llvm::CrashRecoveryContext::Enable();
   }
 

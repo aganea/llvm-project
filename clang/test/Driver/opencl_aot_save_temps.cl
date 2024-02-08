@@ -1,8 +1,13 @@
-// RUN: %clang -x cl --save-temps -c -### %s 2>&1 | FileCheck %s
+// RUN: %clang -x cl --save-temps -c -fintegrated-cc1 -### %s 2>&1 | FileCheck %s
+// RUN: %clang -x cl --save-temps -c -fno-integrated-cc1 -### %s 2>&1 | FileCheck %s -check-prefix=CHECK-PHASES-NO-INTEGRATED
 // RUN: %clang -x cl -ccc-print-phases -c %s 2>&1 | FileCheck %s -check-prefix=CHECK-PHASES
 
 // CHECK: "-o" "[[CLI_NAME:.+]].cli" "-x" "cl"
-// CHECK-NEXT:  "-o" "[[CLI_NAME]].bc" "-x" "cl-cpp-output"{{.*}}"[[CLI_NAME:.+]].cli"
+// CHECK-NEXT:  (in-process)
+// CHECK-NEXT: "-o" "[[CLI_NAME]].bc" "-x" "cl-cpp-output"{{.*}}"[[CLI_NAME:.+]].cli"
+
+// CHECK-PHASES-NO-INTEGRATED: "-o" "[[CLI_NAME:.+]].cli" "-x" "cl"
+// CHECK-PHASES-NO-INTEGRATED-NEXT: "-o" "[[CLI_NAME]].bc" "-x" "cl-cpp-output"{{.*}}"[[CLI_NAME:.+]].cli"
 
 // CHECK-PHASES: 0: input, {{.*}}, cl
 // CHECK-PHASES: 1: preprocessor, {0}, cl-cpp-output

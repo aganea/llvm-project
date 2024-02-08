@@ -40,9 +40,9 @@ Command::Command(const Action &Source, const Tool &Creator,
                  ResponseFileSupport ResponseSupport, const char *Executable,
                  const llvm::opt::ArgStringList &Arguments,
                  ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                 const char *PrependArg)
+                 llvm::ToolContext ToolContext)
     : Source(Source), Creator(Creator), ResponseSupport(ResponseSupport),
-      Executable(Executable), PrependArg(PrependArg), Arguments(Arguments) {
+      Executable(Executable), ToolContext(ToolContext), Arguments(Arguments) {
   for (const auto &II : Inputs)
     if (II.isFilename())
       InputInfoList.push_back(II);
@@ -133,11 +133,19 @@ void Command::writeResponseFile(raw_ostream &OS) const {
 
 void Command::buildArgvForResponseFile(
     llvm::SmallVectorImpl<const char *> &Out) const {
+  // If we have a ToolContext, prefer using its execute information.
+  if (getToolContext().Path) {
+    Out.push_back(getToolContext().Path);
+    if (getToolContext().NeedsPrependArg)
+      Out.push_back(getToolContext().PrependArg);
+  } else {
+    Out.push_back(Executable);
+  }
+
   // When not a file list, all arguments are sent to the response file.
   // This leaves us to set the argv to a single parameter, requesting the tool
   // to read the response file.
   if (ResponseSupport.ResponseKind != ResponseFileSupport::RF_FileList) {
-    Out.push_back(Executable);
     Out.push_back(ResponseFileFlag.c_str());
     return;
   }
@@ -145,10 +153,6 @@ void Command::buildArgvForResponseFile(
   llvm::StringSet<> Inputs;
   for (const auto *InputName : InputFileList)
     Inputs.insert(InputName);
-  Out.push_back(Executable);
-
-  if (PrependArg)
-    Out.push_back(PrependArg);
 
   // In a file list, build args vector ignoring parameters that will go in the
   // response file (elements of the InputFileList vector)
@@ -208,16 +212,26 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
                     CrashReportInfo *CrashInfo) const {
   // Always quote the exe.
   OS << ' ';
-  llvm::sys::printArg(OS, Executable, /*Quote=*/true);
+
+  // If we have a ToolContext, prefer using its execute information.
+  if (getToolContext().Path) {
+    llvm::sys::printArg(OS, getToolContext().Path, /*Quote=*/true);
+    if (getToolContext().NeedsPrependArg) {
+      OS << ' ';
+      llvm::sys::printArg(OS, getToolContext().PrependArg, /*Quote=*/true);
+    }
+  } else {
+    llvm::sys::printArg(OS, Executable, /*Quote=*/true);
+  }
 
   ArrayRef<const char *> Args = Arguments;
   SmallVector<const char *, 128> ArgsRespFile;
   if (ResponseFile != nullptr) {
     buildArgvForResponseFile(ArgsRespFile);
-    Args = ArrayRef<const char *>(ArgsRespFile).slice(1); // no executable name
-  } else if (PrependArg) {
-    OS << ' ';
-    llvm::sys::printArg(OS, PrependArg, /*Quote=*/true);
+
+    // Slice the executable name and the tool argument, if it exists.
+    unsigned Slice = getToolContext().NeedsPrependArg ? 2 : 1;
+    Args = ArrayRef<const char *>(ArgsRespFile).slice(Slice);
   }
 
   bool HaveCrashVFS = CrashInfo && !CrashInfo->VFSPath.empty();
@@ -329,9 +343,14 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   SmallVector<const char *, 128> Argv;
   if (ResponseFile == nullptr) {
-    Argv.push_back(Executable);
-    if (PrependArg)
-      Argv.push_back(PrependArg);
+    // If we have a ToolContext, prefer using its execute information.
+    if (getToolContext().Path) {
+      Argv.push_back(getToolContext().Path);
+      if (getToolContext().NeedsPrependArg)
+        Argv.push_back(getToolContext().PrependArg);
+    } else {
+      Argv.push_back(Executable);
+    }
     Argv.append(Arguments.begin(), Arguments.end());
     Argv.push_back(nullptr);
   } else {
@@ -378,47 +397,60 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
       else
         RedirectFilesOptional.push_back(std::nullopt);
 
-    return llvm::sys::ExecuteAndWait(Executable, Args, Env,
+    return llvm::sys::ExecuteAndWait(Args[0], Args, Env,
                                      ArrayRef(RedirectFilesOptional),
                                      /*secondsToWait=*/0, /*memoryLimit=*/0,
                                      ErrMsg, ExecutionFailed, &ProcStat);
   }
 
-  return llvm::sys::ExecuteAndWait(Executable, Args, Env, Redirects,
+  return llvm::sys::ExecuteAndWait(Args[0], Args, Env, Redirects,
                                    /*secondsToWait*/ 0, /*memoryLimit*/ 0,
                                    ErrMsg, ExecutionFailed, &ProcStat);
 }
 
-CC1Command::CC1Command(const Action &Source, const Tool &Creator,
-                       ResponseFileSupport ResponseSupport,
-                       const char *Executable,
-                       const llvm::opt::ArgStringList &Arguments,
-                       ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                       const char *PrependArg)
+InProcessCommand::InProcessCommand(const Action &Source, const Tool &Creator,
+                                   ResponseFileSupport ResponseSupport,
+                                   const char *Executable,
+                                   const llvm::opt::ArgStringList &Arguments,
+                                   ArrayRef<InputInfo> Inputs,
+                                   ArrayRef<InputInfo> Outputs,
+                                   llvm::ToolContext ToolContext)
     : Command(Source, Creator, ResponseSupport, Executable, Arguments, Inputs,
-              Outputs, PrependArg) {
+              Outputs, ToolContext) {
   InProcess = true;
 }
 
-void CC1Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
-                       CrashReportInfo *CrashInfo) const {
+void InProcessCommand::Print(raw_ostream &OS, const char *Terminator,
+                             bool Quote, CrashReportInfo *CrashInfo) const {
   if (InProcess)
     OS << " (in-process)\n";
   Command::Print(OS, Terminator, Quote, CrashInfo);
 }
 
-int CC1Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
-                        std::string *ErrMsg, bool *ExecutionFailed) const {
-  // FIXME: Currently, if there're more than one job, we disable
-  // -fintegrate-cc1. If we're no longer a integrated-cc1 job, fallback to
-  // out-of-process execution. See discussion in https://reviews.llvm.org/D74447
+int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
+                              std::string *ErrMsg,
+                              bool *ExecutionFailed) const {
+  // If we're no longer a in-process job, fallback to out-of-process execution.
   if (!InProcess)
+    return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
+
+  SmallVector<const char *, 128> Argv;
+
+  // If we have a ToolContext, prefer using its execute information.
+  if (getToolContext().Path) {
+    Argv.push_back(getToolContext().Path);
+    if (getToolContext().NeedsPrependArg)
+      Argv.push_back(getToolContext().PrependArg);
+  } else {
+    Argv.push_back(getExecutable());
+  }
+
+  // Ensure the in-process tool is callable. If not, call it out-of-process.
+  if (getToolContext().hasInProcessTool(Argv))
     return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
 
   PrintFileNames();
 
-  SmallVector<const char *, 128> Argv;
-  Argv.push_back(getExecutable());
   Argv.append(getArguments().begin(), getArguments().end());
   Argv.push_back(nullptr);
   Argv.pop_back(); // The terminating null element shall not be part of the
@@ -433,21 +465,21 @@ int CC1Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   CRC.DumpStackAndCleanupOnFailure = true;
 
   const void *PrettyState = llvm::SavePrettyStackState();
-  const Driver &D = getCreator().getToolChain().getDriver();
 
   int R = 0;
   // Enter ExecuteCC1Tool() instead of starting up a new process
-  if (!CRC.RunSafely([&]() { R = D.CC1Main(Argv); })) {
+  if (!CRC.RunSafely([&]() { R = getToolContext().callToolMain(Argv); })) {
     llvm::RestorePrettyStackState(PrettyState);
     return CRC.RetCode;
   }
   return R;
 }
 
-void CC1Command::setEnvironment(llvm::ArrayRef<const char *> NewEnvironment) {
+void InProcessCommand::setEnvironment(
+    llvm::ArrayRef<const char *> NewEnvironment) {
   // We don't support set a new environment when calling into ExecuteCC1Tool()
   llvm_unreachable(
-      "The CC1Command doesn't support changing the environment vars!");
+      "The InProcessCommand doesn't support changing the environment vars!");
 }
 
 void JobList::Print(raw_ostream &OS, const char *Terminator, bool Quote,

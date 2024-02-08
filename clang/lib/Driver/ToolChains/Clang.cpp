@@ -5325,7 +5325,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
     C.addCommand(std::make_unique<Command>(
         JA, *this, ResponseFileSupport::AtFileUTF8(), D.getClangProgramPath(),
-        CmdArgs, Inputs, Output, D.getPrependArg()));
+        CmdArgs, Inputs, Output, D.getToolContext()));
     return;
   }
 
@@ -5335,7 +5335,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // We normally speed up the clang process a bit by skipping destructors at
   // exit, but when we're generating diagnostics we can rely on some of the
   // cleanup.
-  if (!C.isForDiagnostics())
+  if (!C.isForDiagnostics() &&
+      !(C.getDriver().InProcess && C.getDriver().getToolContext().Cleanup))
     CmdArgs.push_back("-disable-free");
   CmdArgs.push_back("-clear-ast-before-backend");
 
@@ -7926,15 +7927,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Input.getInputArg().renderAsInput(Args, CmdArgs);
   }
 
-  if (D.CC1Main && !D.CCGenDiagnostics) {
+  if (D.InProcess && !D.CCGenDiagnostics) {
+    llvm::ToolContext TC = D.getToolContext();
+    TC.Cleanup = true;
     // Invoke the CC1 directly in this process
-    C.addCommand(std::make_unique<CC1Command>(
+    C.addCommand(std::make_unique<InProcessCommand>(
         JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+        Output, TC));
   } else {
     C.addCommand(std::make_unique<Command>(
         JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+        Output, D.getToolContext()));
   }
 
   // Make the compile command echo its inputs for /showFilenames.
@@ -8701,15 +8704,17 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back(Input.getFilename());
 
   const char *Exec = getToolChain().getDriver().getClangProgramPath();
-  if (D.CC1Main && !D.CCGenDiagnostics) {
+  if (D.InProcess && !D.CCGenDiagnostics) {
+    llvm::ToolContext TC = D.getToolContext();
+    TC.Cleanup = true;
     // Invoke cc1as directly in this process.
-    C.addCommand(std::make_unique<CC1Command>(
+    C.addCommand(std::make_unique<InProcessCommand>(
         JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+        Output, TC));
   } else {
     C.addCommand(std::make_unique<Command>(
         JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+        Output, D.getToolContext()));
   }
 }
 

@@ -26,6 +26,14 @@ constexpr char subcommands[] =
 #include "LLVMDriverTools.def"
     ;
 
+static ArrayRef<std::pair<StringRef, ToolContext::MainFn>> knownMainFns() {
+  static constexpr std::pair<StringRef, ToolContext::MainFn> MainFns[] = {
+#define LLVM_DRIVER_TOOL(tool, entry) {tool, entry##_main},
+#include "LLVMDriverTools.def"
+  };
+  return MainFns;
+}
+
 static void printHelpMessage() {
   llvm::outs() << "OVERVIEW: llvm toolchain driver\n\n"
                << "USAGE: llvm [subcommand] [options]\n\n"
@@ -36,51 +44,23 @@ static void printHelpMessage() {
                << "OPTIONS:\n\n  --help - Display this message";
 }
 
-static int findTool(int Argc, char **Argv, const char *Argv0) {
-  if (!Argc) {
+static int findTool(int Argc, char **Argv, const ToolContext &TC) {
+  if (!Argc || StringRef(Argv[0]) == "--help") {
     printHelpMessage();
-    return 1;
+    return (int)!Argc;
   }
 
-  StringRef ToolName = Argv[0];
-
-  if (ToolName == "--help") {
-    printHelpMessage();
-    return 0;
-  }
-
-  StringRef Stem = sys::path::stem(ToolName);
-  auto Is = [=](StringRef Tool) {
-    auto IsImpl = [=](StringRef Stem) {
-      auto I = Stem.rfind_insensitive(Tool);
-      return I != StringRef::npos && (I + Tool.size() == Stem.size() ||
-                                      !llvm::isAlnum(Stem[I + Tool.size()]));
-    };
-    for (StringRef S : {Stem, sys::path::filename(ToolName)})
-      if (IsImpl(S))
-        return true;
-    return false;
-  };
-
-  auto MakeDriverArgs = [=]() -> llvm::ToolContext {
-    if (ToolName != Argv0)
-      return {Argv0, ToolName.data(), true};
-    return {Argv0, sys::path::filename(Argv0).data(), false};
-  };
-
-#define LLVM_DRIVER_TOOL(tool, entry)                                          \
-  if (Is(tool))                                                                \
-    return entry##_main(Argc, Argv, MakeDriverArgs());
-#include "LLVMDriverTools.def"
-
-  if (Is("llvm") || Argv0 == Argv[0])
-    return findTool(Argc - 1, Argv + 1, Argv0);
+  int R = TC.callToolMain(ArrayRef(Argv, Argc));
+  if (R != -1)
+    return R;
 
   printHelpMessage();
   return 1;
 }
 
 int main(int Argc, char **Argv) {
-  llvm::InitLLVM X(Argc, Argv);
-  return findTool(Argc, Argv, Argv[0]);
+  InitLLVM X(Argc, Argv);
+  ToolContext TC{Argv[0], nullptr, /*NeedsPrependArg=*/false, /*Cleanup=*/false,
+                 knownMainFns};
+  return findTool(Argc, Argv, TC);
 }

@@ -416,11 +416,23 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     linkPath = TC.GetProgramPath(Linker.str().c_str());
   }
 
-  auto LinkCmd = std::make_unique<Command>(
-      JA, *this, ResponseFileSupport::AtFileUTF16(),
-      Args.MakeArgString(linkPath), CmdArgs, Inputs, Output);
-  if (!Environment.empty())
-    LinkCmd->setEnvironment(Environment);
+  std::unique_ptr<clang::driver::Command> LinkCmd;
+  std::optional<llvm::ToolContext> LinkerContext;
+  if (C.getDriver().InProcess && !Linker.equals_insensitive("link")) {
+    LinkerContext = C.getDriver().getToolContext().newContext(Linker);
+  }
+  if (LinkerContext) {
+    LinkerContext->Cleanup = true;
+    LinkCmd = std::make_unique<InProcessCommand>(
+        JA, *this, ResponseFileSupport::AtFileUTF16(),
+        Args.MakeArgString(linkPath), CmdArgs, Inputs, Output, *LinkerContext);
+  } else {
+    LinkCmd = std::make_unique<Command>(
+        JA, *this, ResponseFileSupport::AtFileUTF16(),
+        Args.MakeArgString(linkPath), CmdArgs, Inputs, Output);
+    if (!Environment.empty())
+      LinkCmd->setEnvironment(Environment);
+  }
   C.addCommand(std::move(LinkCmd));
 }
 

@@ -201,10 +201,9 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
       ClangExecutable(ClangExecutable), SysRoot(DEFAULT_SYSROOT),
       DriverTitle(Title), CCCPrintBindings(false), CCPrintOptions(false),
       CCLogDiagnostics(false), CCGenDiagnostics(false),
-      CCPrintProcessStats(false), CCPrintInternalStats(false),
-      TargetTriple(TargetTriple), Saver(Alloc), PrependArg(nullptr),
-      CheckInputsExist(true), ProbePrecompiled(true),
-      SuppressMissingInputWarning(false) {
+      CCPrintProcessStats(false), CCPrintInternalStats(false), InProcess(false),
+      TargetTriple(TargetTriple), Saver(Alloc), CheckInputsExist(true),
+      ProbePrecompiled(true), SuppressMissingInputWarning(false) {
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
     this->VFS = llvm::vfs::getRealFileSystem();
@@ -4943,9 +4942,9 @@ void Driver::BuildJobs(Compilation &C) const {
                        /*TargetDeviceOffloadKind*/ Action::OFK_None);
   }
 
-  // If we have more than one job, then disable integrated-cc1 for now. Do this
-  // also when we need to report process execution statistics.
-  if (C.getJobs().size() > 1 || CCPrintProcessStats)
+  // Disable in-process compilation if we need to report process execution
+  // statistics.
+  if (CCPrintProcessStats)
     for (auto &J : C.getJobs())
       J.InProcess = false;
 

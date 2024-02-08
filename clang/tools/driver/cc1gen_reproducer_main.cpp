@@ -113,7 +113,7 @@ static std::string generateReproducerMetaInfo(const ClangInvocationInfo &Info) {
 static std::optional<driver::Driver::CompilationDiagnosticReport>
 generateReproducerForInvocationArguments(ArrayRef<const char *> Argv,
                                          const ClangInvocationInfo &Info,
-                                         const llvm::ToolContext &ToolContext) {
+                                         llvm::ToolContext ToolContext) {
   using namespace driver;
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(Argv[0]);
 
@@ -125,8 +125,7 @@ generateReproducerForInvocationArguments(ArrayRef<const char *> Argv,
   Driver TheDriver(ToolContext.Path, llvm::sys::getDefaultTargetTriple(),
                    Diags);
   TheDriver.setTargetAndMode(TargetAndMode);
-  if (ToolContext.NeedsPrependArg)
-    TheDriver.setPrependArg(ToolContext.PrependArg);
+  TheDriver.setToolContext(ToolContext);
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Argv));
   if (C && !C->containsError()) {

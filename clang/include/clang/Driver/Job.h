@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Option/Option.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Program.h"
 #include <memory>
 #include <optional>
@@ -116,8 +117,8 @@ class Command {
   /// The executable to run.
   const char *Executable;
 
-  /// Optional argument to prepend.
-  const char *PrependArg;
+  /// Calling context when using the clang tool in llvm-driver.
+  llvm::ToolContext ToolContext;
 
   /// The list of program arguments (not including the implicit first
   /// argument, which will be the executable).
@@ -172,8 +173,7 @@ public:
   Command(const Action &Source, const Tool &Creator,
           ResponseFileSupport ResponseSupport, const char *Executable,
           const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
-          ArrayRef<InputInfo> Outputs = std::nullopt,
-          const char *PrependArg = nullptr);
+          ArrayRef<InputInfo> Outputs = std::nullopt, llvm::ToolContext = {});
   // FIXME: This really shouldn't be copyable, but is currently copied in some
   // error handling in Driver::generateCompilationDiagnostics.
   Command(const Command &) = default;
@@ -234,20 +234,22 @@ public:
     return ProcStat;
   }
 
+  const llvm::ToolContext &getToolContext() const { return ToolContext; }
+
 protected:
   /// Optionally print the filenames to be compiled
   void PrintFileNames() const;
 };
 
 /// Use the CC1 tool callback when available, to avoid creating a new process
-class CC1Command : public Command {
+class InProcessCommand : public Command {
 public:
-  CC1Command(const Action &Source, const Tool &Creator,
-             ResponseFileSupport ResponseSupport, const char *Executable,
-             const llvm::opt::ArgStringList &Arguments,
-             ArrayRef<InputInfo> Inputs,
-             ArrayRef<InputInfo> Outputs = std::nullopt,
-             const char *PrependArg = nullptr);
+  InProcessCommand(const Action &Source, const Tool &Creator,
+                   ResponseFileSupport ResponseSupport, const char *Executable,
+                   const llvm::opt::ArgStringList &Arguments,
+                   ArrayRef<InputInfo> Inputs,
+                   ArrayRef<InputInfo> Outputs = std::nullopt,
+                   llvm::ToolContext = {});
 
   void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
              CrashReportInfo *CrashInfo = nullptr) const override;

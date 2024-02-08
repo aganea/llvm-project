@@ -26,6 +26,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/StringSaver.h"
 
 #include <map>
@@ -273,13 +274,9 @@ public:
   LLVM_PREFERRED_TYPE(bool)
   unsigned CCPrintInternalStats : 1;
 
-  /// Pointer to the ExecuteCC1Tool function, if available.
-  /// When the clangDriver lib is used through clang.exe, this provides a
-  /// shortcut for executing the -cc1 command-line directly, in the same
-  /// process.
-  using CC1ToolFunc =
-      llvm::function_ref<int(SmallVectorImpl<const char *> &ArgV)>;
-  CC1ToolFunc CC1Main = nullptr;
+  /// Whether we should execute all Jobs inside the same process, or if they
+  /// should go out-of-process.
+  unsigned InProcess : 1;
 
 private:
   /// Raw target triple.
@@ -303,11 +300,8 @@ private:
   /// Arguments originated from command line.
   std::unique_ptr<llvm::opt::InputArgList> CLOptions;
 
-  /// If this is non-null, the driver will prepend this argument before
-  /// reinvoking clang. This is useful for the llvm-driver where clang's
-  /// realpath will be to the llvm binary and not clang, so it must pass
-  /// "clang" as it's first argument.
-  const char *PrependArg;
+  /// When using the llvm-driver, this is the "calling" context.
+  llvm::ToolContext ToolContext;
 
   /// Whether to check that input files exist when constructing compilation
   /// jobs.
@@ -409,8 +403,8 @@ public:
   bool getProbePrecompiled() const { return ProbePrecompiled; }
   void setProbePrecompiled(bool Value) { ProbePrecompiled = Value; }
 
-  const char *getPrependArg() const { return PrependArg; }
-  void setPrependArg(const char *Value) { PrependArg = Value; }
+  llvm::ToolContext getToolContext() const { return ToolContext; }
+  void setToolContext(const llvm::ToolContext &T) { ToolContext = T; }
 
   void setTargetAndMode(const ParsedClangName &TM) { ClangNameParts = TM; }
 
