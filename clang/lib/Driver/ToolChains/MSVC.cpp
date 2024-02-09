@@ -419,7 +419,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   std::unique_ptr<clang::driver::Command> LinkCmd;
   std::optional<llvm::ToolContext> LinkerContext;
   if (C.getDriver().InProcess && !Linker.equals_insensitive("link")) {
-    LinkerContext = C.getDriver().getToolContext().newContext(Linker);
+    LinkerContext = C.getDriver().getToolContext().newContext({Linker.data()});
   }
   if (LinkerContext) {
     LinkerContext->Cleanup = true;

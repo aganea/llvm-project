@@ -44,23 +44,25 @@ static void printHelpMessage() {
                << "OPTIONS:\n\n  --help - Display this message";
 }
 
-static int findTool(int Argc, char **Argv, const ToolContext &TC) {
-  if (!Argc || StringRef(Argv[0]) == "--help") {
-    printHelpMessage();
-    return (int)!Argc;
+static int findTool(ArrayRef<char *> Args, const ToolContext &TC) {
+  // Create a specific context to understand if we are explicitly llvm.exe or if
+  // we are a symlinked binary such as clang.exe.
+  if (auto NewTC = TC.newContext(Args)) {
+    int R = NewTC->callToolMain(Args);
+    if (R != -1)
+      return R;
   }
-
-  int R = TC.callToolMain(ArrayRef(Argv, Argc));
-  if (R != -1)
-    return R;
-
   printHelpMessage();
+  // Return 0 if passed `--help` or return 1 otherwise.
+  if (Args.size() > 1 && StringRef(Args[1]) == "--help")
+    return 0;
   return 1;
 }
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
+  ToolContext::MainSymbol = (void *)(intptr_t)&knownMainFns;
   ToolContext TC{Argv[0], nullptr, /*NeedsPrependArg=*/false, /*Cleanup=*/false,
                  knownMainFns};
-  return findTool(Argc, Argv, TC);
+  return findTool(ArrayRef(Argv, Argc), TC);
 }

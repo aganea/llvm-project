@@ -29,6 +29,10 @@ public:
   // after each execution.
   bool Cleanup = false;
 
+  // A pointer to symbol in the main module. This is a helper for invoking the
+  // function `llvm::sys::fs::getMainExecutable()`
+  static void *MainSymbol;
+
   using MainFn = int (*)(int Argc, char **Argv, const llvm::ToolContext &TC);
 
   // A list of LLVM tools that live inside the current PE/binary. If the binary
@@ -44,9 +48,9 @@ public:
   // From a command line, check if a tool is present in-process.
   bool hasInProcessTool(ArrayRef<const char *> Args) const;
 
-  // Creates a new contet from this current tool and bind it to a new tool, if
+  // Creates a new context from this current tool and bind it to a new tool, if
   // it exists.
-  std::optional<ToolContext> newContext(StringRef Tool);
+  std::optional<ToolContext> newContext(ArrayRef<const char *> Args) const;
 };
 } // namespace llvm
 

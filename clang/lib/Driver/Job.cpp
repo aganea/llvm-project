@@ -446,7 +446,7 @@ int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   }
 
   // Ensure the in-process tool is callable. If not, call it out-of-process.
-  if (getToolContext().hasInProcessTool(Argv))
+  if (!getToolContext().hasInProcessTool(Argv))
     return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
 
   PrintFileNames();

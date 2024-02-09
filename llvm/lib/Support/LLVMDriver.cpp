@@ -16,17 +16,22 @@
 
 using namespace llvm;
 
-static StringRef cleanToolName(StringRef Argv0) {
-  StringRef ToolName = sys::path::filename(Argv0);
-  if (ToolName.ends_with_insensitive(".exe"))
-    ToolName = ToolName.drop_back(4);
-  return ToolName;
-}
+void *llvm::ToolContext::MainSymbol{};
 
 static std::pair<StringRef, ToolContext::MainFn>
-discoverTool(StringRef Tool, ToolContext::KnownToolsFn KnownTools) {
-  if (!KnownTools)
+discoverTool(ArrayRef<const char *> &Args,
+             ToolContext::KnownToolsFn KnownTools) {
+  if (!KnownTools || !Args.size())
     return std::make_pair<StringRef, ToolContext::MainFn>({}, nullptr);
+
+  // Clean tool name
+  StringRef Tool = sys::path::filename(Args[0]);
+  if (Tool.ends_with_insensitive(".exe"))
+    Tool = Tool.drop_back(4);
+  if (Tool.equals_insensitive("llvm")) {
+    Args = Args.drop_front(1);
+    return discoverTool(Args, KnownTools);
+  }
 
   StringRef BestTool;
   ToolContext::MainFn BestToolMain{};
@@ -52,20 +57,12 @@ discoverTool(StringRef Tool, ToolContext::KnownToolsFn KnownTools) {
 }
 
 bool llvm::ToolContext::hasInProcessTool(ArrayRef<const char *> Args) const {
-  StringRef Tool = cleanToolName(Args[0]);
-  if (Tool.equals_insensitive("llvm"))
-    return hasInProcessTool(Args.drop_front(1));
-
-  auto [BestTool, BestToolMain] = discoverTool(Tool, KnownTools);
+  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
   return !!BestToolMain;
 }
 
 int llvm::ToolContext::callToolMain(ArrayRef<const char *> Args) const {
-  StringRef Tool = cleanToolName(Args[0]);
-  if (Tool.equals_insensitive("llvm"))
-    return callToolMain(Args.drop_front(1));
-
-  auto [BestTool, BestToolMain] = discoverTool(Tool, KnownTools);
+  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
   if (!BestToolMain)
     return -1; // as per `llvm::sys::ExecuteAndWait()`.
 
@@ -75,14 +72,12 @@ int llvm::ToolContext::callToolMain(ArrayRef<const char *> Args) const {
   return BestToolMain(Args.size(), const_cast<char **>(Args.data()), NewTC);
 }
 
-std::optional<ToolContext> llvm::ToolContext::newContext(StringRef Tool) {
-  // This just needs to be some symbol in the binary
-  static int Symbol;
+std::optional<ToolContext>
+llvm::ToolContext::newContext(ArrayRef<const char *> Args) const {
   static std::string MainBinary =
-      llvm::sys::fs::getMainExecutable(Path, &Symbol);
+      llvm::sys::fs::getMainExecutable(Path, MainSymbol);
 
-  Tool = cleanToolName(Tool);
-  auto [BestTool, BestToolMain] = discoverTool(Tool, KnownTools);
+  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
   if (!BestToolMain)
     return std::nullopt;
 

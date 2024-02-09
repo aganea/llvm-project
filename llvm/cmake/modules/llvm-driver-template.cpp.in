@@ -16,14 +16,15 @@ int @TOOL_NAME@_main(int Argc, char **, const ToolContext &);
 
 static ArrayRef<std::pair<StringRef, ToolContext::MainFn>> knownMainFns() {
   static constexpr std::pair<StringRef, ToolContext::MainFn> MainFns[] = {
-    "@TOOL_NAME@", @TOOL_NAME@_main
+    {"@TOOL_NAME@", @TOOL_NAME@_main},
   };
   return MainFns;
 }
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
+  ToolContext::MainSymbol = (void *)(intptr_t)&knownMainFns;
   ToolContext TC{Argv[0], "@TOOL_NAME@", /*NeedsPrependArg=*/false,
                  /*Cleanup=*/false, knownMainFns};
-  return @TOOL_NAME@_main(argc, argv, TC);
+  return @TOOL_NAME@_main(Argc, Argv, TC);
 }
