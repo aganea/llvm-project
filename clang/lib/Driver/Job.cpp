@@ -40,7 +40,7 @@ Command::Command(const Action &Source, const Tool &Creator,
                  ResponseFileSupport ResponseSupport, const char *Executable,
                  const llvm::opt::ArgStringList &Arguments,
                  ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                 llvm::ToolContext ToolContext)
+                 std::optional<llvm::ToolContext> ToolContext)
     : Source(Source), Creator(Creator), ResponseSupport(ResponseSupport),
       Executable(Executable), ToolContext(ToolContext), Arguments(Arguments) {
   for (const auto &II : Inputs)
@@ -134,10 +134,10 @@ void Command::writeResponseFile(raw_ostream &OS) const {
 void Command::buildArgvForResponseFile(
     llvm::SmallVectorImpl<const char *> &Out) const {
   // If we have a ToolContext, prefer using its execute information.
-  if (getToolContext().Path) {
-    Out.push_back(getToolContext().Path);
-    if (getToolContext().NeedsPrependArg)
-      Out.push_back(getToolContext().PrependArg);
+  if (auto TC = getToolContext()) {
+    Out.push_back(TC->Path);
+    if (TC->NeedsPrependArg)
+      Out.push_back(TC->PrependArg);
   } else {
     Out.push_back(Executable);
   }
@@ -214,11 +214,11 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
   OS << ' ';
 
   // If we have a ToolContext, prefer using its execute information.
-  if (getToolContext().Path) {
-    llvm::sys::printArg(OS, getToolContext().Path, /*Quote=*/true);
-    if (getToolContext().NeedsPrependArg) {
+  if (auto TC = getToolContext()) {
+    llvm::sys::printArg(OS, TC->Path, /*Quote=*/true);
+    if (TC->NeedsPrependArg) {
       OS << ' ';
-      llvm::sys::printArg(OS, getToolContext().PrependArg, /*Quote=*/true);
+      llvm::sys::printArg(OS, TC->PrependArg, /*Quote=*/true);
     }
   } else {
     llvm::sys::printArg(OS, Executable, /*Quote=*/true);
@@ -230,7 +230,8 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
     buildArgvForResponseFile(ArgsRespFile);
 
     // Slice the executable name and the tool argument, if it exists.
-    unsigned Slice = getToolContext().NeedsPrependArg ? 2 : 1;
+    unsigned Slice =
+        getToolContext() && getToolContext()->NeedsPrependArg ? 2 : 1;
     Args = ArrayRef<const char *>(ArgsRespFile).slice(Slice);
   }
 
@@ -344,10 +345,10 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   SmallVector<const char *, 128> Argv;
   if (ResponseFile == nullptr) {
     // If we have a ToolContext, prefer using its execute information.
-    if (getToolContext().Path) {
-      Argv.push_back(getToolContext().Path);
-      if (getToolContext().NeedsPrependArg)
-        Argv.push_back(getToolContext().PrependArg);
+    if (auto TC = getToolContext()) {
+      Argv.push_back(TC->Path);
+      if (TC->NeedsPrependArg)
+        Argv.push_back(TC->PrependArg);
     } else {
       Argv.push_back(Executable);
     }
@@ -436,17 +437,17 @@ int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   SmallVector<const char *, 128> Argv;
 
-  // If we have a ToolContext, prefer using its execute information.
-  if (getToolContext().Path) {
-    Argv.push_back(getToolContext().Path);
-    if (getToolContext().NeedsPrependArg)
-      Argv.push_back(getToolContext().PrependArg);
-  } else {
-    Argv.push_back(getExecutable());
-  }
+  // If we don't have a ToolContext, fallback to out-of-process.
+  auto TC = getToolContext();
+  if (!TC)
+    return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
 
-  // Ensure the in-process tool is callable. If not, call it out-of-process.
-  if (!getToolContext().hasInProcessTool(Argv))
+  Argv.push_back(TC->Path);
+  if (TC->NeedsPrependArg)
+    Argv.push_back(TC->PrependArg);
+
+// If the in-process tool isn't callable, fallback to out-of-process.
+  if (!TC->hasInProcessTool(Argv))
     return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
 
   PrintFileNames();
@@ -468,7 +469,7 @@ int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   int R = 0;
   // Enter ExecuteCC1Tool() instead of starting up a new process
-  if (!CRC.RunSafely([&]() { R = getToolContext().callToolMain(Argv); })) {
+  if (!CRC.RunSafely([&]() { R = TC->callToolMain(Argv); })) {
     llvm::RestorePrettyStackState(PrettyState);
     return CRC.RetCode;
   }

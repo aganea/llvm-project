@@ -233,8 +233,8 @@ struct CreateInvocationOptions {
 /// May return nullptr if an invocation could not be determined.
 /// See CreateInvocationOptions::ShouldRecoverOnErrors to try harder!
 std::unique_ptr<CompilerInvocation>
-createInvocation(ArrayRef<const char *> Args,
-                 CreateInvocationOptions Opts = {});
+createInvocation(ArrayRef<const char *> Args, CreateInvocationOptions Opts = {},
+                 std::optional<llvm::ToolContext> ToolCtx = std::nullopt);
 
 } // namespace clang
 

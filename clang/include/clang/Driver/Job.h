@@ -114,9 +114,6 @@ class Command {
   /// Whether and how to generate response files if the arguments are too long.
   ResponseFileSupport ResponseSupport;
 
-  /// The executable to run.
-  const char *Executable;
-
   /// Calling context when using the clang tool in llvm-driver.
   llvm::ToolContext ToolContext;
 
@@ -173,7 +170,8 @@ public:
   Command(const Action &Source, const Tool &Creator,
           ResponseFileSupport ResponseSupport, const char *Executable,
           const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
-          ArrayRef<InputInfo> Outputs = std::nullopt, llvm::ToolContext = {});
+          ArrayRef<InputInfo> Outputs = std::nullopt,
+          std::optional<llvm::ToolContext> = std::nullopt);
   // FIXME: This really shouldn't be copyable, but is currently copied in some
   // error handling in Driver::generateCompilationDiagnostics.
   Command(const Command &) = default;
@@ -234,7 +232,10 @@ public:
     return ProcStat;
   }
 
-  const llvm::ToolContext &getToolContext() const { return ToolContext; }
+  const std::optional<llvm::ToolContext> &getToolContext() const { return ToolContext; }
+  void setToolContext(llvm::ToolContext TC) {
+    ToolContext = TC;
+  }
 
 protected:
   /// Optionally print the filenames to be compiled

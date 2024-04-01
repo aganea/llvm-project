@@ -28,7 +28,8 @@ using namespace llvm::opt;
 
 std::unique_ptr<CompilerInvocation>
 clang::createInvocation(ArrayRef<const char *> ArgList,
-                        CreateInvocationOptions Opts) {
+                        CreateInvocationOptions Opts,
+                        std::optional<llvm::ToolContext> ToolCtx) {
   assert(!ArgList.empty());
   auto Diags = Opts.Diags
                    ? std::move(Opts.Diags)
@@ -45,6 +46,9 @@ clang::createInvocation(ArrayRef<const char *> ArgList,
   // FIXME: We shouldn't have to pass in the path info.
   driver::Driver TheDriver(Args[0], llvm::sys::getDefaultTargetTriple(), *Diags,
                            "clang LLVM compiler", Opts.VFS);
+
+  if (ToolCtx)
+    TheDriver.setToolContext(*ToolCtx);
 
   // Don't check that inputs exist, they may have been remapped.
   TheDriver.setCheckInputsExist(false);

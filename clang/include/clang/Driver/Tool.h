@@ -10,23 +10,27 @@
 #define LLVM_CLANG_DRIVER_TOOL_H
 
 #include "clang/Basic/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
 
 namespace llvm {
+class ToolContext;
 namespace opt {
-  class ArgList;
-}
+class ArgList;
+using ArgStringList = SmallVector<const char *, 16>;
+} // namespace opt
 }
 
 namespace clang {
 namespace driver {
+class Command;
+class Compilation;
+class InputInfo;
+class Job;
+class JobAction;
+class ToolChain;
+struct ResponseFileSupport;
 
-  class Compilation;
-  class InputInfo;
-  class Job;
-  class JobAction;
-  class ToolChain;
-
-  typedef SmallVector<InputInfo, 4> InputInfoList;
+typedef SmallVector<InputInfo, 4> InputInfoList;
 
 /// Tool - Information on a specific compilation tool.
 class Tool {
@@ -89,6 +93,13 @@ public:
                                            const InputInfoList &Inputs,
                                            const llvm::opt::ArgList &TCArgs,
                                            const char *LinkingOutput) const;
+
+  void ConstructCommand(Compilation &C, ResponseFileSupport ResponseSupport,
+                        const char *Executable, const JobAction &JA,
+                        const InputInfo &Output, const InputInfoList &Inputs,
+                        const llvm::opt::ArgStringList &Args,
+                        std::optional<llvm::ToolContext> ToolCtx,
+      llvm::ArrayRef<const char *> NewEnvironment = std::nullopt) const;
 };
 
 } // end namespace driver

@@ -29,6 +29,9 @@ public:
   // after each execution.
   bool Cleanup = false;
 
+  // Absolute Argv[0] set when the PE/binary starts.
+  static const char *Argv0;
+
   // A pointer to symbol in the main module. This is a helper for invoking the
   // function `llvm::sys::fs::getMainExecutable()`
   static void *MainSymbol;
@@ -39,7 +42,7 @@ public:
   // embeds a single tool that isn't known to llvm-driver, this can empty or
   // nullptr.
   using KnownToolsFn = ArrayRef<std::pair<StringRef, MainFn>> (*)();
-  KnownToolsFn KnownTools{};
+  static KnownToolsFn KnownTools;
 
   // Invoke the current tool in-process. If the tool is not callable, returns -1
   // in the same as the `llvm::sys::ExecuteAndWait` API.
@@ -51,6 +54,8 @@ public:
   // Creates a new context from this current tool and bind it to a new tool, if
   // it exists.
   std::optional<ToolContext> newContext(ArrayRef<const char *> Args) const;
+
+  void setCanonicalPrefixes(bool CanonicalPrefixes);
 };
 } // namespace llvm
 

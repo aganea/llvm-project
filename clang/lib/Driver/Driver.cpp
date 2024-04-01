@@ -192,24 +192,32 @@ std::string Driver::GetResourcesPath(StringRef BinaryPath,
 }
 
 Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
-               DiagnosticsEngine &Diags, std::string Title,
+               DiagnosticsEngine &Diags, std::optional<std::string> Title,
+               IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS)
+    : Driver(*llvm::ToolContext().newContext({ClangExecutable.data()}),
+             TargetTriple, Diags, Title, VFS) {}
+
+Driver::Driver(llvm::ToolContext ToolContext, StringRef TargetTriple,
+               DiagnosticsEngine &Diags, std::optional<std::string> Title,
                IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS)
     : Diags(Diags), VFS(std::move(VFS)), Mode(GCCMode),
       SaveTemps(SaveTempsNone), BitcodeEmbed(EmbedNone),
       Offload(OffloadHostDevice), CXX20HeaderType(HeaderMode_None),
-      ModulesModeCXX20(false), LTOMode(LTOK_None),
-      ClangExecutable(ClangExecutable), SysRoot(DEFAULT_SYSROOT),
-      DriverTitle(Title), CCCPrintBindings(false), CCPrintOptions(false),
+      ModulesModeCXX20(false), LTOMode(LTOK_None), ToolContext(ToolContext),
+      SysRoot(DEFAULT_SYSROOT),
+      CCCPrintBindings(false), CCPrintOptions(false),
       CCLogDiagnostics(false), CCGenDiagnostics(false),
       CCPrintProcessStats(false), CCPrintInternalStats(false), InProcess(false),
       TargetTriple(TargetTriple), Saver(Alloc), CheckInputsExist(true),
       ProbePrecompiled(true), SuppressMissingInputWarning(false) {
+  DriverTitle = Title ? *Title : "clang LLVM compiler";
+
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
     this->VFS = llvm::vfs::getRealFileSystem();
 
-  Name = std::string(llvm::sys::path::filename(ClangExecutable));
-  Dir = std::string(llvm::sys::path::parent_path(ClangExecutable));
+  Name = std::string(ToolContext.PrependArg);
+  Dir = std::string(llvm::sys::path::parent_path(ToolContext.Path));
 
   if ((!SysRoot.empty()) && llvm::sys::path::is_relative(SysRoot)) {
     // Prepend InstalledDir if SysRoot is relative
@@ -4947,6 +4955,29 @@ void Driver::BuildJobs(Compilation &C) const {
   if (CCPrintProcessStats)
     for (auto &J : C.getJobs())
       J.InProcess = false;
+
+  // If we have only one in-process job or out-of-process jobs, leak the memory after each job.
+  // This is only an optimization to reduce the shutdown time of each job.
+  if (!C.isForDiagnostics()) {
+    ptrdiff_t InProcessJobs =
+        llvm::count_if(C.getJobs(), [](auto &J) { return J.InProcess; });
+    if (InProcessJobs > 1) {
+      for (auto &J : C.getJobs()) {
+        if (!J.InProcess)
+          continue;
+
+        llvm::opt::ArgStringList Args = J.getArguments();
+        llvm::remove_if(Args, [](const char *A) {
+          return StringRef(A) == "-disable-free";
+        });
+        J.replaceArguments(Args);
+
+        auto TC = J.getToolContext();
+        TC->Cleanup = true;
+        J.setToolContext(*TC);
+      }
+    }
+  }
 
   if (CCPrintProcessStats) {
     C.setPostCallback([=](const Command &Cmd, int Res) {

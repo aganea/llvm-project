@@ -325,6 +325,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   TC.addProfileRTLibs(Args, CmdArgs);
 
   std::vector<const char *> Environment;
+  std::optional<llvm::ToolContext> InProcessContext;
 
   // We need to special case some linker paths. In the case of the regular msvc
   // linker, we need to use a special search algorithm.
@@ -414,26 +415,12 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 #endif
   } else {
     linkPath = TC.GetProgramPath(Linker.str().c_str());
+    InProcessContext =
+        C.getDriver().getToolContext().newContext({Linker.data()});
   }
-
-  std::unique_ptr<clang::driver::Command> LinkCmd;
-  std::optional<llvm::ToolContext> LinkerContext;
-  if (C.getDriver().InProcess && !Linker.equals_insensitive("link")) {
-    LinkerContext = C.getDriver().getToolContext().newContext({Linker.data()});
-  }
-  if (LinkerContext) {
-    LinkerContext->Cleanup = true;
-    LinkCmd = std::make_unique<InProcessCommand>(
-        JA, *this, ResponseFileSupport::AtFileUTF16(),
-        Args.MakeArgString(linkPath), CmdArgs, Inputs, Output, *LinkerContext);
-  } else {
-    LinkCmd = std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF16(),
-        Args.MakeArgString(linkPath), CmdArgs, Inputs, Output);
-    if (!Environment.empty())
-      LinkCmd->setEnvironment(Environment);
-  }
-  C.addCommand(std::move(LinkCmd));
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF16(),
+                   Args.MakeArgString(linkPath), JA, Output, Inputs, CmdArgs,
+                   std::move(InProcessContext), Environment);
 }
 
 MSVCToolChain::MSVCToolChain(const Driver &D, const llvm::Triple &Triple,

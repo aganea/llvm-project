@@ -56,26 +56,8 @@ using namespace clang;
 using namespace clang::driver;
 using namespace llvm::opt;
 
-std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {
-  if (!CanonicalPrefixes) {
-    SmallString<128> ExecutablePath(Argv0);
-    // Do a PATH lookup if Argv0 isn't a valid path.
-    if (!llvm::sys::fs::exists(ExecutablePath))
-      if (llvm::ErrorOr<std::string> P =
-              llvm::sys::findProgramByName(ExecutablePath))
-        ExecutablePath = *P;
-    return std::string(ExecutablePath);
-  }
-
-  // This just needs to be some symbol in the binary; C++ doesn't
-  // allow taking the address of ::main however.
-  void *P = (void*) (intptr_t) GetExecutablePath;
-  return llvm::sys::fs::getMainExecutable(Argv0, P);
-}
-
 static const char *GetStableCStr(llvm::StringSet<> &SavedStrings, StringRef S) {
   return SavedStrings.insert(S).first->getKeyData();
-}
 
 extern int cc1_main(ArrayRef<const char *> Argv, const char *Argv0,
                     void *MainAddr);
@@ -224,7 +206,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
   return 1;
 }
 
-int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
+int clang_main(int Argc, char **Argv, llvm::ToolContext ToolContext) {
   noteBottomOfStack();
   llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL
                         " and include the crash backtrace, preprocessed "
@@ -267,6 +249,8 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
       CanonicalPrefixes = false;
   }
 
+  ToolContext.setCanonicalPrefixes(CanonicalPrefixes);
+
   // Handle CL and _CL_ which permits additional command line options to be
   // prepended or appended.
   if (ClangCLMode) {
@@ -298,8 +282,6 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
     driver::applyOverrideOptions(Args, OverrideStr, SavedStrings,
                                  &llvm::errs());
   }
-
-  std::string Path = GetExecutablePath(Argv[0], CanonicalPrefixes);
 
   // Whether the cc1 tool should be called inside the current process, or if we
   // should spawn a new clang subprocess (old behavior).
@@ -333,10 +315,9 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
 
   ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
 
-  Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags);
+  Driver TheDriver(ToolContext, llvm::sys::getDefaultTargetTriple(), Diags);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
-  TheDriver.setToolContext(ToolContext);
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
 

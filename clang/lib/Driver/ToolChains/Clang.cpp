@@ -5335,8 +5335,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // We normally speed up the clang process a bit by skipping destructors at
   // exit, but when we're generating diagnostics we can rely on some of the
   // cleanup.
-  if (!C.isForDiagnostics() &&
-      !(C.getDriver().InProcess && C.getDriver().getToolContext().Cleanup))
+  if (!C.isForDiagnostics())
     CmdArgs.push_back("-disable-free");
   CmdArgs.push_back("-clear-ast-before-backend");
 
@@ -7927,18 +7926,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Input.getInputArg().renderAsInput(Args, CmdArgs);
   }
 
-  if (D.InProcess && !D.CCGenDiagnostics) {
-    llvm::ToolContext TC = D.getToolContext();
-    TC.Cleanup = true;
-    // Invoke the CC1 directly in this process
-    C.addCommand(std::make_unique<InProcessCommand>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, TC));
-  } else {
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getToolContext()));
-  }
+  auto ClangContext = D.getToolContext().newContext({"clang"});
+
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(), Exec, JA, Output,
+                   Inputs, CmdArgs, ClangContext);
 
   // Make the compile command echo its inputs for /showFilenames.
   if (Output.getType() == types::TY_Object &&
@@ -8703,19 +8694,11 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   assert(Input.isFilename() && "Invalid input.");
   CmdArgs.push_back(Input.getFilename());
 
-  const char *Exec = getToolChain().getDriver().getClangProgramPath();
-  if (D.InProcess && !D.CCGenDiagnostics) {
-    llvm::ToolContext TC = D.getToolContext();
-    TC.Cleanup = true;
-    // Invoke cc1as directly in this process.
-    C.addCommand(std::make_unique<InProcessCommand>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, TC));
-  } else {
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getToolContext()));
-  }
+  auto ClangContext = D.getToolContext().newContext({"clang"});
+
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(),
+                   getToolChain().getDriver().getClangProgramPath(), JA, Output,
+                   Inputs, CmdArgs, ClangContext);
 }
 
 // Begin OffloadBundler

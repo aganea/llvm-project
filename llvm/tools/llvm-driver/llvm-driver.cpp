@@ -61,8 +61,8 @@ static int findTool(ArrayRef<char *> Args, const ToolContext &TC) {
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
-  ToolContext::MainSymbol = (void *)(intptr_t)&knownMainFns;
-  ToolContext TC{Argv[0], nullptr, /*NeedsPrependArg=*/false, /*Cleanup=*/false,
-                 knownMainFns};
+  ToolContext::KnownTools = (void *)(intptr_t)&knownMainFns;
+  ToolContext::Argv0 = Argv[0];
+  ToolContext TC{Argv[0], nullptr, /*NeedsPrependArg=*/false, /*Cleanup=*/false};
   return findTool(ArrayRef(Argv, Argc), TC);
 }

@@ -155,9 +155,6 @@ public:
   /// command line.
   std::string Dir;
 
-  /// The original path to the clang executable.
-  std::string ClangExecutable;
-
   /// Target and driver mode components extracted from clang executable name.
   ParsedClangName ClangNameParts;
 
@@ -274,7 +271,7 @@ public:
   LLVM_PREFERRED_TYPE(bool)
   unsigned CCPrintInternalStats : 1;
 
-  /// Whether we should execute all Jobs inside the same process, or if they
+  /// Whether we should execute all jobs inside the same process, or if they
   /// should go out-of-process.
   unsigned InProcess : 1;
 
@@ -376,8 +373,13 @@ public:
   static std::string GetResourcesPath(StringRef BinaryPath,
                                       StringRef CustomResourceDir = "");
 
+  Driver(llvm::ToolContext ToolContext, StringRef TargetTriple,
+         DiagnosticsEngine &Diags,
+         std::optional<std::string> Title = std::nullopt,
+         IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
+
   Driver(StringRef ClangExecutable, StringRef TargetTriple,
-         DiagnosticsEngine &Diags, std::string Title = "clang LLVM compiler",
+         DiagnosticsEngine &Diags, std::optional<std::string> Title = std::nullopt,
          IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
 
   /// @name Accessors

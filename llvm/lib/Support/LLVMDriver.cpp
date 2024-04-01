@@ -12,16 +12,18 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
 #include <vector>
 
 using namespace llvm;
 
-void *llvm::ToolContext::MainSymbol{};
+ToolContext::KnownToolsFn ToolContext::KnownTools;
+const char *ToolContext::Argv0;
 
 static std::pair<StringRef, ToolContext::MainFn>
-discoverTool(ArrayRef<const char *> &Args,
-             ToolContext::KnownToolsFn KnownTools) {
-  if (!KnownTools || !Args.size())
+discoverTool(ArrayRef<const char *> &Args) {
+  assert(ToolContext::KnownTools);
+  if (!Args.size())
     return std::make_pair<StringRef, ToolContext::MainFn>({}, nullptr);
 
   // Clean tool name
@@ -30,24 +32,24 @@ discoverTool(ArrayRef<const char *> &Args,
     Tool = Tool.drop_back(4);
   if (Tool.equals_insensitive("llvm")) {
     Args = Args.drop_front(1);
-    return discoverTool(Args, KnownTools);
+    return discoverTool(Args);
   }
 
   StringRef BestTool;
   ToolContext::MainFn BestToolMain{};
 
-  auto MainFns = KnownTools();
-  llvm::for_each(MainFns, [&](auto &Pair) {
+  auto MainFns = ToolContext::KnownTools();
+  for_each(MainFns, [&](auto &Pair) {
     StringRef VerbatimTool(Pair.first);
     auto I = Tool.rfind_insensitive(VerbatimTool);
     if (I == StringRef::npos)
       return;
     if (VerbatimTool.size() <= BestTool.size())
       return;
-    if (I > 0 && llvm::isAlnum(Tool[I - 1]))
+    if (I > 0 && isAlnum(Tool[I - 1]))
       return;
     if (I + VerbatimTool.size() < Tool.size() &&
-        llvm::isAlnum(Tool[I + VerbatimTool.size()]))
+        isAlnum(Tool[I + VerbatimTool.size()]))
       return;
     BestTool = VerbatimTool;
     BestToolMain = Pair.second;
@@ -56,32 +58,50 @@ discoverTool(ArrayRef<const char *> &Args,
       std::move(BestTool), std::move(BestToolMain));
 }
 
-bool llvm::ToolContext::hasInProcessTool(ArrayRef<const char *> Args) const {
-  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
+bool ToolContext::hasInProcessTool(ArrayRef<const char *> Args) const {
+  auto [BestTool, BestToolMain] = discoverTool(Args);
   return !!BestToolMain;
 }
 
-int llvm::ToolContext::callToolMain(ArrayRef<const char *> Args) const {
-  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
+int ToolContext::callToolMain(ArrayRef<const char *> Args) const {
+  auto [BestTool, BestToolMain] = discoverTool(Args);
   if (!BestToolMain)
     return -1; // as per `llvm::sys::ExecuteAndWait()`.
 
   bool NeedsPrependArg = Args[0] != Path;
   ToolContext NewTC{NeedsPrependArg ? Path : Args[0], BestTool.data(),
-                    NeedsPrependArg, /*Cleanup=*/Cleanup, KnownTools};
+                    NeedsPrependArg, /*Cleanup=*/Cleanup};
   return BestToolMain(Args.size(), const_cast<char **>(Args.data()), NewTC);
 }
 
 std::optional<ToolContext>
-llvm::ToolContext::newContext(ArrayRef<const char *> Args) const {
+ToolContext::newContext(ArrayRef<const char *> Args) const {
   static std::string MainBinary =
-      llvm::sys::fs::getMainExecutable(Path, MainSymbol);
+      sys::fs::getMainExecutable(Path, MainSymbol);
 
-  auto [BestTool, BestToolMain] = discoverTool(Args, KnownTools);
+  auto [BestTool, BestToolMain] = discoverTool(Args);
   if (!BestToolMain)
     return std::nullopt;
 
   ToolContext NewTC{MainBinary.c_str(), BestTool.data(),
-                    /*NeedsPrependArg=*/true, Cleanup, KnownTools};
+                    /*NeedsPrependArg=*/true, Cleanup};
   return NewTC;
+}
+
+StringRef GetExecutablePath(bool CanonicalPrefixes) {
+  if (!CanonicalPrefixes) {
+    SmallString<128> ExecutablePath(ToolContext::Argv0);
+    // Do a PATH lookup if Argv0 isn't a valid path.
+    if (!sys::fs::exists(ExecutablePath))
+      if (ErrorOr<std::string> P = llvm::sys::findProgramByName(ExecutablePath))
+        ExecutablePath = *P;
+    return ExecutablePath;
+  }
+  static std::string MainExe =
+      sys::fs::getMainExecutable(ToolContext::Argv0, ToolContext::KnownTools);
+  return MainExe;
+}
+
+void ToolContext::setCanonicalPrefixes(bool CanonicalPrefixes) {
+  Path = GetExecutablePath(CanonicalPrefixes).data();
 }
