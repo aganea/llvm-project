@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileCollector.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include <cstdint>
 #include <memory>

@@ -216,8 +216,8 @@ Driver::Driver(llvm::ToolContext ToolContext, StringRef TargetTriple,
   if (!this->VFS)
     this->VFS = llvm::vfs::getRealFileSystem();
 
-  Name = std::string(ToolContext.PrependArg);
-  Dir = std::string(llvm::sys::path::parent_path(ToolContext.Path));
+  Name = std::string(ToolContext.VerbatimToolName);
+  Dir = std::string(llvm::sys::path::parent_path(ToolContext.BinaryPath));
 
   if ((!SysRoot.empty()) && llvm::sys::path::is_relative(SysRoot)) {
     // Prepend InstalledDir if SysRoot is relative
@@ -1220,7 +1220,8 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   // We look for the driver mode option early, because the mode can affect
   // how other options are parsed.
 
-  auto DriverMode = getDriverMode(ClangExecutable, ArgList.slice(1));
+  auto DriverMode =
+      getDriverMode(ToolContext.getProgramName(), ArgList.slice(1));
   if (!DriverMode.empty())
     setDriverMode(DriverMode);
 
@@ -1905,8 +1906,8 @@ void Driver::setUpResponseFiles(Compilation &C, Command &Cmd) {
   // skip it.
   if (Cmd.getResponseFileSupport().ResponseKind ==
           ResponseFileSupport::RF_None ||
-      llvm::sys::commandLineFitsWithinSystemLimits(Cmd.getExecutable(),
-                                                   Cmd.getArguments()))
+      llvm::sys::commandLineFitsWithinSystemLimits(
+          Cmd.getToolContext().getProgramName(), Cmd.getArguments()))
     return;
 
   std::string TmpName = GetTemporaryPath("response", "txt");
@@ -4956,15 +4957,18 @@ void Driver::BuildJobs(Compilation &C) const {
     for (auto &J : C.getJobs())
       J.InProcess = false;
 
-  // If we have only one in-process job or out-of-process jobs, leak the memory after each job.
-  // This is only an optimization to reduce the shutdown time of each job.
+  // The default is that we don't clean after each job, ie. we leak the memory.
+  // That is only an optimization to speed-up process shutdown.
+  // However if we have more than one in-process job, we need to clean the
+  // memory after each job, except for the last one, which we leak.
   if (!C.isForDiagnostics()) {
     ptrdiff_t InProcessJobs =
         llvm::count_if(C.getJobs(), [](auto &J) { return J.InProcess; });
     if (InProcessJobs > 1) {
       for (auto &J : C.getJobs()) {
-        if (!J.InProcess)
+        if (!J.InProcess || InProcessJobs <= 1)
           continue;
+        --InProcessJobs;
 
         llvm::opt::ArgStringList Args = J.getArguments();
         llvm::remove_if(Args, [](const char *A) {
@@ -4972,9 +4976,9 @@ void Driver::BuildJobs(Compilation &C) const {
         });
         J.replaceArguments(Args);
 
-        auto TC = J.getToolContext();
-        TC->Cleanup = true;
-        J.setToolContext(*TC);
+        llvm::ToolContext TC = J.getToolContext();
+        TC.Cleanup = true;
+        J.setToolContext(TC);
       }
     }
   }
@@ -4997,7 +5001,8 @@ void Driver::BuildJobs(Compilation &C) const {
       if (CCPrintStatReportFilename.empty()) {
         using namespace llvm;
         // Human readable output.
-        outs() << sys::path::filename(Cmd.getExecutable()) << ": "
+        outs() << sys::path::filename(Cmd.getToolContext().getProgramName())
+               << ": "
                << "output=" << LinkingOutput;
         outs() << ", total="
                << format("%.3f", ProcStat->TotalTime.count() / 1000.) << " ms"
@@ -5008,8 +5013,10 @@ void Driver::BuildJobs(Compilation &C) const {
         // CSV format.
         std::string Buffer;
         llvm::raw_string_ostream Out(Buffer);
-        llvm::sys::printArg(Out, llvm::sys::path::filename(Cmd.getExecutable()),
-                            /*Quote*/ true);
+        llvm::sys::printArg(
+            Out,
+            llvm::sys::path::filename(Cmd.getToolContext().getProgramName()),
+            /*Quote*/ true);
         Out << ',';
         llvm::sys::printArg(Out, LinkingOutput, true);
         Out << ',' << ProcStat->TotalTime.count() << ','

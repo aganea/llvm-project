@@ -68,7 +68,7 @@ static bool runFrontend(StringRef ProgName, Twine Label, bool Verbose,
   return Invocation.run();
 }
 
-static bool run(ArrayRef<const char *> Args, const char *ProgName) {
+static bool run(ArrayRef<const char *> Args, StringRef ProgName) {
   // Setup Diagnostics engine.
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
   const llvm::opt::OptTable &ClangOpts = clang::driver::getDriverOptTable();
@@ -194,15 +194,7 @@ static bool run(ArrayRef<const char *> Args, const char *ProgName) {
 
 int clang_installapi_main(int argc, char **argv,
                           const llvm::ToolContext &ToolContext) {
-  // Standard set up, so program fails gracefully.
-  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
-  llvm::PrettyStackTraceProgram StackPrinter(argc, argv);
-  llvm::llvm_shutdown_obj Shutdown;
-
   if (llvm::sys::Process::FixupStandardFileDescriptors())
     return EXIT_FAILURE;
-
-  const char *ProgName =
-      ToolContext.NeedsPrependArg ? ToolContext.PrependArg : ToolContext.Path;
-  return run(llvm::ArrayRef(argv, argc), ProgName);
+  return run(llvm::ArrayRef(argv, argc), ToolContext.getProgramName());
 }

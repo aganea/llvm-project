@@ -31,19 +31,18 @@ void Tool::ConstructJobMultipleOutputs(Compilation &C, const JobAction &JA,
 }
 
 void Tool::ConstructCommand(Compilation &C, ResponseFileSupport ResponseSupport,
-                            const char *Executable, const JobAction &JA,
+                            llvm::ToolContext ToolContext, const JobAction &JA,
                             const InputInfo &Output,
                             const InputInfoList &Inputs,
                             const llvm::opt::ArgStringList &Args,
-                            std::optional<llvm::ToolContext> ToolCtx,
-    llvm::ArrayRef<const char *> NewEnvironment) const {
+                            llvm::ArrayRef<const char *> NewEnvironment) const {
   std::unique_ptr<clang::driver::Command> LinkCmd;
   const Driver &D = C.getDriver();
   if (D.InProcess && !D.CCGenDiagnostics) {
     LinkCmd = std::make_unique<InProcessCommand>(
-        JA, *this, ResponseSupport, Executable, Args, Inputs, Output, *ToolCtx);
+        JA, *this, ResponseSupport, ToolContext, Args, Inputs, Output);
   } else {
-    LinkCmd = std::make_unique<Command>(JA, *this, ResponseSupport, Executable,
+    LinkCmd = std::make_unique<Command>(JA, *this, ResponseSupport, ToolContext,
                                         Args, Inputs, Output);
     if (!NewEnvironment.empty())
       LinkCmd->setEnvironment(NewEnvironment);

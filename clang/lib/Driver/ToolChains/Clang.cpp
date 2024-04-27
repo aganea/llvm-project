@@ -2374,7 +2374,8 @@ void Clang::DumpCompilationDatabase(Compilation &C, StringRef Filename,
   CDB << ", \"file\": \"" << escape(Input.getFilename()) << "\"";
   if (Output.isFilename())
     CDB << ", \"output\": \"" << escape(Output.getFilename()) << "\"";
-  CDB << ", \"arguments\": [\"" << escape(D.ClangExecutable) << "\"";
+  CDB << ", \"arguments\": [\"" << escape(D.getToolContext().getProgramName())
+      << "\"";
   SmallString<128> Buf;
   Buf = "-x";
   Buf += types::getTypeName(Input.getType());
@@ -5323,9 +5324,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
         II.getInputArg().renderAsInput(Args, CmdArgs);
     }
 
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), D.getClangProgramPath(),
-        CmdArgs, Inputs, Output, D.getToolContext()));
+    C.addCommand(
+        std::make_unique<Command>(JA, *this, ResponseFileSupport::AtFileUTF8(),
+                                  D.getToolContext(), CmdArgs, Inputs, Output));
     return;
   }
 
@@ -7576,8 +7577,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddAllArgs(CmdArgs, options::OPT_undef);
 
-  const char *Exec = D.getClangProgramPath();
-
   // Optionally embed the -cc1 level arguments into the debug info or a
   // section, for build analysis.
   // Also record command line arguments into the debug info if
@@ -7600,7 +7599,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Arg->render(Args, OriginalArgs);
 
     SmallString<256> Flags;
-    EscapeSpacesAndBackslashes(Exec, Flags);
+    EscapeSpacesAndBackslashes(D.getToolContext().getProgramName().data(),
+                               Flags);
     for (const char *OriginalArg : OriginalArgs) {
       SmallString<128> EscapedArg;
       EscapeSpacesAndBackslashes(OriginalArg, EscapedArg);
@@ -7928,8 +7928,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   auto ClangContext = D.getToolContext().newContext({"clang"});
 
-  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(), Exec, JA, Output,
-                   Inputs, CmdArgs, ClangContext);
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(), *ClangContext, JA,
+                   Output, Inputs, CmdArgs);
 
   // Make the compile command echo its inputs for /showFilenames.
   if (Output.getType() == types::TY_Object &&
@@ -8569,7 +8569,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
       Arg->render(Args, OriginalArgs);
 
     SmallString<256> Flags;
-    const char *Exec = getToolChain().getDriver().getClangProgramPath();
+    const char *Exec =
+        getToolChain().getDriver().getToolContext().getProgramName().data();
     EscapeSpacesAndBackslashes(Exec, Flags);
     for (const char *OriginalArg : OriginalArgs) {
       SmallString<128> EscapedArg;
@@ -8696,9 +8697,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
   auto ClangContext = D.getToolContext().newContext({"clang"});
 
-  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(),
-                   getToolChain().getDriver().getClangProgramPath(), JA, Output,
-                   Inputs, CmdArgs, ClangContext);
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF8(), *ClangContext, JA,
+                   Output, Inputs, CmdArgs);
 }
 
 // Begin OffloadBundler
@@ -9063,8 +9063,9 @@ void LinkerWrapper::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   // Add the linker arguments to be forwarded by the wrapper.
-  CmdArgs.push_back(Args.MakeArgString(Twine("--linker-path=") +
-                                       LinkCommand->getExecutable()));
+  CmdArgs.push_back(
+      Args.MakeArgString(Twine("--linker-path=") +
+                         LinkCommand->getToolContext().getProgramName()));
   for (const char *LinkArg : LinkCommand->getArguments())
     CmdArgs.push_back(LinkArg);
 
@@ -9075,6 +9076,6 @@ void LinkerWrapper::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Replace the executable and arguments of the link job with the
   // wrapper.
-  LinkCommand->replaceExecutable(Exec);
+  LinkCommand->setToolContext(llvm::ToolContext{Exec});
   LinkCommand->replaceArguments(CmdArgs);
 }

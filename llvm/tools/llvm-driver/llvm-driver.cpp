@@ -44,10 +44,14 @@ static void printHelpMessage() {
                << "OPTIONS:\n\n  --help - Display this message";
 }
 
-static int findTool(ArrayRef<char *> Args, const ToolContext &TC) {
+static int findTool(ArrayRef<char *> Args) {
   // Create a specific context to understand if we are explicitly llvm.exe or if
   // we are a symlinked binary such as clang.exe.
-  if (auto NewTC = TC.newContext(Args)) {
+  if (auto NewTC = ToolContext().newContext(Args)) {
+    // Skip the first argument if it's the llvm-driver.
+    if (!NewTC->ProvidedToolName.empty())
+      Args = Args.slice(1);
+    // Enter the tool's main function.
     int R = NewTC->callToolMain(Args);
     if (R != -1)
       return R;
@@ -61,8 +65,7 @@ static int findTool(ArrayRef<char *> Args, const ToolContext &TC) {
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
-  ToolContext::KnownTools = (void *)(intptr_t)&knownMainFns;
+  ToolContext::KnownTools = &knownMainFns;
   ToolContext::Argv0 = Argv[0];
-  ToolContext TC{Argv[0], nullptr, /*NeedsPrependArg=*/false, /*Cleanup=*/false};
-  return findTool(ArrayRef(Argv, Argc), TC);
+  return findTool(ArrayRef(Argv, Argc));
 }

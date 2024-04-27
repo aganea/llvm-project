@@ -58,13 +58,12 @@ using namespace llvm::opt;
 
 static const char *GetStableCStr(llvm::StringSet<> &SavedStrings, StringRef S) {
   return SavedStrings.insert(S).first->getKeyData();
+}
 
 extern int cc1_main(ArrayRef<const char *> Argv, const char *Argv0,
                     void *MainAddr);
-extern int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0,
-                      void *MainAddr);
+extern int cc1as_main(ArrayRef<const char *> Argv);
 extern int cc1gen_reproducer_main(ArrayRef<const char *> Argv,
-                                  const char *Argv0, void *MainAddr,
                                   const llvm::ToolContext &);
 
 static void insertTargetAndModeArgs(const ParsedClangName &NameParts,
@@ -168,10 +167,10 @@ static bool SetBackdoorDriverOutputsFromEnvVars(Driver &TheDriver) {
 }
 
 static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
-                                   const std::string &Path) {
+                                   StringRef ProgramName) {
   // If the clang binary happens to be named cl.exe for compatibility reasons,
   // use clang-cl.exe as the prefix to avoid confusion between clang and MSVC.
-  StringRef ExeBasename(llvm::sys::path::stem(Path));
+  StringRef ExeBasename(llvm::sys::path::stem(ProgramName));
   if (ExeBasename.equals_insensitive("cl"))
     ExeBasename = "clang-cl";
   DiagClient->setPrefix(std::string(ExeBasename));
@@ -191,14 +190,13 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
     return 1;
   }
   StringRef Tool = ArgV[1];
-  void *GetExecutablePathVP = (void *)(intptr_t)GetExecutablePath;
+  void *MainAddr = (void *)(intptr_t)ExecuteCC1Tool;
   if (Tool == "-cc1")
-    return cc1_main(ArrayRef(ArgV).slice(1), ArgV[0], GetExecutablePathVP);
+    return cc1_main(ArrayRef(ArgV).slice(1), ArgV[0], MainAddr);
   if (Tool == "-cc1as")
-    return cc1as_main(ArrayRef(ArgV).slice(2), ArgV[0], GetExecutablePathVP);
+    return cc1as_main(ArrayRef(ArgV).slice(2));
   if (Tool == "-cc1gen-reproducer")
-    return cc1gen_reproducer_main(ArrayRef(ArgV).slice(2), ArgV[0],
-                                  GetExecutablePathVP, ToolContext);
+    return cc1gen_reproducer_main(ArrayRef(ArgV).slice(2), ToolContext);
   // Reject unknown tools.
   llvm::errs()
       << "error: unknown integrated tool '" << Tool << "'. "
@@ -206,7 +204,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
   return 1;
 }
 
-int clang_main(int Argc, char **Argv, llvm::ToolContext ToolContext) {
+int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
   noteBottomOfStack();
   llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL
                         " and include the crash backtrace, preprocessed "
@@ -221,9 +219,7 @@ int clang_main(int Argc, char **Argv, llvm::ToolContext ToolContext) {
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver(A);
 
-  const char *ProgName =
-      ToolContext.NeedsPrependArg ? ToolContext.PrependArg : ToolContext.Path;
-
+  StringRef ProgName = ToolContext.getProgramName();
   bool ClangCLMode =
       IsClangCL(getDriverMode(ProgName, llvm::ArrayRef(Args).slice(1)));
 
@@ -249,7 +245,8 @@ int clang_main(int Argc, char **Argv, llvm::ToolContext ToolContext) {
       CanonicalPrefixes = false;
   }
 
-  ToolContext.setCanonicalPrefixes(CanonicalPrefixes);
+  llvm::ToolContext NewTC = ToolContext;
+  NewTC.setCanonicalPrefixes(CanonicalPrefixes);
 
   // Handle CL and _CL_ which permits additional command line options to be
   // prepended or appended.
@@ -315,7 +312,7 @@ int clang_main(int Argc, char **Argv, llvm::ToolContext ToolContext) {
 
   ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
 
-  Driver TheDriver(ToolContext, llvm::sys::getDefaultTargetTriple(), Diags);
+  Driver TheDriver(NewTC, llvm::sys::getDefaultTargetTriple(), Diags);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
 

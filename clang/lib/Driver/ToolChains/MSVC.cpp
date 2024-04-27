@@ -325,7 +325,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   TC.addProfileRTLibs(Args, CmdArgs);
 
   std::vector<const char *> Environment;
-  std::optional<llvm::ToolContext> InProcessContext;
+  std::optional<llvm::ToolContext> LinkerContext;
 
   // We need to special case some linker paths. In the case of the regular msvc
   // linker, we need to use a special search algorithm.
@@ -335,6 +335,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // from the program PATH, because other environments like GnuWin32 install
     // their own link.exe which may come first.
     linkPath = FindVisualStudioExecutable(TC, "link.exe");
+    LinkerContext = llvm::ToolContext{Args.MakeArgString(linkPath)};
 
     if (!TC.FoundMSVCInstall() && !canExecute(TC.getVFS(), linkPath)) {
       llvm::SmallString<128> ClPath;
@@ -415,12 +416,11 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 #endif
   } else {
     linkPath = TC.GetProgramPath(Linker.str().c_str());
-    InProcessContext =
-        C.getDriver().getToolContext().newContext({Linker.data()});
+    LinkerContext = C.getDriver().getToolContext().newContext(
+        {Args.MakeArgString(linkPath)});
   }
-  ConstructCommand(C, ResponseFileSupport::AtFileUTF16(),
-                   Args.MakeArgString(linkPath), JA, Output, Inputs, CmdArgs,
-                   std::move(InProcessContext), Environment);
+  ConstructCommand(C, ResponseFileSupport::AtFileUTF16(), *LinkerContext, JA,
+                   Output, Inputs, CmdArgs, Environment);
 }
 
 MSVCToolChain::MSVCToolChain(const Driver &D, const llvm::Triple &Triple,

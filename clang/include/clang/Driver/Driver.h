@@ -415,9 +415,9 @@ public:
 
   std::string getTargetTriple() const { return TargetTriple; }
 
-  /// Get the path to the main clang executable.
-  const char *getClangProgramPath() const {
-    return ClangExecutable.c_str();
+  /// Get the path to where the clang executable was installed.
+  const char *getInstalledDir() const {
+    return Dir.c_str();
   }
 
   bool isSaveTempsEnabled() const { return SaveTemps != SaveTempsNone; }

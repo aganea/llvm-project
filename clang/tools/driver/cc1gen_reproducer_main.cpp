@@ -115,17 +115,16 @@ generateReproducerForInvocationArguments(ArrayRef<const char *> Argv,
                                          const ClangInvocationInfo &Info,
                                          llvm::ToolContext ToolContext) {
   using namespace driver;
-  auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(Argv[0]);
+  auto TargetAndMode =
+      ToolChain::getTargetAndModeFromProgramName(ToolContext.getProgramName());
 
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions;
 
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
   DiagnosticsEngine Diags(DiagID, &*DiagOpts, new IgnoringDiagConsumer());
   ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
-  Driver TheDriver(ToolContext.Path, llvm::sys::getDefaultTargetTriple(),
-                   Diags);
+  Driver TheDriver(ToolContext, llvm::sys::getDefaultTargetTriple(), Diags);
   TheDriver.setTargetAndMode(TargetAndMode);
-  TheDriver.setToolContext(ToolContext);
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Argv));
   if (C && !C->containsError()) {
@@ -142,8 +141,6 @@ generateReproducerForInvocationArguments(ArrayRef<const char *> Argv,
   return std::nullopt;
 }
 
-std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes);
-
 static void printReproducerInformation(
     llvm::raw_ostream &OS, const ClangInvocationInfo &Info,
     const driver::Driver::CompilationDiagnosticReport &Report) {
@@ -158,8 +155,7 @@ static void printReproducerInformation(
   OS << "]\n}\n";
 }
 
-int cc1gen_reproducer_main(ArrayRef<const char *> Argv, const char *Argv0,
-                           void *MainAddr,
+int cc1gen_reproducer_main(ArrayRef<const char *> Argv,
                            const llvm::ToolContext &ToolContext) {
   if (Argv.size() < 1) {
     llvm::errs() << "error: missing invocation file\n";
@@ -182,10 +178,9 @@ int cc1gen_reproducer_main(ArrayRef<const char *> Argv, const char *Argv0,
 
   // Create an invocation that will produce the reproducer.
   std::vector<const char *> DriverArgs;
-  for (const auto &Arg : InvocationInfo.Arguments)
+  llvm::append_range(DriverArgs, ToolContext.executionArgs());
+  for (const auto &Arg : ArrayRef(InvocationInfo.Arguments).slice(1))
     DriverArgs.push_back(Arg.c_str());
-  std::string Path = GetExecutablePath(Argv0, /*CanonicalPrefixes=*/true);
-  DriverArgs[0] = Path.c_str();
   std::optional<driver::Driver::CompilationDiagnosticReport> Report =
       generateReproducerForInvocationArguments(DriverArgs, InvocationInfo,
                                                ToolContext);

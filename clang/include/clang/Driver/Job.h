@@ -170,8 +170,11 @@ public:
   Command(const Action &Source, const Tool &Creator,
           ResponseFileSupport ResponseSupport, const char *Executable,
           const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
-          ArrayRef<InputInfo> Outputs = std::nullopt,
-          std::optional<llvm::ToolContext> = std::nullopt);
+          ArrayRef<InputInfo> Outputs = std::nullopt);
+  Command(const Action &Source, const Tool &Creator,
+          ResponseFileSupport ResponseSupport, llvm::ToolContext ToolContext,
+          const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
+          ArrayRef<InputInfo> Outputs = std::nullopt);
   // FIXME: This really shouldn't be copyable, but is currently copied in some
   // error handling in Driver::generateCompilationDiagnostics.
   Command(const Command &) = default;
@@ -216,10 +219,6 @@ public:
     Arguments = std::move(List);
   }
 
-  void replaceExecutable(const char *Exe) { Executable = Exe; }
-
-  const char *getExecutable() const { return Executable; }
-
   const llvm::opt::ArgStringList &getArguments() const { return Arguments; }
 
   const std::vector<InputInfo> &getInputInfos() const { return InputInfoList; }
@@ -232,7 +231,7 @@ public:
     return ProcStat;
   }
 
-  const std::optional<llvm::ToolContext> &getToolContext() const { return ToolContext; }
+  const llvm::ToolContext &getToolContext() const { return ToolContext; }
   void setToolContext(llvm::ToolContext TC) {
     ToolContext = TC;
   }
@@ -246,11 +245,11 @@ protected:
 class InProcessCommand : public Command {
 public:
   InProcessCommand(const Action &Source, const Tool &Creator,
-                   ResponseFileSupport ResponseSupport, const char *Executable,
+                   ResponseFileSupport ResponseSupport,
+                   llvm::ToolContext ToolContext,
                    const llvm::opt::ArgStringList &Arguments,
                    ArrayRef<InputInfo> Inputs,
-                   ArrayRef<InputInfo> Outputs = std::nullopt,
-                   llvm::ToolContext = {});
+                   ArrayRef<InputInfo> Outputs = std::nullopt);
 
   void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
              CrashReportInfo *CrashInfo = nullptr) const override;

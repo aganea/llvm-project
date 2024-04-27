@@ -460,8 +460,8 @@ public:
               {"clang-context-hash", I.ContextHash},
               {"file-deps", I.FileDeps},
               {"clang-module-deps", toJSONSorted(I.ModuleDeps)},
-              {"executable", Cmd.Executable},
-              {"command-line", Cmd.Arguments},
+              {"executable", Cmd.Arguments[0]},
+              {"command-line", ArrayRef(Cmd.Arguments).slice(1).vec()},
           };
           Commands.push_back(std::move(O));
         }

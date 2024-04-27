@@ -23,8 +23,8 @@ static ArrayRef<std::pair<StringRef, ToolContext::MainFn>> knownMainFns() {
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
-  ToolContext::MainSymbol = (void *)(intptr_t)&knownMainFns;
+  ToolContext::KnownTools = &knownMainFns;
   ToolContext TC{Argv[0], "@TOOL_NAME@", /*NeedsPrependArg=*/false,
-                 /*Cleanup=*/false, knownMainFns};
+                 /*Cleanup=*/false};
   return @TOOL_NAME@_main(Argc, Argv, TC);
 }

@@ -94,11 +94,11 @@ public:
                                            const llvm::opt::ArgList &TCArgs,
                                            const char *LinkingOutput) const;
 
-  void ConstructCommand(Compilation &C, ResponseFileSupport ResponseSupport,
-                        const char *Executable, const JobAction &JA,
-                        const InputInfo &Output, const InputInfoList &Inputs,
-                        const llvm::opt::ArgStringList &Args,
-                        std::optional<llvm::ToolContext> ToolCtx,
+  void ConstructCommand(
+      Compilation &C, ResponseFileSupport ResponseSupport,
+      llvm::ToolContext ToolContext, const JobAction &JA,
+      const InputInfo &Output, const InputInfoList &Inputs,
+      const llvm::opt::ArgStringList &Args,
       llvm::ArrayRef<const char *> NewEnvironment = std::nullopt) const;
 };
 

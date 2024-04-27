@@ -33,7 +33,6 @@ class DependencyScanningWorkerFilesystem;
 ///
 /// \see TranslationUnitDeps::Commands.
 struct Command {
-  std::string Executable;
   std::vector<std::string> Arguments;
 };
 

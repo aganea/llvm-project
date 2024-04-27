@@ -95,7 +95,8 @@ static bool ignoreExtraCC1Commands(const driver::Compilation *Compilation) {
   // injected -fsyntax-only or not. Try to handle both cases here.
 
   for (const auto &Job : Jobs)
-    if (StringRef(Job.getExecutable()) == "clang-offload-bundler")
+    if (StringRef(Job.getToolContext().getProgramName()) ==
+        "clang-offload-bundler")
       OffloadCompilation = true;
 
   if (Jobs.size() > 1) {

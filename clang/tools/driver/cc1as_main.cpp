@@ -631,7 +631,7 @@ static void LLVMErrorHandler(void *UserData, const char *Message,
   sys::Process::Exit(1);
 }
 
-int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
+int cc1as_main(ArrayRef<const char *> Argv) {
   // Initialize targets and assembly printers/parsers.
   InitializeAllTargetInfos();
   InitializeAllTargetMCs();

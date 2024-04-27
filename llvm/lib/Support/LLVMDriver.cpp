@@ -20,20 +20,14 @@ using namespace llvm;
 ToolContext::KnownToolsFn ToolContext::KnownTools;
 const char *ToolContext::Argv0;
 
-static std::pair<StringRef, ToolContext::MainFn>
-discoverTool(ArrayRef<const char *> &Args) {
-  assert(ToolContext::KnownTools);
-  if (!Args.size())
-    return std::make_pair<StringRef, ToolContext::MainFn>({}, nullptr);
+static ToolContext discoverTool(const char *Arg0, const char *Arg1) {
+  if (!ToolContext::KnownTools)
+    return ToolContext{Arg0};
 
   // Clean tool name
-  StringRef Tool = sys::path::filename(Args[0]);
+  StringRef Tool = sys::path::filename(Arg0);
   if (Tool.ends_with_insensitive(".exe"))
     Tool = Tool.drop_back(4);
-  if (Tool.equals_insensitive("llvm")) {
-    Args = Args.drop_front(1);
-    return discoverTool(Args);
-  }
 
   StringRef BestTool;
   ToolContext::MainFn BestToolMain{};
@@ -54,43 +48,54 @@ discoverTool(ArrayRef<const char *> &Args) {
     BestTool = VerbatimTool;
     BestToolMain = Pair.second;
   });
-  return std::make_pair<StringRef, ToolContext::MainFn>(
-      std::move(BestTool), std::move(BestToolMain));
+  if (!BestToolMain && Arg1) {
+    ToolContext TC = discoverTool(Arg1, nullptr);
+    TC.BinaryPath = Arg0;
+    TC.ProvidedToolName = Arg1;
+    return TC;
+  }
+
+  ToolContext TC{Arg0};
+  TC.Main = BestToolMain;
+  TC.VerbatimToolName = BestTool;
+  return TC;
 }
 
-bool ToolContext::hasInProcessTool(ArrayRef<const char *> Args) const {
-  auto [BestTool, BestToolMain] = discoverTool(Args);
-  return !!BestToolMain;
+static std::optional<ToolContext>
+discoverToolArgs(ArrayRef<const char *> Args) {
+  if (Args.size() >= 2) {
+    return discoverTool(Args[0], Args[1]);
+  } else if (Args.size() == 1) {
+    return discoverTool(Args[0], nullptr);
+  }
+  return std::nullopt;
 }
 
 int ToolContext::callToolMain(ArrayRef<const char *> Args) const {
-  auto [BestTool, BestToolMain] = discoverTool(Args);
-  if (!BestToolMain)
+  if (!Main)
     return -1; // as per `llvm::sys::ExecuteAndWait()`.
-
-  bool NeedsPrependArg = Args[0] != Path;
-  ToolContext NewTC{NeedsPrependArg ? Path : Args[0], BestTool.data(),
-                    NeedsPrependArg, /*Cleanup=*/Cleanup};
-  return BestToolMain(Args.size(), const_cast<char **>(Args.data()), NewTC);
+  return Main(Args.size(), const_cast<char **>(Args.data()), *this);
 }
 
 std::optional<ToolContext>
 ToolContext::newContext(ArrayRef<const char *> Args) const {
-  static std::string MainBinary =
-      sys::fs::getMainExecutable(Path, MainSymbol);
-
-  auto [BestTool, BestToolMain] = discoverTool(Args);
-  if (!BestToolMain)
+  auto TC = discoverToolArgs(Args);
+  if (!TC)
     return std::nullopt;
 
-  ToolContext NewTC{MainBinary.c_str(), BestTool.data(),
-                    /*NeedsPrependArg=*/true, Cleanup};
-  return NewTC;
+  // We're asking for the same tool, just return this one.
+  // This avoids returning `llvm.exe clang` when we could just return
+  // `clang-cl.exe` as it was called on the command-line.
+  if (!VerbatimToolName.empty() && TC->VerbatimToolName == VerbatimToolName)
+    return *this;
+
+  TC->Cleanup = Cleanup;
+  return TC;
 }
 
 StringRef GetExecutablePath(bool CanonicalPrefixes) {
   if (!CanonicalPrefixes) {
-    SmallString<128> ExecutablePath(ToolContext::Argv0);
+    static SmallString<128> ExecutablePath(ToolContext::Argv0);
     // Do a PATH lookup if Argv0 isn't a valid path.
     if (!sys::fs::exists(ExecutablePath))
       if (ErrorOr<std::string> P = llvm::sys::findProgramByName(ExecutablePath))
@@ -103,5 +108,32 @@ StringRef GetExecutablePath(bool CanonicalPrefixes) {
 }
 
 void ToolContext::setCanonicalPrefixes(bool CanonicalPrefixes) {
-  Path = GetExecutablePath(CanonicalPrefixes).data();
+  StringRef Tool = sys::path::filename(BinaryPath);
+  BinaryPath = GetExecutablePath(CanonicalPrefixes).data();
+
+  // Retain the name of the tool as it was invoked, if ever we resolved to a new
+  // binary name. This can happen if the initial invocation was a symlink.
+  if (sys::path::filename(BinaryPath) != Tool && ProvidedToolName.empty()) {
+    if (Tool.ends_with_insensitive(".exe"))
+      Tool = Tool.drop_back(4);
+    ProvidedToolName = Tool;
+  }
+}
+
+std::vector<const char *> ToolContext::executionArgs() const {
+  return ProvidedToolName.empty()
+             ? std::vector{BinaryPath.data()}
+             : std::vector{BinaryPath.data(), ProvidedToolName.data()};
+}
+
+// The stringified arguments that would be used to re-invoke this tool.
+std::string ToolContext::executionArgsString() const {
+  std::string S;
+  raw_string_ostream OS(S);
+  llvm::sys::printArg(OS, BinaryPath, /*Quote=*/true);
+  if (!ProvidedToolName.empty()) {
+    OS << ' ';
+    llvm::sys::printArg(OS, ProvidedToolName, /*Quote=*/true);
+  }
+  return S;
 }

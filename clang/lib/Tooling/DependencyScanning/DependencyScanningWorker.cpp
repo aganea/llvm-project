@@ -583,7 +583,8 @@ static bool createAndRunToolInvocation(
     return false;
 
   std::vector<std::string> Args = Action.takeLastCC1Arguments();
-  Consumer.handleBuildCommand({std::move(Executable), std::move(Args)});
+  Args.insert(Args.begin(), Executable);
+  Consumer.handleBuildCommand({std::move(Args)});
   return true;
 }
 
@@ -656,26 +657,22 @@ bool DependencyScanningWorker::computeDependencies(
   } else {
     Success = forEachDriverJob(
         FinalCommandLine, *Diags, *FileMgr, [&](const driver::Command &Cmd) {
+          // Insert -cc1 comand line options
+          std::vector<std::string> Args;
+          llvm::append_range(Args, Cmd.getToolContext().executionArgs());
+          llvm::append_range(Args, Cmd.getArguments());
+
           if (StringRef(Cmd.getCreator().getName()) != "clang") {
             // Non-clang command. Just pass through to the dependency
             // consumer.
-            Consumer.handleBuildCommand(
-                {Cmd.getExecutable(),
-                 {Cmd.getArguments().begin(), Cmd.getArguments().end()}});
+            Consumer.handleBuildCommand({std::move(Args)});
             return true;
           }
-
-          // Insert -cc1 comand line options into Argv
-          std::vector<std::string> Argv;
-          Argv.push_back(Cmd.getExecutable());
-          Argv.insert(Argv.end(), Cmd.getArguments().begin(),
-                      Cmd.getArguments().end());
-
           // Create an invocation that uses the underlying file
           // system to ensure that any file system requests that
           // are made by the driver do not go through the
           // dependency scanning filesystem.
-          return createAndRunToolInvocation(std::move(Argv), Action, *FileMgr,
+          return createAndRunToolInvocation(std::move(Args), Action, *FileMgr,
                                             PCHContainerOps, *Diags, Consumer);
         });
   }

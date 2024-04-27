@@ -39,10 +39,17 @@ using namespace driver;
 Command::Command(const Action &Source, const Tool &Creator,
                  ResponseFileSupport ResponseSupport, const char *Executable,
                  const llvm::opt::ArgStringList &Arguments,
-                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                 std::optional<llvm::ToolContext> ToolContext)
+                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs)
+    : Command(Source, Creator, ResponseSupport, llvm::ToolContext{Executable},
+              Arguments, Inputs, Outputs) {}
+
+Command::Command(const Action &Source, const Tool &Creator,
+                 ResponseFileSupport ResponseSupport,
+                 llvm::ToolContext ToolContext,
+                 const llvm::opt::ArgStringList &Arguments,
+                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs)
     : Source(Source), Creator(Creator), ResponseSupport(ResponseSupport),
-      Executable(Executable), ToolContext(ToolContext), Arguments(Arguments) {
+      ToolContext(ToolContext), Arguments(Arguments) {
   for (const auto &II : Inputs)
     if (II.isFilename())
       InputInfoList.push_back(II);
@@ -133,15 +140,7 @@ void Command::writeResponseFile(raw_ostream &OS) const {
 
 void Command::buildArgvForResponseFile(
     llvm::SmallVectorImpl<const char *> &Out) const {
-  // If we have a ToolContext, prefer using its execute information.
-  if (auto TC = getToolContext()) {
-    Out.push_back(TC->Path);
-    if (TC->NeedsPrependArg)
-      Out.push_back(TC->PrependArg);
-  } else {
-    Out.push_back(Executable);
-  }
-
+  llvm::append_range(Out, ToolContext.executionArgs());
   // When not a file list, all arguments are sent to the response file.
   // This leaves us to set the argv to a single parameter, requesting the tool
   // to read the response file.
@@ -212,17 +211,7 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
                     CrashReportInfo *CrashInfo) const {
   // Always quote the exe.
   OS << ' ';
-
-  // If we have a ToolContext, prefer using its execute information.
-  if (auto TC = getToolContext()) {
-    llvm::sys::printArg(OS, TC->Path, /*Quote=*/true);
-    if (TC->NeedsPrependArg) {
-      OS << ' ';
-      llvm::sys::printArg(OS, TC->PrependArg, /*Quote=*/true);
-    }
-  } else {
-    llvm::sys::printArg(OS, Executable, /*Quote=*/true);
-  }
+  OS << ToolContext.executionArgsString();
 
   ArrayRef<const char *> Args = Arguments;
   SmallVector<const char *, 128> ArgsRespFile;
@@ -230,8 +219,7 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
     buildArgvForResponseFile(ArgsRespFile);
 
     // Slice the executable name and the tool argument, if it exists.
-    unsigned Slice =
-        getToolContext() && getToolContext()->NeedsPrependArg ? 2 : 1;
+    unsigned Slice = ToolContext.ProvidedToolName.empty() ? 1 : 2;
     Args = ArrayRef<const char *>(ArgsRespFile).slice(Slice);
   }
 
@@ -344,14 +332,7 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   SmallVector<const char *, 128> Argv;
   if (ResponseFile == nullptr) {
-    // If we have a ToolContext, prefer using its execute information.
-    if (auto TC = getToolContext()) {
-      Argv.push_back(TC->Path);
-      if (TC->NeedsPrependArg)
-        Argv.push_back(TC->PrependArg);
-    } else {
-      Argv.push_back(Executable);
-    }
+    llvm::append_range(Argv, ToolContext.executionArgs());
     Argv.append(Arguments.begin(), Arguments.end());
     Argv.push_back(nullptr);
   } else {
@@ -411,13 +392,12 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
 InProcessCommand::InProcessCommand(const Action &Source, const Tool &Creator,
                                    ResponseFileSupport ResponseSupport,
-                                   const char *Executable,
+                                   llvm::ToolContext ToolContext,
                                    const llvm::opt::ArgStringList &Arguments,
                                    ArrayRef<InputInfo> Inputs,
-                                   ArrayRef<InputInfo> Outputs,
-                                   llvm::ToolContext ToolContext)
-    : Command(Source, Creator, ResponseSupport, Executable, Arguments, Inputs,
-              Outputs, ToolContext) {
+                                   ArrayRef<InputInfo> Outputs)
+    : Command(Source, Creator, ResponseSupport, ToolContext, Arguments, Inputs,
+              Outputs) {
   InProcess = true;
 }
 
@@ -437,17 +417,11 @@ int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   SmallVector<const char *, 128> Argv;
 
-  // If we don't have a ToolContext, fallback to out-of-process.
-  auto TC = getToolContext();
-  if (!TC)
-    return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
+  const llvm::ToolContext &ToolContext = getToolContext();
+  Argv.push_back(ToolContext.getProgramName().data());
 
-  Argv.push_back(TC->Path);
-  if (TC->NeedsPrependArg)
-    Argv.push_back(TC->PrependArg);
-
-// If the in-process tool isn't callable, fallback to out-of-process.
-  if (!TC->hasInProcessTool(Argv))
+  // If the in-process tool isn't callable, fallback to out-of-process.
+  if (!ToolContext.Main)
     return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
 
   PrintFileNames();
@@ -469,7 +443,7 @@ int InProcessCommand::Execute(ArrayRef<std::optional<StringRef>> Redirects,
 
   int R = 0;
   // Enter ExecuteCC1Tool() instead of starting up a new process
-  if (!CRC.RunSafely([&]() { R = TC->callToolMain(Argv); })) {
+  if (!CRC.RunSafely([&]() { R = ToolContext.callToolMain(Argv); })) {
     llvm::RestorePrettyStackState(PrettyState);
     return CRC.RetCode;
   }
