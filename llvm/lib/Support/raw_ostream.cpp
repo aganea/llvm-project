@@ -20,6 +20,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/NativeFormatting.h"
 #include "llvm/Support/Process.h"
@@ -902,7 +903,9 @@ raw_fd_ostream &llvm::outs() {
 #endif
   static raw_fd_ostream S("-", EC, sys::fs::OF_None);
   assert(!EC);
-  return S;
+  auto *Ctx = ToolContext::Current;
+  auto *Outs = Ctx ? Ctx->OutsOverride : nullptr;
+  return Outs ? *Outs : S;
 }
 
 raw_fd_ostream &llvm::errs() {
@@ -912,7 +915,9 @@ raw_fd_ostream &llvm::errs() {
   assert(!EC);
 #endif
   static raw_fd_ostream S(STDERR_FILENO, false, true);
-  return S;
+  auto *Ctx = ToolContext::Current;
+  auto *Errs = Ctx ? Ctx->ErrsOverride : nullptr;
+  return Errs ? *Errs : S;
 }
 
 /// nulls() - This returns a reference to a raw_ostream which discards output.

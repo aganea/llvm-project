@@ -18,6 +18,8 @@
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Serialization/InMemoryModuleCache.h"
+#include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/TargetParser/Triple.h"
@@ -290,6 +292,45 @@ TEST(GeneratePCHFrontendAction, CacheGeneratedPCH) {
       EXPECT_EQ(InMemoryModuleCache::Unknown,
                 Compiler.getModuleCache().getPCMState(PCHFilename));
   }
+}
+
+TEST(ASTFrontendAction, RedirectedStreams) {
+  SmallString<64> OutPath;
+  int FD;
+  ASSERT_FALSE(sys::fs::createTemporaryFile("foo", "bar", FD, OutPath));
+  FileRemover Cleanup(OutPath);
+  std::error_code EC;
+  raw_fd_stream OutOS(OutPath, EC);
+  ASSERT_TRUE(!EC);
+
+  SmallString<64> ErrPath;
+  int FD2;
+  ASSERT_FALSE(sys::fs::createTemporaryFile("foo", "bar2", FD2, ErrPath));
+  FileRemover Cleanup2(ErrPath);
+  std::error_code EC2;
+  raw_fd_stream ErrOS(ErrPath, EC2);
+  ASSERT_TRUE(!EC2);
+
+  // Override stdout and stderr with our own streams.
+  llvm::ToolContext Ctx;
+  Ctx.OutsOverride = &OutOS;
+  Ctx.ErrsOverride = &ErrOS;
+
+  auto invocation = std::make_shared<CompilerInvocation>();
+  invocation->getPreprocessorOpts().addRemappedFile(
+      "test.cc",
+      MemoryBuffer::getMemBuffer("int main() { /* error on purpose */")
+          .release());
+  invocation->getFrontendOpts().Inputs.push_back(
+      FrontendInputFile("test.cc", Language::CXX));
+  invocation->getFrontendOpts().ProgramAction = frontend::ParseSyntaxOnly;
+  invocation->getTargetOpts().Triple = "i386-unknown-linux-gnu";
+  CompilerInstance compiler;
+  compiler.setInvocation(std::move(invocation));
+  compiler.createDiagnostics();
+
+  TestASTFrontendAction test_action;
+  ASSERT_FALSE(compiler.ExecuteAction(test_action));
 }
 
 } // anonymous namespace

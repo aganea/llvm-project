@@ -10,6 +10,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ExitCodes.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/thread.h"
 #include <cassert>
@@ -495,6 +496,7 @@ namespace {
 struct RunSafelyOnThreadInfo {
   function_ref<void()> Fn;
   CrashRecoveryContext *CRC;
+  ToolContext *Context;
   bool UseBackgroundPriority;
   bool Result;
 };
@@ -507,12 +509,15 @@ static void RunSafelyOnThread_Dispatch(void *UserData) {
   if (Info->UseBackgroundPriority)
     setThreadBackgroundPriority();
 
+  ToolContext::setThreadContext(Info->Context);
+
   Info->Result = Info->CRC->RunSafely(Info->Fn);
 }
 bool CrashRecoveryContext::RunSafelyOnThread(function_ref<void()> Fn,
                                              unsigned RequestedStackSize) {
   bool UseBackgroundPriority = hasThreadBackgroundPriority();
-  RunSafelyOnThreadInfo Info = { Fn, this, UseBackgroundPriority, false };
+  RunSafelyOnThreadInfo Info = {Fn, this, ToolContext::Current,
+                                UseBackgroundPriority, false};
   llvm::thread Thread(RequestedStackSize == 0
                           ? std::nullopt
                           : std::optional<unsigned>(RequestedStackSize),

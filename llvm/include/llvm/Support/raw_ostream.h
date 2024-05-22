@@ -604,11 +604,13 @@ public:
   tryLockFor(Duration const &Timeout);
 };
 
-/// This returns a reference to a raw_fd_ostream for standard output. Use it
-/// like: outs() << "foo" << "bar";
+/// This returns a reference to a raw_fd_ostream for standard output, or a
+/// custom stream, if overwritten through ToolContext.
+/// Use it like: outs() << "foo" << "bar";
 raw_fd_ostream &outs();
 
-/// This returns a reference to a raw_ostream for standard error.
+/// This returns a reference to a raw_fd_ostream for standard error, or a custom
+/// stream, if overwritten through ToolContext.
 /// Use it like: errs() << "foo" << "bar";
 /// By default, the stream is tied to stdout to ensure stdout is flushed before
 /// stderr is written, to ensure the error messages are written in their
