@@ -360,6 +360,8 @@ set(LLVM_FORCE_VC_REPOSITORY
 
 option(LLVM_TOOL_LLVM_DRIVER_BUILD "Enables building the llvm multicall tool" OFF)
 
+set(LLVM_DRIVER_NAME "llvm" CACHE STRING "Name of the llvm-driver binary, when enabled.")
+
 set(PACKAGE_NAME LLVM)
 set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "https://github.com/llvm/llvm-project/issues/")

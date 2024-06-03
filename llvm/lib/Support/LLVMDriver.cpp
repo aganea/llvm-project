@@ -17,11 +17,26 @@
 
 using namespace llvm;
 
-ToolContext::KnownToolsFn ToolContext::KnownTools;
-const char *ToolContext::Argv0;
+// Absolute Argv[0] set when the PE/binary starts.
+static const char *InitialArgv0;
 
-static ToolContext discoverTool(const char *Arg0, const char *Arg1) {
-  if (!ToolContext::KnownTools)
+// A list of LLVM tools that live inside the current PE/binary. If the binary
+// embeds a single tool that isn't known to llvm-driver, this can empty or
+// nullptr.
+static ToolContext::KnownToolsFn KnownTools;
+
+void ToolContext::setTools(KnownToolsFn Tools, const char *Argv0) {
+  KnownTools = Tools;
+  InitialArgv0 = Argv0;
+}
+
+StringRef ToolContext::getArgv0() const {
+  return InitialArgv0 ? InitialArgv0 : BinaryPath;
+}
+
+static std::optional<ToolContext> discoverTool(const char *Arg0,
+                                               const char *Arg1) {
+  if (!KnownTools)
     return ToolContext{Arg0};
 
   // Clean tool name
@@ -32,7 +47,7 @@ static ToolContext discoverTool(const char *Arg0, const char *Arg1) {
   StringRef BestTool;
   ToolContext::MainFn BestToolMain{};
 
-  auto MainFns = ToolContext::KnownTools();
+  auto MainFns = KnownTools();
   for_each(MainFns, [&](auto &Pair) {
     StringRef VerbatimTool(Pair.first);
     auto I = Tool.rfind_insensitive(VerbatimTool);
@@ -48,10 +63,16 @@ static ToolContext discoverTool(const char *Arg0, const char *Arg1) {
     BestTool = VerbatimTool;
     BestToolMain = Pair.second;
   });
-  if (!BestToolMain && Arg1) {
-    ToolContext TC = discoverTool(Arg1, nullptr);
-    TC.BinaryPath = Arg0;
-    TC.ProvidedToolName = Arg1;
+  if (!BestToolMain) {
+    if (!Arg1)
+      return std::nullopt;
+
+    auto TC = discoverTool(Arg1, nullptr);
+    if (!TC)
+      return std::nullopt;
+
+    TC->BinaryPath = Arg0;
+    TC->ProvidedToolName = Arg1;
     return TC;
   }
 
@@ -93,9 +114,14 @@ ToolContext::newContext(ArrayRef<const char *> Args) const {
   return TC;
 }
 
+StringRef ToolContext::getProgramName() const {
+  return !ProvidedToolName.empty() ? ProvidedToolName
+                                   : sys::path::filename(BinaryPath);
+}
+
 StringRef GetExecutablePath(bool CanonicalPrefixes) {
   if (!CanonicalPrefixes) {
-    static SmallString<128> ExecutablePath(ToolContext::Argv0);
+    static SmallString<128> ExecutablePath(InitialArgv0);
     // Do a PATH lookup if Argv0 isn't a valid path.
     if (!sys::fs::exists(ExecutablePath))
       if (ErrorOr<std::string> P = llvm::sys::findProgramByName(ExecutablePath))
@@ -103,7 +129,7 @@ StringRef GetExecutablePath(bool CanonicalPrefixes) {
     return ExecutablePath;
   }
   static std::string MainExe =
-      sys::fs::getMainExecutable(ToolContext::Argv0, ToolContext::KnownTools);
+      sys::fs::getMainExecutable(InitialArgv0, KnownTools);
   return MainExe;
 }
 

@@ -19,7 +19,7 @@ public:
   // ie. `/path/to/llvm` or `C:\path\to\clang-cl.exe`
   StringRef BinaryPath;
   // The name of the current tool, if provided separately from the binary name.
-  // ie. `llvm.exe clang ...`
+  // ie. `llvm.exe clang++ ...`
   StringRef ProvidedToolName;
   // Whether the tool needs to cleanup the memory after execution.
   // A tool that runs a single time in a PE doesn't cleanup, to speed up
@@ -27,27 +27,16 @@ public:
   // after each execution.
   bool Cleanup = false;
 
-  // Absolute Argv[0] set when the PE/binary starts.
-  static const char *Argv0;
-
   // The main function associated with the current verbatim tool.
   using MainFn = int (*)(int Argc, char **Argv, const llvm::ToolContext &TC);
   MainFn Main;
 
-  // The verbatim tool name. For example if calling `i386-clang-cl-15`, the
+  // The verbatim tool name. For example if calling `i386-clang++-15`, the
   // verbatim name is `clang`.
   StringRef VerbatimToolName;
 
-  // A list of LLVM tools that live inside the current PE/binary. If the binary
-  // embeds a single tool that isn't known to llvm-driver, this can empty or
-  // nullptr.
-  using KnownToolsFn = ArrayRef<std::pair<StringRef, MainFn>> (*)();
-  static KnownToolsFn KnownTools;
-
   // The name of the tool, including the target triple or the version number.
-  StringRef getProgramName() const {
-    return ProvidedToolName.empty() ? BinaryPath : ProvidedToolName;
-  }
+  StringRef getProgramName() const;
 
   // The arguments that would be used to re-invoke this tool.
   std::vector<const char *> executionArgs() const;
@@ -64,6 +53,14 @@ public:
   std::optional<ToolContext> newContext(ArrayRef<const char *> Args) const;
 
   void setCanonicalPrefixes(bool CanonicalPrefixes);
+
+  // For compatibility reasons, until all code is migrated to using this class,
+  // just return the initial main() Argv[0].
+  StringRef getArgv0() const;
+
+  using KnownToolsFn =
+      ArrayRef<std::pair<StringRef, ToolContext::MainFn>> (*)();
+  static void setTools(KnownToolsFn Tools, const char *Argv0 = nullptr);
 };
 
 // Identical to a ToolContext, except that the strings are internalized.

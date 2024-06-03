@@ -333,4 +333,7 @@
 
 #cmakedefine HAVE_BUILTIN_THREAD_POINTER ${HAVE_BUILTIN_THREAD_POINTER}
 
+/* Base name of the generic llvm-driver executable */
+#cmakedefine LLVM_DRIVER_NAME "${LLVM_DRIVER_NAME}"
+
 #endif

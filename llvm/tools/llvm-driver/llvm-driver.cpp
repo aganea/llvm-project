@@ -44,7 +44,7 @@ static void printHelpMessage() {
                << "OPTIONS:\n\n  --help - Display this message";
 }
 
-static int findTool(ArrayRef<char *> Args) {
+static int findTool(ArrayRef<const char *> Args) {
   // Create a specific context to understand if we are explicitly llvm.exe or if
   // we are a symlinked binary such as clang.exe.
   if (auto NewTC = ToolContext().newContext(Args)) {
@@ -65,7 +65,6 @@ static int findTool(ArrayRef<char *> Args) {
 
 int main(int Argc, char **Argv) {
   InitLLVM X(Argc, Argv);
-  ToolContext::KnownTools = &knownMainFns;
-  ToolContext::Argv0 = Argv[0];
-  return findTool(ArrayRef(Argv, Argc));
+  ToolContext::setTools(&knownMainFns, Argv[0]);
+  return findTool(X.getArgs());
 }

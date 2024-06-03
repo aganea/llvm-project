@@ -9,6 +9,7 @@
 #ifndef LLVM_SUPPORT_INITLLVM_H
 #define LLVM_SUPPORT_INITLLVM_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -41,6 +42,8 @@ public:
                  InstallPipeSignalExitHandler) {}
 
   ~InitLLVM();
+
+  ArrayRef<const char *> getArgs() const { return ArrayRef(Args).drop_back(1); }
 
 private:
   BumpPtrAllocator Alloc;

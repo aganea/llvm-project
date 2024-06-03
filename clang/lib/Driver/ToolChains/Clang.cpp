@@ -7599,12 +7599,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Arg->render(Args, OriginalArgs);
 
     SmallString<256> Flags;
-    EscapeSpacesAndBackslashes(D.getToolContext().getProgramName().data(),
-                               Flags);
-    for (const char *OriginalArg : OriginalArgs) {
+    for (const char *OriginalArg : llvm::concat<const char *>(
+             D.getToolContext().executionArgs(), OriginalArgs)) {
       SmallString<128> EscapedArg;
       EscapeSpacesAndBackslashes(OriginalArg, EscapedArg);
-      Flags += " ";
+      if (!Flags.empty())
+        Flags += " ";
       Flags += EscapedArg;
     }
     auto FlagsArgString = Args.MakeArgString(Flags);

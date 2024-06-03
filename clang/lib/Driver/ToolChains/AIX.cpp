@@ -250,7 +250,7 @@ void aix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_shared) && !hasExportListLinkerOpts(CmdArgs)) {
 
     const char *CreateExportListExec = Args.MakeArgString(
-        path::parent_path(ToolChain.getDriver().getToolContext().Argv0) +
+        path::parent_path(ToolChain.getDriver().getToolContext().getArgv0()) +
         "/llvm-nm");
     ArgStringList CreateExportCmdArgs;
 

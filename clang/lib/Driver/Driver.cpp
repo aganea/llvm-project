@@ -255,6 +255,7 @@ void Driver::setDriverMode(StringRef Value) {
 }
 
 void Driver::setResourceDirectory() {
+  StringRef ClangExecutable = ToolContext.BinaryPath;
   // Compute the path to the resource directory, depending on the driver mode.
   switch (Mode) {
   case GCCMode:
@@ -4971,7 +4972,7 @@ void Driver::BuildJobs(Compilation &C) const {
         --InProcessJobs;
 
         llvm::opt::ArgStringList Args = J.getArguments();
-        llvm::remove_if(Args, [](const char *A) {
+        llvm::erase_if(Args, [](const char *A) {
           return StringRef(A) == "-disable-free";
         });
         J.replaceArguments(Args);

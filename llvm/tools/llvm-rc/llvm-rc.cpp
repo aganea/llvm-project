@@ -226,21 +226,28 @@ struct RcOptions {
 };
 
 void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
-                const char *Argv0) {
+                const llvm::ToolContext &TC) {
   std::string Clang;
+  std::optional<llvm::ToolContext> ClangTC;
   if (Opts.PrintCmdAndExit || Opts.Preprocessor) {
     Clang = "clang";
   } else {
-    ErrorOr<std::string> ClangOrErr = findClang(Argv0, Opts.Triple);
-    if (ClangOrErr) {
-      Clang = *ClangOrErr;
+    ClangTC = TC.newContext({"clang"});
+    if (ClangTC) {
+      Clang = "clang";
     } else {
-      errs() << "llvm-rc: Unable to find clang for preprocessing."
-             << "\n";
-      StringRef OptionName =
-          Opts.IsWindres ? "--no-preprocess" : "-no-preprocess";
-      errs() << "Pass " << OptionName << " to disable preprocessing.\n";
-      fatalError("llvm-rc: Unable to preprocess.");
+      ErrorOr<std::string> ClangOrErr =
+          findClang(TC.BinaryPath.data(), Opts.Triple);
+      if (ClangOrErr) {
+        Clang = *ClangOrErr;
+      } else {
+        errs() << "llvm-rc: Unable to find clang for preprocessing."
+               << "\n";
+        StringRef OptionName =
+            Opts.IsWindres ? "--no-preprocess" : "-no-preprocess";
+        errs() << "Pass " << OptionName << " to disable preprocessing.\n";
+        fatalError("llvm-rc: Unable to preprocess.");
+      }
     }
   }
 
@@ -274,10 +281,17 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
   }
   // The llvm Support classes don't handle reading from stdout of a child
   // process; otherwise we could avoid using a temp file.
+  int Res;
   std::string ErrMsg;
-  int Res =
-      sys::ExecuteAndWait(Args[0], Args, /*Env=*/std::nullopt, /*Redirects=*/{},
-                          /*SecondsToWait=*/0, /*MemoryLimit=*/0, &ErrMsg);
+  if (ClangTC) {
+    SmallVector<const char *, 8> ArgsChar(Args.size());
+    llvm::transform(Args, ArgsChar.end(), [](StringRef A) { return A.data(); });
+    Res = ClangTC->callToolMain(ArgsChar);
+  } else {
+    Res = sys::ExecuteAndWait(Args[0], Args, /*Env=*/std::nullopt,
+                              /*Redirects=*/{},
+                              /*SecondsToWait=*/0, /*MemoryLimit=*/0, &ErrMsg);
+  }
   if (Res) {
     if (!ErrMsg.empty())
       fatalError("llvm-rc: Preprocessing failed: " + ErrMsg);
@@ -592,12 +606,12 @@ RcOptions getOptions(const char *Argv0, ArrayRef<const char *> ArgsArr,
 }
 
 void doRc(std::string Src, std::string Dest, RcOptions &Opts,
-          const char *Argv0) {
+          const llvm::ToolContext &TC) {
   std::string PreprocessedFile = Src;
   if (Opts.Preprocess) {
     std::string OutFile = createTempFile("preproc", "rc");
     TempPreprocFile.setFile(OutFile);
-    preprocess(Src, OutFile, Opts, Argv0);
+    preprocess(Src, OutFile, Opts, TC);
     PreprocessedFile = OutFile;
   }
 
@@ -732,7 +746,7 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
 
 } // anonymous namespace
 
-int llvm_rc_main(int Argc, char **Argv, const llvm::ToolContext &) {
+int llvm_rc_main(int Argc, char **Argv, const llvm::ToolContext &TC) {
   ExitOnErr.setBanner("llvm-rc: ");
 
   char **DashDash = std::find_if(Argv + 1, Argv + Argc,
@@ -750,7 +764,7 @@ int llvm_rc_main(int Argc, char **Argv, const llvm::ToolContext &) {
       ResFile = createTempFile("rc", "res");
       TempResFile.setFile(ResFile);
     }
-    doRc(Opts.InputFile, ResFile, Opts, Argv[0]);
+    doRc(Opts.InputFile, ResFile, Opts, TC);
   } else {
     ResFile = Opts.InputFile;
   }
