@@ -3,6 +3,7 @@
 // RUN: %clangxx -target x86_64-unknown-unknown -g -gdwarf-4 -std=c++11 %s -emit-llvm -S -o - | FileCheck --check-prefixes=CHECK,DWARF4,NOT-MS %s
 // RUN: %clangxx -target x86_64-unknown-unknown -g -gdwarf-5 -std=c++11 %s -emit-llvm -S -o - | FileCheck --check-prefixes=CHECK,DWARF5 %s
 // RUN: %clangxx -target x86_64-windows-msvc -g -gdwarf-4 %s -emit-llvm -S -o - | FileCheck --check-prefixes=CHECK,DWARF4 %s
+// RUN: %clangxx -target x86_64-unknown-unknown -g -std=c++17 %s -emit-llvm -S -o - | FileCheck --check-prefix=CXX17 %s
 // PR14471
 
 // CHECK: @{{.*}}a{{.*}} = dso_local global i32 4, align 4, !dbg [[A:![0-9]+]]
@@ -47,6 +48,9 @@ public:
 // CHECK-SAME:             ){{$}}
 // DWARF4: !DIDerivedType(tag: DW_TAG_member, name: "static_decl_templ_var"
 // DWARF5: !DIDerivedType(tag: DW_TAG_variable, name: "static_decl_templ_var"
+// CHECK-SAME:           extraData: i32 7
+// CXX17: !DIDerivedType(tag: DW_TAG_variable, name: "static_constexpr_decl_templ_var"
+// CXX17-SAME:           extraData: i32 8
 
 int C::a = 4;
 // CHECK: [[B]] = !DIGlobalVariableExpression(var: [[BV:.*]], expr: !DIExpression())
@@ -132,6 +136,9 @@ int ref() {
 template<typename T>
 struct static_decl_templ {
   static const int static_decl_templ_var = 7;
+#if __cplusplus >= 201703L
+  static constexpr int static_constexpr_decl_templ_var = 8;
+#endif
 };
 
 template<typename T>

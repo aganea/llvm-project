@@ -1780,14 +1780,21 @@ CGDebugInfo::CreateRecordStaticField(const VarDecl *Var, llvm::DIType *RecordTy,
   // FIXME: to avoid complications with type merging we should
   // emit the constant on the definition instead of the declaration.
   llvm::Constant *C = nullptr;
-  if (Var->getInit()) {
-    const APValue *Value = Var->evaluateValue();
-    if (Value) {
-      if (Value->isInt())
-        C = llvm::ConstantInt::get(CGM.getLLVMContext(), Value->getInt());
-      if (Value->isFloat())
-        C = llvm::ConstantFP::get(CGM.getLLVMContext(), Value->getFloat());
-    }
+  APValue *Value = nullptr;
+  if (Var->getInit())
+    Value = Var->evaluateValue();
+  else if (auto *TemplateDecl = Var->getInstantiatedFromStaticDataMember()) {
+    // Inline static data members might not have an initialization.
+    // FIXME: Still doesn't get a value if the initialization is dependent.
+    auto *TemplateInit = TemplateDecl->getInit();
+    if (TemplateInit && !TemplateInit->isValueDependent())
+      Value = TemplateDecl->evaluateValue();
+  }
+  if (Value) {
+    if (Value->isInt())
+      C = llvm::ConstantInt::get(CGM.getLLVMContext(), Value->getInt());
+    if (Value->isFloat())
+      C = llvm::ConstantFP::get(CGM.getLLVMContext(), Value->getFloat());
   }
 
   llvm::DINode::DIFlags Flags = getAccessFlag(Var->getAccess(), RD);
