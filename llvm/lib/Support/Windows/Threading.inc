@@ -19,6 +19,8 @@
 
 #include <bitset>
 
+#include "processthreadsapi.h"
+
 // Windows will at times define MemoryFence.
 #ifdef MemoryFence
 #undef MemoryFence
