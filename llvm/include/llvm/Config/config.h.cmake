@@ -285,7 +285,9 @@
 #cmakedefine stricmp ${stricmp}
 
 /* Define to a function implementing strdup */
+#ifndef strdup 
 #cmakedefine strdup ${strdup}
+#endif
 
 /* Whether GlobalISel rule coverage is being collected */
 #cmakedefine01 LLVM_GISEL_COV_ENABLED
