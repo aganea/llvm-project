@@ -1942,7 +1942,7 @@ bool CallVar(InterpState &S, CodePtr OpPC, const Function *Func,
     return true;
   }
 
-  InterpFrame::free(NewFrame);
+  InterpFrame::freeBlock(NewFrame);
   // Interpreting the function failed somehow. Reset to
   // previous state.
   S.Current = FrameBefore;
@@ -2037,7 +2037,7 @@ bool Call(InterpState &S, CodePtr OpPC, const Function *Func,
     S.InitializingPtrs.pop_back();
 
   if (!Success) {
-    InterpFrame::free(NewFrame);
+    InterpFrame::freeBlock(NewFrame);
     // Interpreting the function failed somehow. Reset to
     // previous state.
     S.Current = FrameBefore;

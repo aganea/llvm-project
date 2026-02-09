@@ -56,7 +56,7 @@ public:
     return Func->getName();
   }
 
-  static void free(InterpFrame *F) {
+  static void freeBlock(InterpFrame *F) {
     if (!F->isBottomFrame()) {
       F->~InterpFrame();
       delete[] reinterpret_cast<char *>(F);

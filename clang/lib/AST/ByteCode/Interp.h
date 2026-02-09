@@ -303,7 +303,7 @@ PRESERVE_NONE bool Ret(InterpState &S) {
   cleanupAfterFunctionCall(S, S.Current->getFunction());
 
   S.PC = S.Current->getRetPC();
-  InterpFrame::free(S.Current);
+  InterpFrame::freeBlock(S.Current);
   S.Current = Caller;
   S.Stk.push<T>(Ret);
   return true;
@@ -322,7 +322,7 @@ PRESERVE_NONE inline bool RetVoid(InterpState &S) {
   cleanupAfterFunctionCall(S, S.Current->getFunction());
 
   S.PC = S.Current->getRetPC();
-  InterpFrame::free(S.Current);
+  InterpFrame::freeBlock(S.Current);
   S.Current = Caller;
   return true;
 }
