@@ -363,11 +363,21 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
   TheDriver.setTargetAndMode(TargetAndMode);
   // If -canonical-prefixes is set, GetExecutablePath will have resolved Path
   // to the llvm driver binary, not clang. In this case, we need to use
-  // PrependArg which should be clang-*. Checking just CanonicalPrefixes is
-  // safe even in the normal case because PrependArg will be null so
-  // setPrependArg will be a no-op.
-  if (ToolContext.NeedsPrependArg || CanonicalPrefixes)
+  // PrependArg which should be clang-*. When the resolved path still matches
+  // the tool name (e.g. hardlinks on Windows), PrependArg is not needed.
+  if (ToolContext.NeedsPrependArg) {
     TheDriver.setPrependArg(ToolContext.PrependArg);
+  } else if (CanonicalPrefixes && ToolContext.PrependArg) {
+    // Only set PrependArg if the canonical path resolved to a different
+    // binary name than what PrependArg indicates. This handles symlinks
+    // (e.g. clang -> llvm-driver on Linux) but avoids issues on Windows
+    // where clang.exe is a hardlink and the canonical path is unchanged.
+    StringRef PathStem = llvm::sys::path::stem(Path);
+    StringRef PrependStem =
+        llvm::sys::path::stem(StringRef(ToolContext.PrependArg));
+    if (!PathStem.equals_insensitive(PrependStem))
+    TheDriver.setPrependArg(ToolContext.PrependArg);
+  }
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
 
