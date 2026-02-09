@@ -47,6 +47,7 @@ static std::string writeInfo(Info *I, DiagnosticsEngine &Diags) {
   case InfoType::IT_friend:
     return writeInfo(*static_cast<FriendInfo *>(I), Diags);
   case InfoType::IT_default:
+  default:
     return "";
   }
 }
