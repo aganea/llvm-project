@@ -221,7 +221,7 @@ private:
   friend class Block;
   friend class InterpState;
 
-  void free();
+  void freeBlock();
 
   /// Root pointer of the list.
   DeadBlock *&Root;

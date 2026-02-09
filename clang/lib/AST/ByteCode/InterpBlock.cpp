@@ -57,7 +57,7 @@ void Block::removePointer(Pointer *P) {
 
 void Block::cleanup() {
   if (Pointers == nullptr && !isDynamic() && isDead())
-    (reinterpret_cast<DeadBlock *>(this + 1) - 1)->free();
+    (reinterpret_cast<DeadBlock *>(this + 1) - 1)->freeBlock();
 }
 
 void Block::replacePointer(Pointer *Old, Pointer *New) {
@@ -142,7 +142,7 @@ DeadBlock::DeadBlock(DeadBlock *&Root, Block *Blk)
   Blk->Pointers = nullptr;
 }
 
-void DeadBlock::free() {
+void DeadBlock::freeBlock() {
   assert(!B.isInitialized());
 
   if (Prev)

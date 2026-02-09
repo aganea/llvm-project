@@ -243,11 +243,11 @@ bool Ret(InterpState &S, CodePtr &PC) {
 
   if (InterpFrame *Caller = S.Current->Caller) {
     PC = S.Current->getRetPC();
-    InterpFrame::free(S.Current);
+    InterpFrame::freeBlock(S.Current);
     S.Current = Caller;
     S.Stk.push<T>(Ret);
   } else {
-    InterpFrame::free(S.Current);
+    InterpFrame::freeBlock(S.Current);
     S.Current = nullptr;
     // The topmost frame should come from an EvalEmitter,
     // which has its own implementation of the Ret<> instruction.
@@ -263,10 +263,10 @@ inline bool RetVoid(InterpState &S, CodePtr &PC) {
 
   if (InterpFrame *Caller = S.Current->Caller) {
     PC = S.Current->getRetPC();
-    InterpFrame::free(S.Current);
+    InterpFrame::freeBlock(S.Current);
     S.Current = Caller;
   } else {
-    InterpFrame::free(S.Current);
+    InterpFrame::freeBlock(S.Current);
     S.Current = nullptr;
   }
   return true;
