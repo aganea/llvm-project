@@ -90,6 +90,9 @@ def parse_only : MLFlag<"Zs">, HelpText<"Run a syntax-check only">,
 def ignore_include_envvar : MLFlag<"X">,
                             HelpText<"Ignore the INCLUDE environment variable">;
 
+def working_dir : MLJoinedOrSeparate<"working-directory">,
+                  HelpText<"Provide the default working directory">;
+
 def tiny_model_support : UnsupportedFlag<"AT">, HelpText<"">;
 def alternate_linker : UnsupportedJoined<"Bl">, HelpText<"">;
 def coff_object_file : UnsupportedFlag<"coff">, HelpText<"">;

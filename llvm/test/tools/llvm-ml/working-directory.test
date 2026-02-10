@@ -1,0 +1,42 @@
+# Test the -working-directory flag for llvm-ml.
+
+# Set up a temporary directory structure with assembly and include files.
+# RUN: rm -rf %t && mkdir -p %t/subdir %t/subdir/inc
+
+# Create a simple assembly file in the subdirectory.
+# RUN: echo ".code"    >  %t/subdir/test.asm
+# RUN: echo "t1:"      >> %t/subdir/test.asm
+# RUN: echo "  ret"    >> %t/subdir/test.asm
+# RUN: echo "end"      >> %t/subdir/test.asm
+
+# Create an include file and an assembly file that uses it.
+# RUN: echo "MyConst equ 42" > %t/subdir/inc/defs.inc
+# RUN: echo "include defs.inc" >  %t/subdir/with_include.asm
+# RUN: echo ".code"           >> %t/subdir/with_include.asm
+# RUN: echo "t1:"             >> %t/subdir/with_include.asm
+# RUN: echo "  mov eax, MyConst" >> %t/subdir/with_include.asm
+# RUN: echo "end"             >> %t/subdir/with_include.asm
+
+# Test 1: Assemble using an absolute input path with -working-directory and
+# a relative output path. The output should be placed relative to the working
+# directory.
+# RUN: llvm-ml -working-directory %t/subdir %t/subdir/test.asm /Fo test1.obj
+# RUN: llvm-readobj --file-headers %t/subdir/test1.obj | FileCheck %s
+
+# Test 2: Assemble using a relative input path resolved against the working
+# directory. This verifies that the input file is found via -working-directory.
+# RUN: llvm-ml -working-directory %t/subdir test.asm /Fo test2.obj
+# RUN: llvm-readobj --file-headers %t/subdir/test2.obj | FileCheck %s
+
+# Test 3: Assemble using /Ta (assembly_file) with a relative path and
+# -working-directory.
+# RUN: llvm-ml -working-directory %t/subdir /Ta test.asm /Fo test3.obj
+# RUN: llvm-readobj --file-headers %t/subdir/test3.obj | FileCheck %s
+
+# Test 4: Verify that a relative -I include path is resolved against the
+# working directory.
+# RUN: llvm-ml -working-directory %t/subdir /I inc with_include.asm /Fo test4.obj
+# RUN: llvm-readobj --file-headers %t/subdir/test4.obj | FileCheck %s
+
+# Verify valid COFF output was produced.
+# CHECK: Format: COFF-i386

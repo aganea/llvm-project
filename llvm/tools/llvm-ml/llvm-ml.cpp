@@ -204,19 +204,35 @@ int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   opt::InputArgList InputArgs =
       T.ParseArgs(ArgsArr, MissingArgIndex, MissingArgCount);
 
+  // Parse working directory early, before resolving input file paths.
+  const StringRef WorkingDir = InputArgs.getLastArgValue(OPT_working_dir, "");
+  SmallString<128> CWD;
+  if (!WorkingDir.empty())
+    CWD = WorkingDir;
+  else
+    sys::fs::current_path(CWD);
+
   std::string InputFilename;
   for (auto *Arg : InputArgs.filtered(OPT_INPUT)) {
     std::string ArgString = Arg->getAsString(InputArgs);
+
+    // Resolve relative paths against the working directory for the file
+    // existence check, so that -working-directory works with relative inputs.
+    SmallString<128> ResolvedPath(ArgString);
+    if (ArgString != "-" && llvm::sys::path::is_relative(ArgString) &&
+        !CWD.empty())
+      llvm::sys::path::make_absolute(CWD, ResolvedPath);
+
     bool IsFile = false;
     std::error_code IsFileEC =
-        llvm::sys::fs::is_regular_file(ArgString, IsFile);
+        llvm::sys::fs::is_regular_file(Twine(ResolvedPath), IsFile);
     if (ArgString == "-" || IsFile) {
       if (!InputFilename.empty()) {
         WithColor::warning(errs(), ProgName)
             << "does not support multiple assembly files in one command; "
             << "ignoring '" << InputFilename << "'\n";
       }
-      InputFilename = ArgString;
+      InputFilename = std::string(ResolvedPath);
     } else {
       std::string Diag;
       raw_string_ostream OS(Diag);
@@ -236,7 +252,14 @@ int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
           << "does not support multiple assembly files in one command; "
           << "ignoring '" << InputFilename << "'\n";
     }
-    InputFilename = Arg->getValue();
+    std::string Value = Arg->getValue();
+    if (llvm::sys::path::is_relative(Value) && !CWD.empty()) {
+      SmallString<128> AbsPath(Value);
+      llvm::sys::path::make_absolute(CWD, AbsPath);
+      InputFilename = std::string(AbsPath);
+    } else {
+      InputFilename = Value;
+    }
   }
 
   for (auto *Arg : InputArgs.filtered(OPT_unsupported_Group)) {
@@ -302,6 +325,15 @@ int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   // included files later.
   std::vector<std::string> IncludeDirs =
       InputArgs.getAllArgValues(OPT_include_path);
+  // Resolve relative include paths against the working directory so that
+  // -working-directory works consistently with -I.
+  for (std::string &Dir : IncludeDirs) {
+    if (llvm::sys::path::is_relative(Dir) && !CWD.empty()) {
+      SmallString<128> AbsDir(Dir);
+      llvm::sys::path::make_absolute(CWD, AbsDir);
+      Dir = std::string(AbsDir);
+    }
+  }
   if (!InputArgs.hasArg(OPT_ignore_include_envvar)) {
     if (std::optional<std::string> IncludeEnvVar =
             llvm::sys::Process::GetEnv("INCLUDE")) {
@@ -340,9 +372,7 @@ int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   Ctx.setObjectFileInfo(MOFI.get());
 
   // Set compilation information.
-  SmallString<128> CWD;
-  if (!sys::fs::current_path(CWD))
-    Ctx.setCompilationDir(CWD);
+  Ctx.setCompilationDir(CWD);
   Ctx.setMainFileName(InputFilename);
 
   StringRef FileType = InputArgs.getLastArgValue(OPT_filetype, "obj");
@@ -353,8 +383,14 @@ int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
     DefaultOutputFilename = InputFilename;
     sys::path::replace_extension(DefaultOutputFilename, FileType);
   }
-  const StringRef OutputFilename =
-      InputArgs.getLastArgValue(OPT_output_file, DefaultOutputFilename);
+  std::string OutputFilename =
+      InputArgs.getLastArgValue(OPT_output_file, DefaultOutputFilename).str();
+  if (OutputFilename != "-" && llvm::sys::path::is_relative(OutputFilename) &&
+      !CWD.empty()) {
+    SmallString<128> OutputFile(OutputFilename);
+    llvm::sys::path::make_absolute(CWD, OutputFile);
+    OutputFilename = OutputFile.str();
+  }
   std::unique_ptr<ToolOutputFile> Out = GetOutputStream(OutputFilename);
   if (!Out)
     return 1;
