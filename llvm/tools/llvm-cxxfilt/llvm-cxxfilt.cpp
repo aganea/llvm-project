@@ -157,12 +157,12 @@ static void demangleLine(llvm::raw_ostream &OS, StringRef Mangled, bool Split) {
   OS.flush();
 }
 
-int llvm_cxxfilt_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_cxxfilt_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   CxxfiltOptTable Tbl;
-  ToolName = argv[0];
-  opt::InputArgList Args = Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver,
+  ToolName = ArgsV[0];
+  opt::InputArgList Args = Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver,
                                          [&](StringRef Msg) { error(Msg); });
   if (Args.hasArg(OPT_help)) {
     Tbl.printHelp(outs(),

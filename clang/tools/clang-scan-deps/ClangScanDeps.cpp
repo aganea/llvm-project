@@ -110,11 +110,11 @@ static constexpr bool DoRoundTripDefault = false;
 static bool RoundTripArgs = DoRoundTripDefault;
 static bool VerbatimArgs = false;
 
-static void ParseArgs(int argc, char **argv) {
+static void ParseArgs(ArrayRef<const char *> ArgsV) {
   ScanDepsOptTable Tbl;
-  llvm::StringRef ToolName = argv[0];
+  llvm::StringRef ToolName = ArgsV[0];
   llvm::opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -757,8 +757,8 @@ static std::string getModuleCachePath(ArrayRef<std::string> Args) {
 /// Attempts to construct the compilation database from '-compilation-database'
 /// or from the arguments following the positional '--'.
 static std::unique_ptr<tooling::CompilationDatabase>
-getCompilationDatabase(int argc, char **argv, std::string &ErrorMessage) {
-  ParseArgs(argc, argv);
+getCompilationDatabase(ArrayRef<const char *> Args, std::string &ErrorMessage) {
+  ParseArgs(Args);
 
   if (!(CommandLine.empty() ^ CompilationDB.empty())) {
     llvm::errs() << "The compilation command line must be provided either via "
@@ -841,11 +841,12 @@ getCompilationDatabase(int argc, char **argv, std::string &ErrorMessage) {
       FEOpts.Inputs[0].getFile(), OutputFile, CommandLine);
 }
 
-int clang_scan_deps_main(int argc, char **argv, const llvm::ToolContext &) {
+int clang_scan_deps_main(ArrayRef<const char *> Args,
+                         const llvm::ToolContext &) {
   llvm::InitializeAllTargetInfos();
   std::string ErrorMessage;
   std::unique_ptr<tooling::CompilationDatabase> Compilations =
-      getCompilationDatabase(argc, argv, ErrorMessage);
+      getCompilationDatabase(Args, ErrorMessage);
   if (!Compilations) {
     llvm::errs() << ErrorMessage << "\n";
     return 1;

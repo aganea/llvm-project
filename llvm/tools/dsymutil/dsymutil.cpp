@@ -609,16 +609,15 @@ getOutputFileName(StringRef InputFile, const DsymutilOptions &Options) {
   return OutputLocation(std::string(Path), ResourceDir);
 }
 
-int dsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
+int dsymutil_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   // Parse arguments.
   DsymutilOptTable T;
   unsigned MAI;
   unsigned MAC;
-  ArrayRef<const char *> ArgsArr = ArrayRef(argv + 1, argc - 1);
-  opt::InputArgList Args = T.ParseArgs(ArgsArr, MAI, MAC);
+  opt::InputArgList Args = T.ParseArgs(ArgsV.drop_front(), MAI, MAC);
 
   void *P = (void *)(intptr_t)getOutputFileName;
-  std::string SDKPath = sys::fs::getMainExecutable(argv[0], P);
+  std::string SDKPath = sys::fs::getMainExecutable(ArgsV[0], P);
   SDKPath = std::string(sys::path::parent_path(SDKPath));
 
   for (auto *Arg : Args.filtered(OPT_UNKNOWN)) {
@@ -628,7 +627,7 @@ int dsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
 
   if (Args.hasArg(OPT_help)) {
     T.printHelp(
-        outs(), (std::string(argv[0]) + " [options] <input files>").c_str(),
+        outs(), (std::string(ArgsV[0]) + " [options] <input files>").c_str(),
         "manipulate archived DWARF debug symbol files.\n\n"
         "dsymutil links the DWARF debug information found in the object files\n"
         "for the executable <input file> by using debug symbols information\n"
@@ -656,7 +655,7 @@ int dsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
   InitializeAllAsmPrinters();
 
   auto Repro = Reproducer::createReproducer(Options.ReproMode,
-                                            Options.ReproducerPath, argc, argv);
+                                            Options.ReproducerPath, ArgsV);
   if (!Repro) {
     WithColor::error() << toString(Repro.takeError()) << '\n';
     return EXIT_FAILURE;

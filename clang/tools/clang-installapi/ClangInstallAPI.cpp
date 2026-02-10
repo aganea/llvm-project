@@ -200,11 +200,11 @@ static bool run(ArrayRef<const char *> Args, const char *ProgName) {
   return EXIT_SUCCESS;
 }
 
-int clang_installapi_main(int argc, char **argv,
+int clang_installapi_main(ArrayRef<const char *> Args,
                           const llvm::ToolContext &ToolContext) {
   // Standard set up, so program fails gracefully.
-  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
-  llvm::PrettyStackTraceProgram StackPrinter(argc, argv);
+  llvm::sys::PrintStackTraceOnErrorSignal(Args[0]);
+  llvm::PrettyStackTraceProgram StackPrinter(Args);
   llvm::llvm_shutdown_obj Shutdown;
 
   if (llvm::sys::Process::FixupStandardFileDescriptors())
@@ -212,5 +212,5 @@ int clang_installapi_main(int argc, char **argv,
 
   const char *ProgName =
       ToolContext.NeedsPrependArg ? ToolContext.PrependArg : ToolContext.Path;
-  return run(llvm::ArrayRef(argv, argc), ProgName);
+  return run(Args, ProgName);
 }

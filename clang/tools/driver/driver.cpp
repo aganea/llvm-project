@@ -207,7 +207,7 @@ static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
   DiagClient->setPrefix(std::string(ExeBasename));
 }
 
-static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
+static int ExecuteCC1Tool(ArrayRef<const char *> Args,
                           const llvm::ToolContext &ToolContext,
                           IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS) {
   // If we call the cc1 tool from the clangDriver library (through
@@ -219,6 +219,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
   llvm::BumpPtrAllocator A;
   llvm::cl::ExpansionContext ECtx(A, llvm::cl::TokenizeGNUCommandLine,
                                   VFS.get());
+  SmallVector<const char *, 8> ArgV(Args);
   if (llvm::Error Err = ECtx.expandResponseFiles(ArgV)) {
     llvm::errs() << toString(std::move(Err)) << '\n';
     return 1;
@@ -239,12 +240,13 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
   return 1;
 }
 
-int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
+int clang_main(ArrayRef<const char *> ArgsV,
+               const llvm::ToolContext &ToolContext) {
   noteBottomOfStack();
   llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL
                         " and include the crash backtrace, preprocessed "
                         "source, and associated run script.\n");
-  SmallVector<const char *, 256> Args(Argv, Argv + Argc);
+  SmallVector<const char *, 256> Args(ArgsV);
 
   if (llvm::sys::Process::FixupStandardFileDescriptors())
     return 1;
@@ -376,7 +378,7 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
     StringRef PrependStem =
         llvm::sys::path::stem(StringRef(ToolContext.PrependArg));
     if (!PathStem.equals_insensitive(PrependStem))
-    TheDriver.setPrependArg(ToolContext.PrependArg);
+      TheDriver.setPrependArg(ToolContext.PrependArg);
   }
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);

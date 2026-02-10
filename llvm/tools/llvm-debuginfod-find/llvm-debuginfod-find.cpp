@@ -67,12 +67,12 @@ static std::string FetchSource;
 static bool DumpToStdout;
 static std::vector<std::string> DebugFileDirectory;
 
-static void parseArgs(int argc, char **argv) {
+static void parseArgs(ArrayRef<const char *> ArgsV) {
   DebuginfodFindOptTable Tbl;
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -109,11 +109,10 @@ ExitOnError ExitOnDebuginfodFindError;
 
 static std::string fetchDebugInfo(object::BuildIDRef BuildID);
 
-int llvm_debuginfod_find_main(int argc, char **argv,
+int llvm_debuginfod_find_main(ArrayRef<const char *> Args,
                               const llvm::ToolContext &) {
-  // InitLLVM X(argc, argv);
   HTTPClient::initialize();
-  parseArgs(argc, argv);
+  parseArgs(Args);
 
   if (FetchExecutable + FetchDebuginfo + (FetchSource != "") != 1)
     helpExit();

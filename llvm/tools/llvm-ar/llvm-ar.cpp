@@ -1335,11 +1335,11 @@ static cl::TokenizerCallback getRspQuoting(ArrayRef<const char *> ArgsArr) {
   return Ret;
 }
 
-static int ar_main(int argc, char **argv) {
-  SmallVector<const char *, 0> Argv(argv + 1, argv + argc);
+static int ar_main(ArrayRef<const char *> Args) {
+  SmallVector<const char *, 0> Argv(Args.drop_front());
   StringSaver Saver(Alloc);
 
-  cl::ExpandResponseFiles(Saver, getRspQuoting(ArrayRef(argv, argc)), Argv);
+  cl::ExpandResponseFiles(Saver, getRspQuoting(Args), Argv);
 
   // Get BitMode from enviorment variable "OBJECT_MODE" for AIX OS, if
   // specified.
@@ -1422,12 +1422,12 @@ static int ar_main(int argc, char **argv) {
   return performOperation(parseCommandLine());
 }
 
-static int ranlib_main(int argc, char **argv) {
+static int ranlib_main(ArrayRef<const char *> Args) {
   std::vector<StringRef> Archives;
   bool HasAIXXOption = false;
 
-  for (int i = 1; i < argc; ++i) {
-    StringRef arg(argv[i]);
+  for (int i = 1; i < (int)Args.size(); ++i) {
+    StringRef arg(Args[i]);
     if (handleGenericOption(arg)) {
       return 0;
     } else if (arg.consume_front("-")) {
@@ -1449,8 +1449,8 @@ static int ranlib_main(int argc, char **argv) {
             arg.consume_front("X");
             const char *Xarg = arg.data();
             if (Xarg[0] == '\0') {
-              if (argv[i + 1][0] != '-')
-                BitMode = getBitMode(argv[++i]);
+              if (Args[i + 1][0] != '-')
+                BitMode = getBitMode(Args[++i]);
               else
                 BitMode = BitModeTy::Unknown;
             } else
@@ -1509,8 +1509,8 @@ static int ranlib_main(int argc, char **argv) {
   return 0;
 }
 
-int llvm_ar_main(int argc, char **argv, const llvm::ToolContext &) {
-  ToolName = argv[0];
+int llvm_ar_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+  ToolName = Args[0];
 
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargetMCs();
@@ -1529,13 +1529,13 @@ int llvm_ar_main(int argc, char **argv, const llvm::ToolContext &) {
   };
 
   if (Is("dlltool"))
-    return dlltoolDriverMain(ArrayRef(argv, argc));
+    return dlltoolDriverMain(Args);
   if (Is("ranlib"))
-    return ranlib_main(argc, argv);
+    return ranlib_main(Args);
   if (Is("lib"))
-    return libDriverMain(ArrayRef(argv, argc));
+    return libDriverMain(Args);
   if (Is("ar"))
-    return ar_main(argc, argv);
+    return ar_main(Args);
 
   fail("not ranlib, ar, lib or dlltool");
 }

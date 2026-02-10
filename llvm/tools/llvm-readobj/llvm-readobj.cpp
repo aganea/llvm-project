@@ -672,13 +672,13 @@ std::unique_ptr<ScopedPrinter> createWriter() {
   return std::make_unique<ScopedPrinter>(fouts());
 }
 
-int llvm_readobj_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_readobj_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   ReadobjOptTable Tbl;
-  ToolName = argv[0];
+  ToolName = ArgsV[0];
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         error(Msg);
         exit(1);
       });
@@ -696,7 +696,7 @@ int llvm_readobj_main(int argc, char **argv, const llvm::ToolContext &) {
     return 0;
   }
 
-  if (sys::path::stem(argv[0]).contains("readelf"))
+  if (sys::path::stem(ArgsV[0]).contains("readelf"))
     opts::Output = opts::GNU;
   parseOptions(Args);
 

@@ -441,7 +441,11 @@ public:
   /// or unknown options.
   /// \return An InputArgList; on error this will contain all the options which
   /// could be parsed.
-  InputArgList parseArgs(int Argc, char *const *Argv, OptSpecifier Unknown,
+  InputArgList parseArgs(int Argc, const char *const *Argv,
+                         OptSpecifier Unknown, StringSaver &Saver,
+                         std::function<void(StringRef)> ErrorFn) const;
+
+  InputArgList parseArgs(ArrayRef<const char *> Args, OptSpecifier Unknown,
                          StringSaver &Saver,
                          std::function<void(StringRef)> ErrorFn) const;
 

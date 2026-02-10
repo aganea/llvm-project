@@ -3843,10 +3843,10 @@ static void parseObjdumpOptions(const llvm::opt::InputArgList &InputArgs) {
     InputFilenames.push_back("a.out");
 }
 
-int llvm_objdump_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_objdump_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   using namespace llvm;
 
-  ToolName = argv[0];
+  ToolName = Args[0];
   std::unique_ptr<CommonOptTable> T;
   OptSpecifier Unknown, HelpFlag, HelpHiddenFlag, VersionFlag;
 
@@ -3878,9 +3878,8 @@ int llvm_objdump_main(int argc, char **argv, const llvm::ToolContext &) {
 
   BumpPtrAllocator A;
   StringSaver Saver(A);
-  opt::InputArgList InputArgs =
-      T->parseArgs(argc, argv, Unknown, Saver,
-                   [&](StringRef Msg) { reportCmdLineError(Msg); });
+  opt::InputArgList InputArgs = T->parseArgs(
+      Args, Unknown, Saver, [&](StringRef Msg) { reportCmdLineError(Msg); });
 
   if (InputArgs.size() == 0 || InputArgs.hasArg(HelpFlag)) {
     T->printHelp(ToolName);

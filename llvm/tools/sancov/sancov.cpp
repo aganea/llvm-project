@@ -1249,12 +1249,12 @@ readSymbolizeAndMergeCmdArguments(std::vector<std::string> FileNames) {
 
 } // namespace
 
-static void parseArgs(int Argc, char **Argv) {
+static void parseArgs(ArrayRef<const char *> ArgsV) {
   SancovOptTable Tbl;
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   opt::InputArgList Args =
-      Tbl.parseArgs(Argc, Argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -1339,12 +1339,12 @@ static void parseArgs(int Argc, char **Argv) {
   ClOutputFile = Args.getLastArgValue(OPT_output_EQ);
 }
 
-int sancov_main(int Argc, char **Argv, const llvm::ToolContext &) {
+int sancov_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllDisassemblers();
 
-  parseArgs(Argc, Argv);
+  parseArgs(Args);
 
   // -print doesn't need object files.
   if (Action == PrintAction) {

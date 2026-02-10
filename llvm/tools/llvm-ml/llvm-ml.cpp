@@ -189,8 +189,8 @@ static int AssembleInput(StringRef ProgName, const Target *TheTarget,
   return Res;
 }
 
-int llvm_ml_main(int Argc, char **Argv, const llvm::ToolContext &) {
-  StringRef ProgName = sys::path::filename(Argv[0]);
+int llvm_ml_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+  StringRef ProgName = sys::path::filename(Args[0]);
 
   // Initialize targets and assembly printers/parsers.
   llvm::InitializeAllTargetInfos();
@@ -200,7 +200,7 @@ int llvm_ml_main(int Argc, char **Argv, const llvm::ToolContext &) {
 
   MLOptTable T;
   unsigned MissingArgIndex, MissingArgCount;
-  ArrayRef<const char *> ArgsArr = ArrayRef(Argv + 1, Argc - 1);
+  ArrayRef<const char *> ArgsArr = Args.drop_front();
   opt::InputArgList InputArgs =
       T.ParseArgs(ArgsArr, MissingArgIndex, MissingArgCount);
 

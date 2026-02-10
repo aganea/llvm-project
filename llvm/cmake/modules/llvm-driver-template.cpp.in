@@ -10,9 +10,10 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/LLVMDriver.h"
 
-int @TOOL_NAME@_main(int argc, char **, const llvm::ToolContext &);
+int @TOOL_NAME@_main(ArrayRef<const char *>, const llvm::ToolContext &);
 
 int main(int argc, char **argv) {
-  llvm::InitLLVM X(argc, argv@INITLLVM_ARGS@);
-  return @TOOL_NAME@_main(argc, argv, {argv[0], nullptr, false});
+  llvm::InitLLVM X(argc, argv, @INITLLVM_ARGS@);
+  auto Args = X.getArgs();
+  return @TOOL_NAME@_main(Args, {Args[0], nullptr, false});
 }

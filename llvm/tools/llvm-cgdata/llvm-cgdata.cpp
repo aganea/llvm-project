@@ -109,7 +109,7 @@ static void exitWithErrorCode(std::error_code EC, StringRef Whence = "") {
   exitWithError(EC.message(), Whence);
 }
 
-static int convert_main(int argc, const char *argv[]) {
+static int convert_main(ArrayRef<const char *> ArgsV) {
   std::error_code EC;
   raw_fd_ostream OS(OutputFilename, EC,
                     OutputFormat == CGDataFormat::Text
@@ -206,7 +206,7 @@ static bool handleFile(StringRef Filename,
                       GlobalFunctionMapRecord);
 }
 
-static int merge_main(int argc, const char *argv[]) {
+static int merge_main(ArrayRef<const char *> ArgsV) {
   bool Result = true;
   OutlinedHashTreeRecord GlobalOutlineRecord;
   StableFunctionMapRecord GlobalFunctionMapRecord;
@@ -244,7 +244,7 @@ static int merge_main(int argc, const char *argv[]) {
   return 0;
 }
 
-static int show_main(int argc, const char *argv[]) {
+static int show_main(ArrayRef<const char *> ArgsV) {
   std::error_code EC;
   raw_fd_ostream OS(OutputFilename.data(), EC, sys::fs::OF_TextWithCRLF);
   if (EC)
@@ -280,13 +280,13 @@ static int show_main(int argc, const char *argv[]) {
   return 0;
 }
 
-static void parseArgs(int argc, char **argv) {
+static void parseArgs(ArrayRef<const char *> ArgsV) {
   CGDataOptTable Tbl;
-  ToolName = argv[0];
+  ToolName = ArgsV[0];
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   llvm::opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -366,17 +366,16 @@ static void parseArgs(int argc, char **argv) {
       Args.hasArg(OPT_indexed_codegen_data_lazy_loading);
 }
 
-int llvm_cgdata_main(int argc, char **argvNonConst, const llvm::ToolContext &) {
-  const char **argv = const_cast<const char **>(argvNonConst);
-  parseArgs(argc, argvNonConst);
+int llvm_cgdata_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+  parseArgs(Args);
 
   switch (Action) {
   case CGDataAction::Convert:
-    return convert_main(argc, argv);
+    return convert_main(Args);
   case CGDataAction::Merge:
-    return merge_main(argc, argv);
+    return merge_main(Args);
   case CGDataAction::Show:
-    return show_main(argc, argv);
+    return show_main(Args);
   }
 
   llvm_unreachable("unrecognized action");

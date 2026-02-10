@@ -211,14 +211,14 @@ static Error executeObjcopy(ConfigManager &ConfigMgr) {
   return Error::success();
 }
 
-int llvm_objcopy_main(int argc, char **argv, const llvm::ToolContext &) {
-  ToolName = argv[0];
+int llvm_objcopy_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
+  ToolName = ArgsV[0];
 
   // Expand response files.
   // TODO: Move these lines, which are copied from lib/Support/CommandLine.cpp,
   // into a separate function in the CommandLine library and call that function
   // here. This is duplicated code.
-  SmallVector<const char *, 20> NewArgv(argv, argv + argc);
+  SmallVector<const char *, 20> NewArgv(ArgsV);
   BumpPtrAllocator A;
   StringSaver Saver(A);
   cl::ExpandResponseFiles(Saver,

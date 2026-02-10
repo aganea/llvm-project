@@ -382,8 +382,8 @@ static void printHelp(StringRef ToolName, const SymbolizerOptTable &Tbl,
   OS << "\nPass @FILE as argument to read options from FILE.\n";
 }
 
-static opt::InputArgList parseOptions(int Argc, char *Argv[], bool IsAddr2Line,
-                                      StringSaver &Saver,
+static opt::InputArgList parseOptions(ArrayRef<const char *> ArgsV,
+                                      bool IsAddr2Line, StringSaver &Saver,
                                       SymbolizerOptTable &Tbl) {
   StringRef ToolName = IsAddr2Line ? "llvm-addr2line" : "llvm-symbolizer";
   // The environment variable specifies initial options which can be overridden
@@ -392,7 +392,7 @@ static opt::InputArgList parseOptions(int Argc, char *Argv[], bool IsAddr2Line,
                                                    : "LLVM_SYMBOLIZER_OPTS");
   bool HasError = false;
   opt::InputArgList Args =
-      Tbl.parseArgs(Argc, Argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         errs() << ("error: " + Msg + "\n");
         HasError = true;
       });
@@ -473,15 +473,16 @@ static void filterMarkup(const opt::InputArgList &Args, LLVMSymbolizer &Symboliz
   Filter.finish();
 }
 
-int llvm_symbolizer_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_symbolizer_main(ArrayRef<const char *> ArgsV,
+                         const llvm::ToolContext &) {
   sys::InitializeCOMRAII COM(sys::COMThreadingMode::MultiThreaded);
 
-  ToolName = argv[0];
+  ToolName = ArgsV[0];
   bool IsAddr2Line = sys::path::stem(ToolName).contains("addr2line");
   BumpPtrAllocator A;
   StringSaver Saver(A);
   SymbolizerOptTable Tbl;
-  opt::InputArgList Args = parseOptions(argc, argv, IsAddr2Line, Saver, Tbl);
+  opt::InputArgList Args = parseOptions(ArgsV, IsAddr2Line, Saver, Tbl);
 
   LLVMSymbolizer::Options Opts;
   uint64_t AdjustVMA;

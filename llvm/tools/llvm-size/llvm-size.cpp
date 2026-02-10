@@ -886,13 +886,13 @@ static void printBerkeleyTotals() {
   }
 }
 
-int llvm_size_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_size_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   SizeOptTable Tbl;
-  ToolName = argv[0];
+  ToolName = ArgsV[0];
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         error(Msg);
         exit(1);
       });

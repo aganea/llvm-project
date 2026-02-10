@@ -743,12 +743,12 @@ replaceSlices(LLVMContext &LLVMCtx,
   exit(EXIT_SUCCESS);
 }
 
-int llvm_lipo_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_lipo_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmParsers();
 
-  Config C = parseLipoOptions(ArrayRef(argv + 1, argc - 1));
+  Config C = parseLipoOptions(Args.drop_front());
   LLVMContext LLVMCtx;
   SmallVector<OwningBinary<Binary>, 1> InputBinaries =
       readInputBinaries(LLVMCtx, C.InputFiles);

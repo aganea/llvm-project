@@ -33,10 +33,11 @@ static std::string createReproducerDir(std::error_code &EC) {
 Reproducer::Reproducer() : VFS(vfs::getRealFileSystem()) {}
 Reproducer::~Reproducer() = default;
 
-ReproducerGenerate::ReproducerGenerate(std::error_code &EC, int Argc,
-                                       char **Argv, bool GenerateOnExit)
+ReproducerGenerate::ReproducerGenerate(std::error_code &EC,
+                                       ArrayRef<const char *> ArgsV,
+                                       bool GenerateOnExit)
     : Root(createReproducerDir(EC)), GenerateOnExit(GenerateOnExit) {
-  llvm::append_range(Args, ArrayRef(Argv, Argc));
+  llvm::append_range(Args, ArgsV);
   auto RealFS = vfs::getRealFileSystem();
   if (!Root.empty())
     FC = std::make_shared<FileCollector>(Root, Root, RealFS);
@@ -85,17 +86,17 @@ ReproducerUse::ReproducerUse(StringRef Root, std::error_code &EC) {
 }
 
 llvm::Expected<std::unique_ptr<Reproducer>>
-Reproducer::createReproducer(ReproducerMode Mode, StringRef Root, int Argc,
-                             char **Argv) {
+Reproducer::createReproducer(ReproducerMode Mode, StringRef Root,
+                             ArrayRef<const char *> Args) {
 
   std::error_code EC;
   std::unique_ptr<Reproducer> Repro;
   switch (Mode) {
   case ReproducerMode::GenerateOnExit:
-    Repro = std::make_unique<ReproducerGenerate>(EC, Argc, Argv, true);
+    Repro = std::make_unique<ReproducerGenerate>(EC, Args, true);
     break;
   case ReproducerMode::GenerateOnCrash:
-    Repro = std::make_unique<ReproducerGenerate>(EC, Argc, Argv, false);
+    Repro = std::make_unique<ReproducerGenerate>(EC, Args, false);
     break;
   case ReproducerMode::Use:
     Repro = std::make_unique<ReproducerUse>(Root, EC);

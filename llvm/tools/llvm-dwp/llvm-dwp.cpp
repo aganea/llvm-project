@@ -120,7 +120,7 @@ static Expected<Triple> readTargetTriple(StringRef FileName) {
   return ErrOrObj->getBinary()->makeTriple();
 }
 
-int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_dwp_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   DwpOptTable Tbl;
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
@@ -129,7 +129,7 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
       Dwarf64StrOffsetsPromotion::Disabled;
 
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });

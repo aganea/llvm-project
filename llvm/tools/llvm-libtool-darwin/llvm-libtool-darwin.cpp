@@ -627,12 +627,12 @@ static Error createStaticLibrary(LLVMContext &LLVMCtx, const Config &C) {
   return writeUniversalBinary(*Slices, OutputFile);
 }
 
-static void parseRawArgs(int Argc, char **Argv) {
+static void parseRawArgs(ArrayRef<const char *> ArgsV) {
   LibtoolDarwinOptTable Tbl;
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   opt::InputArgList Args =
-      Tbl.parseArgs(Argc, Argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -671,9 +671,9 @@ static void parseRawArgs(int Argc, char **Argv) {
   WarningsAsErrors = Args.hasArg(OPT_warningsAsErrors);
 }
 
-static Expected<Config> parseCommandLine(int Argc, char **Argv) {
+static Expected<Config> parseCommandLine(ArrayRef<const char *> Args) {
   Config C;
-  parseRawArgs(Argc, Argv);
+  parseRawArgs(Args);
 
   if (LibraryOperation == Operation::None) {
     if (!VersionOption) {
@@ -726,8 +726,9 @@ static Expected<Config> parseCommandLine(int Argc, char **Argv) {
   return C;
 }
 
-int llvm_libtool_darwin_main(int Argc, char **Argv, const llvm::ToolContext &) {
-  Expected<Config> ConfigOrErr = parseCommandLine(Argc, Argv);
+int llvm_libtool_darwin_main(ArrayRef<const char *> Args,
+                             const llvm::ToolContext &) {
+  Expected<Config> ConfigOrErr = parseCommandLine(Args);
   if (!ConfigOrErr) {
     WithColor::defaultErrorHandler(ConfigOrErr.takeError());
     return EXIT_FAILURE;

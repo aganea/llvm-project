@@ -739,17 +739,20 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
 
 } // anonymous namespace
 
-int llvm_rc_main(int Argc, char **Argv, const llvm::ToolContext &) {
+int llvm_rc_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   ExitOnErr.setBanner("llvm-rc: ");
 
-  char **DashDash = std::find_if(Argv + 1, Argv + Argc,
-                                 [](StringRef Str) { return Str == "--"; });
-  ArrayRef<const char *> ArgsArr = ArrayRef(Argv + 1, DashDash);
-  ArrayRef<const char *> FileArgsArr;
-  if (DashDash != Argv + Argc)
-    FileArgsArr = ArrayRef(DashDash + 1, Argv + Argc);
+  ArrayRef<const char *> ArgsArr, FileArgsArr;
+  auto DashDash =
+      llvm::find_if(Args, [](const char *A) { return StringRef(A) == "--"; });
+  if (DashDash != Args.end()) {
+    ArgsArr = Args.drop_front().take_front(DashDash - Args.begin());
+    FileArgsArr = Args.drop_front(DashDash + 1 - Args.begin());
+  } else {
+    ArgsArr = Args.drop_front();
+  }
 
-  RcOptions Opts = getOptions(Argv[0], ArgsArr, FileArgsArr);
+  RcOptions Opts = getOptions(Args[0], ArgsArr, FileArgsArr);
 
   std::string ResFile = Opts.OutputFile;
   if (Opts.InputFormat == Rc) {
@@ -757,7 +760,7 @@ int llvm_rc_main(int Argc, char **Argv, const llvm::ToolContext &) {
       ResFile = createTempFile("rc", "res");
       TempResFile.setFile(ResFile);
     }
-    doRc(Opts.InputFile, ResFile, Opts, Argv[0]);
+    doRc(Opts.InputFile, ResFile, Opts, Args[0]);
   } else {
     ResFile = Opts.InputFile;
   }

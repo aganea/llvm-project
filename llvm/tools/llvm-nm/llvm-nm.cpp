@@ -2398,13 +2398,13 @@ exportSymbolNamesFromFiles(const std::vector<std::string> &InputFilenames) {
   printExportSymbolList(SymbolList);
 }
 
-int llvm_nm_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_nm_main(ArrayRef<const char *> ArgsV, const llvm::ToolContext &) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   NmOptTable Tbl;
-  ToolName = argv[0];
+  ToolName = ArgsV[0];
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         error(Msg);
         exit(1);
       });

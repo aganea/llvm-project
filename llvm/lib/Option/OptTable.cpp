@@ -581,7 +581,7 @@ InputArgList OptTable::internalParseArgs(
   return Args;
 }
 
-InputArgList OptTable::parseArgs(int Argc, char *const *Argv,
+InputArgList OptTable::parseArgs(int Argc, const char *const *Argv,
                                  OptSpecifier Unknown, StringSaver &Saver,
                                  std::function<void(StringRef)> ErrorFn) const {
   SmallVector<const char *, 0> NewArgv;
@@ -606,6 +606,12 @@ InputArgList OptTable::parseArgs(int Argc, char *const *Argv,
               "'?");
   }
   return Args;
+}
+
+InputArgList OptTable::parseArgs(ArrayRef<const char *> Args,
+                                 OptSpecifier Unknown, StringSaver &Saver,
+                                 std::function<void(StringRef)> ErrorFn) const {
+  return parseArgs(Args.size(), Args.data(), Unknown, Saver, ErrorFn);
 }
 
 static std::string getOptionHelpName(const OptTable &Opts, OptSpecifier Id) {
