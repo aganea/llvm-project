@@ -15,6 +15,7 @@
 #ifndef LLVM_SUPPORT_PRETTYSTACKTRACE_H
 #define LLVM_SUPPORT_PRETTYSTACKTRACE_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Compiler.h"
 
@@ -91,11 +92,14 @@ namespace llvm {
   /// PrettyStackTraceProgram - This object prints a specified program arguments
   /// to the stream as the stack trace when a crash occurs.
   class LLVM_ABI PrettyStackTraceProgram : public PrettyStackTraceEntry {
-    int ArgC;
-    const char *const *ArgV;
+    ArrayRef<const char *> Args;
+
   public:
-    PrettyStackTraceProgram(int argc, const char * const*argv)
-      : ArgC(argc), ArgV(argv) {
+    PrettyStackTraceProgram(int argc, const char *const *argv)
+        : Args(argv, argc) {
+      EnablePrettyStackTrace();
+    }
+    PrettyStackTraceProgram(ArrayRef<const char *> Args) : Args(Args) {
       EnablePrettyStackTrace();
     }
     void print(raw_ostream &OS) const override;

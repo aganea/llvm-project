@@ -83,13 +83,13 @@ static void parseIntArg(const opt::InputArgList &Args, int ID, T &Value,
   }
 }
 
-static void parseArgs(int argc, char **argv) {
+static void parseArgs(ArrayRef<const char *> ArgsV) {
   DebuginfodOptTable Tbl;
-  llvm::StringRef ToolName = argv[0];
+  llvm::StringRef ToolName = ArgsV[0];
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -121,9 +121,10 @@ static void parseArgs(int argc, char **argv) {
   HostInterface = Args.getLastArgValue(OPT_host_interface, "0.0.0.0");
 }
 
-int llvm_debuginfod_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_debuginfod_main(ArrayRef<const char *> Args,
+                         const llvm::ToolContext &) {
   HTTPClient::initialize();
-  parseArgs(argc, argv);
+  parseArgs(Args);
 
   SmallVector<StringRef, 1> Paths;
   llvm::append_range(Paths, ScanPaths);

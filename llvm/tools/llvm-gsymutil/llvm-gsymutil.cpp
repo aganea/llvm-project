@@ -117,13 +117,13 @@ static uint32_t OutputVersion = Header::getVersion();
 static bool ShowStatistics;
 static GsymReader::StatisticsFormat StatisticsFormat;
 
-static void parseArgs(int argc, char **argv) {
+static void parseArgs(ArrayRef<const char *> ArgsV) {
   GSYMUtilOptTable Tbl;
-  llvm::StringRef ToolName = argv[0];
+  llvm::StringRef ToolName = ArgsV[0];
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver{A};
   llvm::opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+      Tbl.parseArgs(ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
         llvm::errs() << Msg << '\n';
         std::exit(1);
       });
@@ -811,15 +811,15 @@ static llvm::Error benchmarkReader(StringRef GSYMPath, uint32_t Start,
   return Error::success();
 }
 
-int llvm_gsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
+int llvm_gsymutil_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal(argv[0]);
-  PrettyStackTraceProgram X(argc, argv);
+  sys::PrintStackTraceOnErrorSignal(Args[0]);
+  PrettyStackTraceProgram X(Args);
   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
 
   llvm::InitializeAllTargets();
 
-  parseArgs(argc, argv);
+  parseArgs(Args);
 
   raw_ostream &OS = outs();
 

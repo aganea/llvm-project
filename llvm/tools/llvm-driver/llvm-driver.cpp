@@ -18,7 +18,7 @@
 using namespace llvm;
 
 #define LLVM_DRIVER_TOOL(tool, entry)                                          \
-  int entry##_main(int argc, char **argv, const llvm::ToolContext &);
+  int entry##_main(ArrayRef<const char *>, const llvm::ToolContext &);
 #include "LLVMDriverTools.def"
 
 constexpr char subcommands[] =
@@ -36,13 +36,13 @@ static void printHelpMessage() {
                << "OPTIONS:\n\n  --help - Display this message\n";
 }
 
-static int findTool(int Argc, char **Argv, const char *Argv0) {
-  if (!Argc) {
+static int findTool(ArrayRef<const char *> Args, const char *Argv0) {
+  if (Args.empty()) {
     printHelpMessage();
     return 1;
   }
 
-  StringRef ToolName = Argv[0];
+  StringRef ToolName = Args[0];
 
   if (ToolName == "--help") {
     printHelpMessage();
@@ -70,11 +70,11 @@ static int findTool(int Argc, char **Argv, const char *Argv0) {
 
 #define LLVM_DRIVER_TOOL(tool, entry)                                          \
   if (Is(tool))                                                                \
-    return entry##_main(Argc, Argv, MakeDriverArgs());
+    return entry##_main(Args, MakeDriverArgs());
 #include "LLVMDriverTools.def"
 
-  if (Is("llvm") || Argv0 == Argv[0])
-    return findTool(Argc - 1, Argv + 1, Argv0);
+  if (Is("llvm") || Argv0 == Args[0])
+    return findTool(Args.drop_front(), Argv0);
 
   printHelpMessage();
   return 1;
@@ -82,5 +82,6 @@ static int findTool(int Argc, char **Argv, const char *Argv0) {
 
 int main(int Argc, char **Argv) {
   llvm::InitLLVM X(Argc, Argv);
-  return findTool(Argc, Argv, Argv[0]);
+  auto Args = X.getArgs();
+  return findTool(Args, Args[0]);
 }

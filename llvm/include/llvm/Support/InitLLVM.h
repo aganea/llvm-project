@@ -9,6 +9,7 @@
 #ifndef LLVM_SUPPORT_INITLLVM_H
 #define LLVM_SUPPORT_INITLLVM_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Compiler.h"
@@ -45,6 +46,8 @@ public:
                  NeedsPOSIXUtilitySignalHandling) {}
 
   LLVM_ABI ~InitLLVM();
+
+  ArrayRef<const char *> getArgs() const { return ArrayRef(Args).drop_back(); }
 
 private:
   BumpPtrAllocator Alloc;

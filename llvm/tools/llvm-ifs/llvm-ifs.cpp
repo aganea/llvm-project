@@ -279,13 +279,13 @@ static Error writeIFS(StringRef FilePath, IFSStub &Stub, bool WriteIfChanged) {
   return Error::success();
 }
 
-static DriverConfig parseArgs(int argc, char *const *argv) {
+static DriverConfig parseArgs(ArrayRef<const char *> ArgsV) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   IFSOptTable Tbl;
-  StringRef ToolName = argv[0];
+  StringRef ToolName = ArgsV[0];
   llvm::opt::InputArgList Args = Tbl.parseArgs(
-      argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) { fatalError(Msg); });
+      ArgsV, OPT_UNKNOWN, Saver, [&](StringRef Msg) { fatalError(Msg); });
   if (Args.hasArg(OPT_help)) {
     Tbl.printHelp(llvm::outs(),
                   (Twine(ToolName) + " <input_file> <output_file> [options]")
@@ -379,8 +379,8 @@ static DriverConfig parseArgs(int argc, char *const *argv) {
   return Config;
 }
 
-int llvm_ifs_main(int argc, char **argv, const llvm::ToolContext &) {
-  DriverConfig Config = parseArgs(argc, argv);
+int llvm_ifs_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+  DriverConfig Config = parseArgs(Args);
 
   if (Config.InputFilePaths.empty())
     Config.InputFilePaths.push_back("-");

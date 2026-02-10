@@ -38,7 +38,8 @@ public:
 
   /// Create a Reproducer instance based on the given mode.
   static llvm::Expected<std::unique_ptr<Reproducer>>
-  createReproducer(ReproducerMode Mode, StringRef Root, int Argc, char **Argv);
+  createReproducer(ReproducerMode Mode, StringRef Root,
+                   ArrayRef<const char *> Args);
 
 protected:
   IntrusiveRefCntPtr<vfs::FileSystem> VFS;
@@ -49,7 +50,7 @@ protected:
 /// dsymutil.
 class ReproducerGenerate : public Reproducer {
 public:
-  ReproducerGenerate(std::error_code &EC, int Argc, char **Argv,
+  ReproducerGenerate(std::error_code &EC, ArrayRef<const char *> ArgsV,
                      bool GenerateOnExit);
   ~ReproducerGenerate() override;
 

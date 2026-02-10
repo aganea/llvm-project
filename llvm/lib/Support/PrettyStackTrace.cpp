@@ -268,13 +268,13 @@ void PrettyStackTraceFormat::print(raw_ostream &OS) const { OS << Str << "\n"; }
 void PrettyStackTraceProgram::print(raw_ostream &OS) const {
   OS << "Program arguments: ";
   // Print the argument list.
-  for (int I = 0; I < ArgC; ++I) {
-    const bool HaveSpace = ::strchr(ArgV[I], ' ');
+  for (size_t I = 0; I < Args.size(); ++I) {
+    const bool HaveSpace = ::strchr(Args[I], ' ');
     if (I)
       OS << ' ';
     if (HaveSpace)
       OS << '"';
-    OS.write_escaped(ArgV[I]);
+    OS.write_escaped(Args[I]);
     if (HaveSpace)
       OS << '"';
   }

@@ -72,7 +72,7 @@ LLD_HAS_DRIVER(mingw)
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(wasm)
 
-int lld_main(int argc, char **argv, const llvm::ToolContext &) {
+int lld_main(ArrayRef<const char *> args, const llvm::ToolContext &) {
   sys::Process::UseANSIEscapeCodes(true);
 
   if (::getenv("FORCE_LLD_DIAGNOSTICS_CRASH")) {
@@ -80,8 +80,6 @@ int lld_main(int argc, char **argv, const llvm::ToolContext &) {
         << "crashing due to environment variable FORCE_LLD_DIAGNOSTICS_CRASH\n";
     LLVM_BUILTIN_TRAP;
   }
-
-  ArrayRef<const char *> args(argv, argv + argc);
 
   // Not running in lit tests, just take the shortest codepath with global
   // exception handling and no memory cleanup on exit.
