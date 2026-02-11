@@ -44,6 +44,9 @@ def help : F<"help">;
 // /?? and -?? must be before /? and -? to not confuse lib/Options.
 def help_q : Flag<["/??", "-??", "/?", "-?"], "">, Alias<help>;
 
+def working_dir
+    : P<"working-directory", "Provide the default working directory">;
+
 //==============================================================================
 // The flags below do nothing. They are defined only for lib.exe compatibility.
 //==============================================================================
