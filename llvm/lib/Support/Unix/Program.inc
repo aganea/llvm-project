@@ -166,7 +166,8 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
                     std::optional<ArrayRef<StringRef>> Env,
                     ArrayRef<std::optional<StringRef>> Redirects,
                     unsigned MemoryLimit, std::string *ErrMsg,
-                    BitVector *AffinityMask, bool DetachProcess) {
+                    BitVector *AffinityMask, bool DetachProcess,
+                    StringRef WorkingDir) {
   assert(!AffinityMask && "Starting a process with an affinity mask is "
                           "currently not supported on Unix!");
 
@@ -224,6 +225,26 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
       }
     }
 
+    // Set the working directory if specified
+    if (!WorkingDir.empty()) {
+      if (!FileActions) {
+        FileActions = &FileActionsStore;
+        posix_spawn_file_actions_init(FileActions);
+      }
+#ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
+      if (int Err = posix_spawn_file_actions_addchdir_np(
+              FileActions, WorkingDir.str().c_str()))
+        return !MakeErrMsg(ErrMsg, "Cannot set working directory", Err);
+#else
+      // If posix_spawn_file_actions_addchdir_np is not available, fall back
+      // to fork/exec path by returning false here, which will cause the code
+      // to use fork() below
+      if (FileActions && FileActions == &FileActionsStore)
+        posix_spawn_file_actions_destroy(FileActions);
+      goto use_fork_exec;
+#endif
+    }
+
     if (!Envp)
 #if !USE_NSGETENVIRON
       Envp = const_cast<const char **>(environ);
@@ -254,6 +275,9 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
 
     return true;
   }
+#ifndef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
+use_fork_exec:
+#endif
 #endif // HAVE_POSIX_SPAWN
 
   // Create a child process.
@@ -295,6 +319,14 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
       // Detach from controlling terminal
       if (::setsid() == -1) {
         MakeErrMsg(ErrMsg, "Could not detach process, ::setsid failed");
+        return false;
+      }
+    }
+
+    // Change working directory if specified
+    if (!WorkingDir.empty()) {
+      if (0 != ::chdir(WorkingDir.str().c_str())) {
+        MakeErrMsg(ErrMsg, "Cannot change working directory");
         return false;
       }
     }

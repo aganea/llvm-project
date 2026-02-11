@@ -27,7 +27,8 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
                     std::optional<ArrayRef<StringRef>> Env,
                     ArrayRef<std::optional<StringRef>> Redirects,
                     unsigned MemoryLimit, std::string *ErrMsg,
-                    BitVector *AffinityMask, bool DetachProcess);
+                    BitVector *AffinityMask, bool DetachProcess,
+                    StringRef WorkingDir);
 
 int sys::ExecuteAndWait(StringRef Program, ArrayRef<StringRef> Args,
                         std::optional<ArrayRef<StringRef>> Env,
@@ -35,11 +36,11 @@ int sys::ExecuteAndWait(StringRef Program, ArrayRef<StringRef> Args,
                         unsigned SecondsToWait, unsigned MemoryLimit,
                         std::string *ErrMsg, bool *ExecutionFailed,
                         std::optional<ProcessStatistics> *ProcStat,
-                        BitVector *AffinityMask) {
+                        BitVector *AffinityMask, StringRef WorkingDir) {
   assert(Redirects.empty() || Redirects.size() == 3);
   ProcessInfo PI;
   if (Execute(PI, Program, Args, Env, Redirects, MemoryLimit, ErrMsg,
-              AffinityMask, /*DetachProcess=*/false)) {
+              AffinityMask, /*DetachProcess=*/false, WorkingDir)) {
     if (ExecutionFailed)
       *ExecutionFailed = false;
     ProcessInfo Result = Wait(
@@ -59,13 +60,13 @@ ProcessInfo sys::ExecuteNoWait(StringRef Program, ArrayRef<StringRef> Args,
                                ArrayRef<std::optional<StringRef>> Redirects,
                                unsigned MemoryLimit, std::string *ErrMsg,
                                bool *ExecutionFailed, BitVector *AffinityMask,
-                               bool DetachProcess) {
+                               bool DetachProcess, StringRef WorkingDir) {
   assert(Redirects.empty() || Redirects.size() == 3);
   ProcessInfo PI;
   if (ExecutionFailed)
     *ExecutionFailed = false;
   if (!Execute(PI, Program, Args, Env, Redirects, MemoryLimit, ErrMsg,
-               AffinityMask, DetachProcess))
+               AffinityMask, DetachProcess, WorkingDir))
     if (ExecutionFailed)
       *ExecutionFailed = true;
 

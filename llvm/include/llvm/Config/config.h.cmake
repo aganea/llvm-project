@@ -134,6 +134,9 @@
 /* Define to 1 if you have the `posix_spawn' function. */
 #cmakedefine HAVE_POSIX_SPAWN ${HAVE_POSIX_SPAWN}
 
+/* Define to 1 if you have the `posix_spawn_file_actions_addchdir_np' function. */
+#cmakedefine HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP ${HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP}
+
 /* Define to 1 if you have the `pread' function. */
 #cmakedefine HAVE_PREAD ${HAVE_PREAD}
 
