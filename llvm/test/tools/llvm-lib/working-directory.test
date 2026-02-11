@@ -1,0 +1,69 @@
+RUN: rm -rf %t.dir && mkdir -p %t.dir/input %t.dir/output
+
+Create object files in the "input" subdirectory.
+RUN: llvm-mc -triple=x86_64-pc-windows-msvc -filetype=obj -o %t.dir/input/a.obj %S/Inputs/a.s
+RUN: llvm-mc -triple=x86_64-pc-windows-msvc -filetype=obj -o %t.dir/input/b.obj %S/Inputs/b.s
+
+-----------------------------------------------------------------------------
+Test 1: Basic archive creation with -working-directory resolves input files.
+-----------------------------------------------------------------------------
+RUN: llvm-lib -working-directory:%t.dir/input /out:../output/out1.lib a.obj b.obj
+RUN: llvm-ar t %t.dir/output/out1.lib | FileCheck --check-prefix=BASIC %s
+BASIC: b.obj
+BASIC: a.obj
+
+-----------------------------------------------------------------------------
+Test 2: The /working-directory: prefix (with /) also works.
+-----------------------------------------------------------------------------
+RUN: llvm-lib /working-directory:%t.dir/input /out:../output/out2.lib a.obj
+RUN: llvm-ar t %t.dir/output/out2.lib | FileCheck --check-prefix=SLASH %s
+SLASH: a.obj
+
+-----------------------------------------------------------------------------
+Test 3: /out with a relative path is resolved against working directory.
+-----------------------------------------------------------------------------
+RUN: llvm-lib -working-directory:%t.dir/output /out:out3.lib ../input/a.obj
+RUN: llvm-ar t %t.dir/output/out3.lib | FileCheck --check-prefix=RELOUT %s
+RELOUT: ../input/a.obj
+
+-----------------------------------------------------------------------------
+Test 4: Input files are found via the working directory search path.
+        When -working-directory is set, it replaces the CWD as the first
+        search path entry, so input files are found there.
+-----------------------------------------------------------------------------
+RUN: llvm-lib -working-directory:%t.dir/input /out:../output/out4.lib a.obj
+RUN: llvm-ar t %t.dir/output/out4.lib | FileCheck --check-prefix=SEARCHPATH %s
+SEARCHPATH: a.obj
+
+-----------------------------------------------------------------------------
+Test 5: Response file paths are resolved relative to working directory.
+-----------------------------------------------------------------------------
+RUN: echo "/out:../output/out5.lib a.obj b.obj" > %t.dir/input/args.rsp
+RUN: llvm-lib -working-directory:%t.dir/input @args.rsp
+RUN: llvm-ar t %t.dir/output/out5.lib | FileCheck --check-prefix=RSP %s
+RSP: b.obj
+RSP: a.obj
+
+-----------------------------------------------------------------------------
+Test 6: Absolute output path is not affected by -working-directory.
+-----------------------------------------------------------------------------
+RUN: llvm-lib -working-directory:%t.dir/input /out:%t.dir/output/out6.lib a.obj
+RUN: llvm-ar t %t.dir/output/out6.lib | FileCheck --check-prefix=ABS %s
+ABS: a.obj
+
+-----------------------------------------------------------------------------
+Test 7: /def file path is resolved against working directory.
+-----------------------------------------------------------------------------
+RUN: echo "LIBRARY test.dll" > %t.dir/input/test.def
+RUN: echo "EXPORTS" >> %t.dir/input/test.def
+RUN: echo "  TestFunc" >> %t.dir/input/test.def
+RUN: llvm-lib -working-directory:%t.dir/input /machine:x64 /def:test.def /out:../output/out7.lib
+RUN: llvm-nm %t.dir/output/out7.lib | FileCheck --check-prefix=DEF %s
+DEF: TestFunc
+
+-----------------------------------------------------------------------------
+Test 8: /list with -working-directory resolves input paths.
+-----------------------------------------------------------------------------
+RUN: llvm-lib -working-directory:%t.dir/output /list out1.lib | FileCheck --check-prefix=LIST %s
+LIST: {{.*}}a.obj
+LIST: {{.*}}b.obj

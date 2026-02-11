@@ -77,7 +77,10 @@ static std::vector<StringRef> getSearchPaths(opt::InputArgList *Args,
                                              StringSaver &Saver) {
   std::vector<StringRef> Ret;
   // Add current directory as first item of the search path.
-  Ret.push_back("");
+  if (Arg *WorkingDir = Args->getLastArg(OPT_working_dir))
+    Ret.push_back(WorkingDir->getValue());
+  else
+    Ret.push_back("");
 
   // Add /libpath flags.
   for (auto *Arg : Args->filtered(OPT_libpath))
@@ -128,14 +131,17 @@ static void fatalOpenError(llvm::Error E, Twine File) {
   });
 }
 
-static void doList(opt::InputArgList &Args) {
+static void doList(opt::InputArgList &Args, StringRef WorkingDir) {
   // lib.exe prints the contents of the first archive file.
   std::unique_ptr<MemoryBuffer> B;
   for (auto *Arg : Args.filtered(OPT_INPUT)) {
     // Create or open the archive object.
+    SmallString<128> Path(Arg->getValue());
+    if (sys::path::is_relative(Path))
+      sys::path::make_absolute(WorkingDir, Path);
     ErrorOr<std::unique_ptr<MemoryBuffer>> MaybeBuf = MemoryBuffer::getFile(
-        Arg->getValue(), /*IsText=*/false, /*RequiresNullTerminator=*/false);
-    fatalOpenError(errorCodeToError(MaybeBuf.getError()), Arg->getValue());
+        Path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
+    fatalOpenError(errorCodeToError(MaybeBuf.getError()), Path);
 
     if (identify_magic(MaybeBuf.get()->getBuffer()) == file_magic::archive) {
       B = std::move(MaybeBuf.get());
@@ -313,13 +319,30 @@ static void appendFile(std::vector<NewArchiveMember> &Members,
   Members.emplace_back(MB);
 }
 
+static bool ExpandResponseFiles(StringSaver &Saver,
+                                SmallVectorImpl<const char *> &Argv) {
+  cl::ExpansionContext ECtx(Saver.getAllocator(),
+                            cl::TokenizeWindowsCommandLine);
+  // Look for a -working-directory flag. lib.exe accepts both / and - prefixes.
+  for (StringRef Arg : Argv) {
+    if (Arg.consume_front("-working-directory:") ||
+        Arg.consume_front("/working-directory:"))
+      ECtx.setCurrentDir(Arg);
+  }
+  if (Error Err = ECtx.expandResponseFiles(Argv)) {
+    errs() << toString(std::move(Err)) << '\n';
+    return false;
+  }
+  return true;
+}
+
 int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
   BumpPtrAllocator Alloc;
   StringSaver Saver(Alloc);
 
   // Parse command line arguments.
   SmallVector<const char *, 20> NewArgs(ArgsArr);
-  cl::ExpandResponseFiles(Saver, cl::TokenizeWindowsCommandLine, NewArgs);
+  ExpandResponseFiles(Saver, NewArgs);
   ArgsArr = NewArgs;
 
   LibOptTable Table;
@@ -344,6 +367,9 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
     return 0;
   }
 
+  // Fetch working directory
+  StringRef WorkingDir = Args.getLastArgValue(OPT_working_dir);
+
   // Parse /ignore:
   llvm::StringSet<> IgnoredWarnings;
   for (auto *Arg : Args.filtered(OPT_ignore))
@@ -353,6 +379,11 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
   std::string OutputPath;
   if (auto *Arg = Args.getLastArg(OPT_out)) {
     OutputPath = Arg->getValue();
+    if (llvm::sys::path::is_relative(OutputPath)) {
+      SmallString<128> Path(OutputPath);
+      llvm::sys::path::make_absolute(WorkingDir, Path);
+      OutputPath = Path.str();
+    }
   }
 
   COFF::MachineTypes LibMachine = COFF::IMAGE_FILE_MACHINE_UNKNOWN;
@@ -380,8 +411,10 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
       return 1;
     }
 
-    std::unique_ptr<MemoryBuffer> MB =
-        openFile(Args.getLastArg(OPT_deffile)->getValue());
+    SmallString<128> DefFilePath(Args.getLastArg(OPT_deffile)->getValue());
+    if (sys::path::is_relative(DefFilePath))
+      sys::path::make_absolute(WorkingDir, DefFilePath);
+    std::unique_ptr<MemoryBuffer> MB = openFile(DefFilePath);
     if (!MB)
       return 1;
 
@@ -403,8 +436,11 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
     std::string OutputFile = Def->OutputFile;
 
     if (isArm64EC(LibMachine) && Args.hasArg(OPT_nativedeffile)) {
-      std::unique_ptr<MemoryBuffer> NativeMB =
-          openFile(Args.getLastArg(OPT_nativedeffile)->getValue());
+      SmallString<128> NativeDefPath(
+          Args.getLastArg(OPT_nativedeffile)->getValue());
+      if (sys::path::is_relative(NativeDefPath))
+        sys::path::make_absolute(WorkingDir, NativeDefPath);
+      std::unique_ptr<MemoryBuffer> NativeMB = openFile(NativeDefPath);
       if (!NativeMB)
         return 1;
 
@@ -452,7 +488,7 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
   }
 
   if (Args.hasArg(OPT_lst)) {
-    doList(Args);
+    doList(Args, WorkingDir);
     return 0;
   }
 
