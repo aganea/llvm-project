@@ -97,7 +97,7 @@ void lld::coff::writeLLDMapFile(const COFFLinkerContext &ctx) {
   std::error_code ec;
   raw_fd_ostream os(ctx.config.lldmapFile, ec, sys::fs::OF_None);
   if (ec)
-    fatal("cannot open " + ctx.config.lldmapFile + ": " + ec.message());
+    fatal(Twine("cannot open ") + ctx.config.lldmapFile + ": " + ec.message());
 
   // Collect symbol info that we want to print out.
   std::vector<DefinedRegular *> syms = getSymbols(ctx);

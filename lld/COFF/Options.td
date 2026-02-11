@@ -358,6 +358,8 @@ defm prefetch_inputs : B<"prefetch-inputs",
                          "Request the OS to prefetch input files as early as "
                          "possible, to improve link times",
                          "Do not prefetch input files (default)">;
+def working_dir
+    : P<"working-directory", "Provide the default working directory">;
 
 // Flags for debugging
 def lldmap : F<"lldmap">;

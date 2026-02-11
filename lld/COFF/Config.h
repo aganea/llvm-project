@@ -244,10 +244,10 @@ struct Configuration {
   llvm::StringMap<int> order;
 
   // Used for /lldmap.
-  std::string lldmapFile;
+  llvm::StringRef lldmapFile;
 
   // Used for /map.
-  std::string mapFile;
+  llvm::StringRef mapFile;
 
   // Used for /mapinfo.
   bool mapInfo = false;

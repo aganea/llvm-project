@@ -802,6 +802,24 @@ static cl::TokenizerCallback getQuotingStyle(COFFLinkerContext &ctx,
   return cl::TokenizeWindowsCommandLine;
 }
 
+static bool ExpandResponseFiles(StringSaver &Saver,
+                                cl::TokenizerCallback Tokenizer,
+                                SmallVectorImpl<const char *> &Argv) {
+  cl::ExpansionContext ECtx(Saver.getAllocator(), Tokenizer);
+  // Look for a -working-directory flag. The COFF linker accepts both
+  // /working-directory: and -working-directory: prefixes.
+  for (StringRef Arg : Argv) {
+    if (Arg.consume_front("-working-directory:") ||
+        Arg.consume_front("/working-directory:"))
+      ECtx.setCurrentDir(Arg);
+  }
+  if (Error Err = ECtx.expandResponseFiles(Argv)) {
+    errs() << toString(std::move(Err)) << '\n';
+    return false;
+  }
+  return true;
+}
+
 ArgParser::ArgParser(COFFLinkerContext &c) : ctx(c) {}
 
 // Parses a given list of options.
@@ -823,7 +841,7 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
                                               argv.data() + argv.size());
   if (!args.hasArg(OPT_lldignoreenv))
     addLINK(expandedArgv);
-  cl::ExpandResponseFiles(saver(), getQuotingStyle(ctx, args), expandedArgv);
+  ExpandResponseFiles(saver(), getQuotingStyle(ctx, args), expandedArgv);
   args = ctx.optTable.ParseArgs(ArrayRef(expandedArgv).drop_front(),
                                 missingIndex, missingCount);
 

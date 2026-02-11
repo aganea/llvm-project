@@ -125,9 +125,9 @@ private:
 
   bool isDecorated(StringRef sym);
 
-  std::string getMapFile(const llvm::opt::InputArgList &args,
-                         llvm::opt::OptSpecifier os,
-                         llvm::opt::OptSpecifier osFile);
+  StringRef getMapFile(const llvm::opt::InputArgList &args,
+                       llvm::opt::OptSpecifier os,
+                       llvm::opt::OptSpecifier osFile);
 
   std::string getImplibPath();
 
