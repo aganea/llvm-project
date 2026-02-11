@@ -65,6 +65,11 @@ defm demangle: B<"demangle",
     "Demangle symbol names (default)",
     "Do not demangle symbol names">;
 
+def disable_free : FF<"disable-free">,
+                   HelpText<"Don't cleanup resources on exit (default)">;
+def no_disable_free : FF<"no-disable-free">,
+                      HelpText<"Free all resources on exit">;
+
 def emit_relocs: F<"emit-relocs">, HelpText<"Generate relocations in output">;
 
 def error_unresolved_symbols: F<"error-unresolved-symbols">,

@@ -66,6 +66,10 @@ defm demangle: B<"demangle",
     "Do not demangle symbol names">;
 def disable_auto_import: F<"disable-auto-import">,
     HelpText<"Don't automatically import data symbols from other DLLs without dllimport">;
+def disable_free : FF<"disable-free">,
+                   HelpText<"Don't cleanup resources on exit (default)">;
+def no_disable_free : FF<"no-disable-free">,
+                      HelpText<"Free all resources on exit">;
 def disable_runtime_pseudo_reloc: F<"disable-runtime-pseudo-reloc">,
     HelpText<"Don't do automatic imports that require runtime fixups">;
 def disable_stdcall_fixup: F<"disable-stdcall-fixup">,

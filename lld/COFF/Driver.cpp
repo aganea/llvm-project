@@ -1567,6 +1567,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   InitializeAllAsmParsers();
   InitializeAllAsmPrinters();
 
+  // Parse command line options.
+  ArgParser parser(ctx);
+  opt::InputArgList args = parser.parse(argsArr);
+
+  // Handle -disable-free early, since it affects the exit path.
+  ctx.e.exitEarly =
+      args.hasFlag(OPT_disable_free, OPT_no_disable_free, ctx.e.exitEarly);
+
   // If the first command line argument is "/lib", link.exe acts like lib.exe.
   // We call our own implementation of lib.exe that understands bitcode files.
   if (argsArr.size() > 1 &&
@@ -1576,10 +1584,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       Fatal(ctx) << "lib failed";
     return;
   }
-
-  // Parse command line options.
-  ArgParser parser(ctx);
-  opt::InputArgList args = parser.parse(argsArr);
 
   // Initialize time trace profiler.
   config->timeTraceEnabled = args.hasArg(OPT_time_trace_eq);

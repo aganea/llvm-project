@@ -30,6 +30,12 @@ def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
     HelpText<"Use colors in diagnostics (default: auto)">,
     MetaVarName<"[auto,always,never]">,
     Group<grp_lld>;
+def disable_free : Flag<["--"], "disable-free">,
+                   HelpText<"Don't cleanup resources on exit (default)">,
+                   Group<grp_lld>;
+def no_disable_free : Flag<["--"], "no-disable-free">,
+                      HelpText<"Free all resources on exit">,
+                      Group<grp_lld>;
 def threads_eq : Joined<["--"], "threads=">,
     HelpText<"Number of threads. '1' disables multi-threading. By default all available hardware threads are used">,
     Group<grp_lld>;

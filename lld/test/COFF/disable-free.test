@@ -1,0 +1,18 @@
+# RUN: yaml2obj %p/Inputs/ret42.yaml -o %t.obj
+
+## -disable-free is accepted and the link succeeds.
+# RUN: lld-link -disable-free /entry:main /out:%t1.exe %t.obj
+# RUN: llvm-readobj %t1.exe | FileCheck %s
+
+## -no-disable-free is accepted and the link succeeds.
+# RUN: lld-link -no-disable-free /entry:main /out:%t2.exe %t.obj
+# RUN: llvm-readobj %t2.exe | FileCheck %s
+
+## Both flags together: last one wins.
+# RUN: lld-link -disable-free -no-disable-free /entry:main /out:%t3.exe %t.obj
+# RUN: llvm-readobj %t3.exe | FileCheck %s
+
+# RUN: lld-link -no-disable-free -disable-free /entry:main /out:%t4.exe %t.obj
+# RUN: llvm-readobj %t4.exe | FileCheck %s
+
+# CHECK: File:

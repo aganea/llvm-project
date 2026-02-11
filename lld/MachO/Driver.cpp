@@ -1747,6 +1747,10 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
   MachOOptTable parser;
   InputArgList args = parser.parse(*ctx, argsArr.slice(1));
 
+  // Handle --disable-free early, since it affects the exit path.
+  ctx->e.exitEarly =
+      args.hasFlag(OPT_disable_free, OPT_no_disable_free, ctx->e.exitEarly);
+
   ctx->e.errorLimitExceededMsg = "too many errors emitted, stopping now "
                                  "(use --error-limit=0 to see all errors)";
   ctx->e.errorLimit = args::getInteger(args, OPT_error_limit_eq, 20);

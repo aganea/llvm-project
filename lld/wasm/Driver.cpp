@@ -1278,8 +1278,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   WasmOptTable parser;
   opt::InputArgList args = parser.parse(argsArr.slice(1));
 
-  // Interpret these flags early because error()/warn() depend on them.
+  // Handle --disable-free early, since it affects the exit path.
   auto &errHandler = errorHandler();
+  errHandler.exitEarly =
+      args.hasFlag(OPT_disable_free, OPT_no_disable_free, errHandler.exitEarly);
+
+  // Interpret these flags early because error()/warn() depend on them.
   errHandler.errorLimit = args::getInteger(args, OPT_error_limit, 20);
   errHandler.fatalWarnings =
       args.hasFlag(OPT_fatal_warnings, OPT_no_fatal_warnings, false);

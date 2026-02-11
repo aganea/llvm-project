@@ -185,6 +185,11 @@ defm demangle: B<"demangle",
 defm dependency_file: EEq<"dependency-file", "Write a dependency file">,
   MetaVarName<"<file>">;
 
+def disable_free : FF<"disable-free">,
+                   HelpText<"Don't cleanup resources on exit (default)">;
+def no_disable_free : FF<"no-disable-free">,
+                      HelpText<"Free all resources on exit">;
+
 def disable_new_dtags: F<"disable-new-dtags">,
   HelpText<"Disable new dynamic tags">;
 

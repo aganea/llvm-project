@@ -233,6 +233,9 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
   add("lld-link");
   add("-lldmingw");
 
+  if (args.hasFlag(OPT_disable_free, OPT_no_disable_free, false))
+    add("-disable-free");
+
   if (auto *a = args.getLastArg(OPT_entry)) {
     StringRef s = a->getValue();
     if (isI386Target(args, defaultTarget) && s.starts_with("_"))

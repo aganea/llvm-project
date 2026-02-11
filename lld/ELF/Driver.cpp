@@ -653,6 +653,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ELFOptTable parser;
   opt::InputArgList args = parser.parse(ctx, argsArr.slice(1));
 
+  // Handle --disable-free early, since it affects the exit path.
+  ctx.e.exitEarly =
+      args.hasFlag(OPT_disable_free, OPT_no_disable_free, ctx.e.exitEarly);
+
   // Interpret these flags early because Err/Warn depend on them.
   ctx.e.errorLimit = args::getInteger(args, OPT_error_limit, 20);
   ctx.e.fatalWarnings =

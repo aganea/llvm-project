@@ -1,0 +1,11 @@
+## --disable-free is forwarded to the COFF driver.
+RUN: ld.lld -### --disable-free foo.o -m i386pep 2>&1 | FileCheck -check-prefix=FORWARD %s
+FORWARD: -disable-free
+
+## --no-disable-free means the flag is not forwarded.
+RUN: ld.lld -### --no-disable-free foo.o -m i386pep 2>&1 | FileCheck -check-prefix=NOFORWARD %s
+NOFORWARD-NOT: -disable-free
+
+## Last flag wins: --disable-free after --no-disable-free forwards the flag.
+RUN: ld.lld -### --no-disable-free --disable-free foo.o -m i386pep 2>&1 | FileCheck -check-prefix=LASTWIN %s
+LASTWIN: -disable-free
