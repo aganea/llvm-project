@@ -950,6 +950,7 @@ static std::string createResponseFile(const opt::InputArgList &args,
     case OPT_reproduce:
     case OPT_libpath:
     case OPT_winsysroot:
+    case OPT_working_dir:
       break;
     case OPT_INPUT:
       os << quote(rewritePath(arg->getValue())) << "\n";
@@ -1030,9 +1031,9 @@ static unsigned parseDebugTypes(COFFLinkerContext &ctx,
   return debugTypes;
 }
 
-std::string LinkerDriver::getMapFile(const opt::InputArgList &args,
-                                     opt::OptSpecifier os,
-                                     opt::OptSpecifier osFile) {
+StringRef LinkerDriver::getMapFile(const opt::InputArgList &args,
+                                   opt::OptSpecifier os,
+                                   opt::OptSpecifier osFile) {
   auto *arg = args.getLastArg(os, osFile);
   if (!arg)
     return "";
@@ -1041,7 +1042,7 @@ std::string LinkerDriver::getMapFile(const opt::InputArgList &args,
 
   assert(arg->getOption().getID() == os.getID());
   StringRef outFile = ctx.config.outputFile;
-  return (outFile.substr(0, outFile.rfind('.')) + ".map").str();
+  return saver().save((outFile.substr(0, outFile.rfind('.')) + ".map"));
 }
 
 std::string LinkerDriver::getImplibPath() {
@@ -1696,6 +1697,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     ctx.e.errorLimitExceededMsg = "too many errors emitted, stopping now"
                                   " (use --error-limit=0 to see all errors)";
 
+  // Handle -working-directory
+  StringRef workingDir = args.getLastArgValue(OPT_working_dir);
+
   // Handle /linkrepro and /reproduce.
   {
     llvm::TimeTraceScope timeScope2("Reproducer");
@@ -1731,7 +1735,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Construct search path list.
   {
     llvm::TimeTraceScope timeScope2("Search paths");
-    searchPaths.emplace_back("");
+    // Current path or provided working directory
+    if (!workingDir.empty())
+      searchPaths.emplace_back(workingDir);
+    else
+      searchPaths.emplace_back("");
     for (auto *arg : args.filtered(OPT_libpath))
       searchPaths.push_back(arg->getValue());
     if (!config->mingw) {
@@ -2587,6 +2595,20 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         config->dll, config->driver);
   }
 
+  // Helper to make a relative path absolute using the working directory.
+  // Returns a StringRef backed by the saver() allocator for safe storage
+  // in StringRef config fields.
+  auto makeAbsolute = [&](StringRef path) -> StringRef {
+    if (path.empty() || workingDir.empty() ||
+        llvm::sys::path::is_absolute(path))
+      return path;
+    SmallString<128> p(path);
+    llvm::sys::path::make_absolute(workingDir, p);
+    return saver().save(p.str());
+  };
+
+  config->outputFile = makeAbsolute(config->outputFile).str();
+
   // Fail early if an output file is not writable.
   if (auto e = tryCreateFile(config->outputFile)) {
     Err(ctx) << "cannot open output file " << config->outputFile << ": "
@@ -2594,10 +2616,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return;
   }
 
-  config->lldmapFile = getMapFile(args, OPT_lldmap, OPT_lldmap_file);
-  config->mapFile = getMapFile(args, OPT_map, OPT_map_file);
+  config->lldmapFile = makeAbsolute(getMapFile(args, OPT_lldmap, OPT_lldmap_file));
+  config->mapFile = makeAbsolute(getMapFile(args, OPT_map, OPT_map_file));
 
-  if (config->mapFile != "" && args.hasArg(OPT_map_info)) {
+  if (!config->mapFile.empty() && args.hasArg(OPT_map_info)) {
     for (auto *arg : args.filtered(OPT_map_info)) {
       std::string s = StringRef(arg->getValue()).lower();
       if (s == "exports")
@@ -2607,11 +2629,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
   }
 
-  if (config->lldmapFile != "" && config->lldmapFile == config->mapFile) {
+  if (!config->lldmapFile.empty() && config->lldmapFile == config->mapFile) {
     Warn(ctx) << "/lldmap and /map have the same output file '"
               << config->mapFile << "'.\n>>> ignoring /lldmap";
-    config->lldmapFile.clear();
+    config->lldmapFile = {};
   }
+
+  config->implib = makeAbsolute(config->implib);
 
   // If should create PDB, use the hash of PDB content for build id. Otherwise,
   // generate using the hash of executable content.
@@ -2623,6 +2647,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (config->pdbPath.empty()) {
       config->pdbPath = config->outputFile;
       sys::path::replace_extension(config->pdbPath, ".pdb");
+    }
+
+    if (llvm::sys::path::is_relative(config->pdbPath) && !workingDir.empty()) {
+      llvm::sys::path::make_absolute(workingDir, config->pdbPath);
     }
 
     // The embedded PDB path should be the absolute path to the PDB if no
@@ -2641,6 +2669,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
     config->buildIDHash = BuildIDHash::PDB;
   }
+
+  // Resolve remaining output paths relative to the working directory.
+  config->ltoObjPath = makeAbsolute(config->ltoObjPath);
+  config->ltoCache = makeAbsolute(config->ltoCache);
+  config->dwoDir = makeAbsolute(config->dwoDir);
 
   // Set default image base if /base is not given.
   if (config->imageBase == uint64_t(-1))

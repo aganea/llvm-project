@@ -355,6 +355,9 @@ defm build_id: B<
 def incl_glob : Joined<["/", "-", "/?", "-?"], "includeglob:">,
     HelpText<"Force symbol to be added to symbol table as undefined one using a glob pattern">;
 
+def working_dir
+    : P<"working-directory", "Provide the default working directory">;
+
 defm prefetch_inputs : B<"prefetch-inputs",
                          "Request the OS to prefetch input files as early as "
                          "possible, to improve link times",

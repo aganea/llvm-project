@@ -1,0 +1,82 @@
+# RUN: rm -rf %t.dir && mkdir -p %t.dir/input %t.dir/output
+
+## Create an object file in the "input" subdirectory.
+# RUN: yaml2obj %p/Inputs/ret42.yaml -o %t.dir/input/main.obj
+
+#-----------------------------------------------------------------------------
+# Test 1: Basic link with -working-directory resolves input and output files.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /entry:main /out:../output/out1.exe main.obj
+# RUN: llvm-readobj %t.dir/output/out1.exe | FileCheck -check-prefix=BASIC %s
+# BASIC: File:
+
+#-----------------------------------------------------------------------------
+# Test 2: The /working-directory: prefix (with /) also works.
+#-----------------------------------------------------------------------------
+# RUN: lld-link /working-directory:%t.dir/input /entry:main /out:../output/out2.exe main.obj
+# RUN: llvm-readobj %t.dir/output/out2.exe | FileCheck -check-prefix=SLASH %s
+# SLASH: File:
+
+#-----------------------------------------------------------------------------
+# Test 3: /out with a relative path is resolved against working directory.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/output /entry:main /out:out3.exe ../input/main.obj
+# RUN: llvm-readobj %t.dir/output/out3.exe | FileCheck -check-prefix=RELOUT %s
+# RELOUT: File:
+
+#-----------------------------------------------------------------------------
+# Test 4: /map with an explicit relative path is resolved against working dir.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /entry:main /out:../output/out4.exe \
+# RUN:   /map:../output/out4.map main.obj
+# RUN: FileCheck -check-prefix=MAP %s < %t.dir/output/out4.map
+# MAP: out4
+
+#-----------------------------------------------------------------------------
+# Test 5: /map without explicit path derives from /out (already resolved).
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /entry:main /out:../output/out5.exe \
+# RUN:   /map main.obj
+# RUN: FileCheck -check-prefix=MAP5 %s < %t.dir/output/out5.map
+# MAP5: out5
+
+#-----------------------------------------------------------------------------
+# Test 6: /lldmap with an explicit relative path.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /entry:main /out:../output/out6.exe \
+# RUN:   /lldmap:../output/out6.lldmap main.obj
+# RUN: FileCheck -check-prefix=LLDMAP %s < %t.dir/output/out6.lldmap
+# LLDMAP: Address
+
+#-----------------------------------------------------------------------------
+# Test 7: /implib with a relative path is resolved against working directory.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /dll /entry:main /out:../output/out7.dll \
+# RUN:   /implib:../output/out7.lib main.obj
+# RUN: llvm-readobj %t.dir/output/out7.lib | FileCheck -check-prefix=IMPLIB %s
+# IMPLIB: File:
+
+#-----------------------------------------------------------------------------
+# Test 8: Response file paths are resolved relative to working directory.
+#-----------------------------------------------------------------------------
+# RUN: echo "/entry:main /out:../output/out8.exe main.obj" > %t.dir/input/args.rsp
+# RUN: lld-link -working-directory:%t.dir/input @args.rsp
+# RUN: llvm-readobj %t.dir/output/out8.exe | FileCheck -check-prefix=RSP %s
+# RSP: File:
+
+#-----------------------------------------------------------------------------
+# Test 9: -print-search-paths shows working directory instead of (cwd).
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /dll /noentry /machine:x64 \
+# RUN:   /out:../output/out9.dll main.obj -print-search-paths 2>&1 \
+# RUN:   | FileCheck -check-prefix=SEARCHPATH %s
+# SEARCHPATH: Library search paths:
+# SEARCHPATH-NEXT: {{.*}}input
+
+#-----------------------------------------------------------------------------
+# Test 10: Absolute paths are not affected by -working-directory.
+#-----------------------------------------------------------------------------
+# RUN: lld-link -working-directory:%t.dir/input /entry:main /out:%t.dir/output/out10.exe \
+# RUN:   %t.dir/input/main.obj
+# RUN: llvm-readobj %t.dir/output/out10.exe | FileCheck -check-prefix=ABS %s
+# ABS: File:
