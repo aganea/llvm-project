@@ -163,8 +163,10 @@ int unsafeLldMain(llvm::ArrayRef<const char *> args,
   int r = !d(argsV, stdoutOS, stderrOS, exitEarly, inTestOutputDisabled);
   // At this point 'r' is either 1 for error, and 0 for no error.
 
-  // Call exit() if we can to avoid calling destructors.
-  if (exitEarly)
+  // Call `exit()` if we can to avoid calling destructors. Don't read the
+  // `exitEarly` argument passed to this function since it might change along
+  // the way, if we pass -disable-free or -no-disable-free on the cmd line.
+  if (hasContext() && context().e.exitEarly)
     exitLld(r);
 
   // Delete the global context and clear the global context pointer, so that it
