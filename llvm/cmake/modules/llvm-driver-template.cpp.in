@@ -10,7 +10,7 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/LLVMDriver.h"
 
-int @TOOL_NAME@_main(ArrayRef<const char *>, const llvm::ToolContext &);
+int @TOOL_NAME@_main(llvm::ArrayRef<const char *>, const llvm::ToolContext &);
 
 int main(int argc, char **argv) {
   llvm::InitLLVM X(argc, argv, @INITLLVM_ARGS@);
