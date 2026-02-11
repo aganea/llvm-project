@@ -19,5 +19,7 @@
 ; CHECK-NEXT:    /N          Null-terminate all strings in the string table.
 ; CHECK-NEXT:    /U <value>  Undefine a symbol for the C preprocessor.
 ; CHECK-NEXT:    /V          Be verbose.
+; CHECK-NEXT:    /working-directory <value>
+; CHECK-NEXT:                Provide the default working directory
 ; CHECK-NEXT:    /X          Ignore 'include' variable.
 ; CHECK-NEXT:    /Y          Suppress warnings on duplicate resource IDs.

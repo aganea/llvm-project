@@ -42,6 +42,9 @@ def dry_run : F<"dry-run", "Don't compile the input; only try to parse it.">;
 
 def no_preprocess : F<"no-preprocess", "Don't try to preprocess the input file.">;
 
+def working_dir
+    : JS<"working-directory", "Provide the default working directory">;
+
 // Print (but do not run) the commands to run for preprocessing
 def _HASH_HASH_HASH : F_nodoc<"###">;
 
