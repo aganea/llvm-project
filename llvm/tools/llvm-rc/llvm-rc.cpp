@@ -229,6 +229,7 @@ struct RcOptions {
   WriterParams Params;
   bool AppendNull = false;
   bool IsDryRun = false;
+  std::string WorkingDirectory;
   // Set the default language; choose en-US arbitrarily.
   unsigned LangId = (/*PrimaryLangId*/ 0x09) | (/*SubLangId*/ 0x01 << 10);
 };
@@ -542,7 +543,13 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
     Opts.PreprocessArgs.push_back(Arg->getValue());
   }
 
+  Opts.WorkingDirectory = InputArgs.getLastArgValue(OPT_working_dir, "");
   Opts.InputFile = InArgsInfo[0];
+  if (llvm::sys::path::is_relative(Opts.InputFile)) {
+    SmallString<128> InputFile(Opts.InputFile);
+    llvm::sys::path::make_absolute(Opts.WorkingDirectory, InputFile);
+    Opts.InputFile = InputFile.str();
+  }
   Opts.BeVerbose = InputArgs.hasArg(OPT_verbose);
   Opts.Preprocess = !InputArgs.hasArg(OPT_no_preprocess);
   Opts.Params.Include = InputArgs.getAllArgValues(OPT_includepath);
@@ -565,7 +572,7 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   auto OutArgsInfo = InputArgs.getAllArgValues(OPT_fileout);
   if (OutArgsInfo.empty()) {
     SmallString<128> OutputFile(Opts.InputFile);
-    llvm::sys::fs::make_absolute(OutputFile);
+    llvm::sys::path::make_absolute(Opts.WorkingDirectory, OutputFile);
     llvm::sys::path::replace_extension(OutputFile, "res");
     OutArgsInfo.push_back(std::string(OutputFile));
   }
@@ -574,6 +581,11 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
       fatalError(
           "No more than one output file should be provided (using /FO flag).");
     Opts.OutputFile = OutArgsInfo[0];
+    if (llvm::sys::path::is_relative(Opts.OutputFile)) {
+      SmallString<128> OutputFile(Opts.OutputFile);
+      llvm::sys::path::make_absolute(Opts.WorkingDirectory, OutputFile);
+      Opts.OutputFile = OutputFile.str();
+    }
   }
   Opts.AppendNull = InputArgs.hasArg(OPT_add_null);
   if (InputArgs.hasArg(OPT_lang_id)) {

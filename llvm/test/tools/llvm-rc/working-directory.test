@@ -1,0 +1,36 @@
+; RUN: rm -rf %t.dir && mkdir -p %t.dir/input %t.dir/output
+
+;; Create a simple .rc file in the "input" subdirectory.
+; RUN: echo "STRINGTABLE { 1 \"hello\" }" > %t.dir/input/test.rc
+
+;-----------------------------------------------------------------------------
+; Test 1: Basic compilation with -working-directory resolves input file.
+;-----------------------------------------------------------------------------
+; RUN: llvm-rc -no-preprocess -working-directory %t.dir/input -- test.rc
+; RUN: test -e %t.dir/input/test.res
+
+;-----------------------------------------------------------------------------
+; Test 2: /FO with a relative path is resolved against working directory.
+;-----------------------------------------------------------------------------
+; RUN: llvm-rc -no-preprocess /working-directory %t.dir/input /FO ../output/out2.res -- test.rc
+; RUN: test -e %t.dir/output/out2.res
+
+;-----------------------------------------------------------------------------
+; Test 3: Default output file (.res) is placed relative to the resolved
+;         input file path, not the current working directory.
+;-----------------------------------------------------------------------------
+; RUN: rm -f %t.dir/input/test.res
+; RUN: llvm-rc -no-preprocess -working-directory %t.dir/input -- test.rc
+; RUN: test -e %t.dir/input/test.res
+
+;-----------------------------------------------------------------------------
+; Test 4: Absolute paths are not affected by -working-directory.
+;-----------------------------------------------------------------------------
+; RUN: llvm-rc -no-preprocess -working-directory %t.dir/input /FO %t.dir/output/out4.res -- %t.dir/input/test.rc
+; RUN: test -e %t.dir/output/out4.res
+
+;-----------------------------------------------------------------------------
+; Test 5: -### shows the resolved input path in the preprocessor command.
+;-----------------------------------------------------------------------------
+; RUN: llvm-rc -working-directory %t.dir/input -### -- test.rc 2>&1 | FileCheck --check-prefix=PREPROC %s
+; PREPROC: {{.*}}test.rc"
