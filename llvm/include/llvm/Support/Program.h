@@ -138,9 +138,9 @@ LLVM_ABI int ExecuteAndWait(
     std::optional<ProcessStatistics> *ProcStat = nullptr, ///< If non-zero,
     /// provides a pointer to a structure in which process execution
     /// statistics will be stored.
-    BitVector *AffinityMask = nullptr ///< CPUs or processors the new
-                                      /// program shall run on.
-);
+    BitVector *AffinityMask = nullptr, ///< CPUs or processors the new
+                                       /// program shall run on.
+    StringRef WorkingDir = {});
 
 /// Similar to \ref ExecuteAndWait, but returns immediately.
 /// \returns The \ref ProcessInfo of the newly launched process.
@@ -156,7 +156,7 @@ LLVM_ABI ProcessInfo ExecuteNoWait(
     /// If true the executed program detatches from the controlling
     /// terminal. I/O streams such as llvm::outs, llvm::errs, and stdin will
     /// be closed until redirected to another output location
-    bool DetachProcess = false);
+    bool DetachProcess = false, StringRef WorkingDir = {});
 
 /// Return true if the given arguments fit within system-specific
 /// argument length limits.

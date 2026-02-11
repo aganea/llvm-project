@@ -705,4 +705,180 @@ TEST_F(ProgramEnvTest, TestExecuteEmptyEnvironment) {
 #endif
 }
 
+TEST_F(ProgramEnvTest, TestExecuteAndWaitWorkingDir) {
+  using namespace llvm::sys;
+
+  if (const char *ExpectedDir = getenv("LLVM_PROGRAM_TEST_WORKING_DIR")) {
+    // Child process - verify we're in the expected directory
+    SmallString<128> CurrentDir;
+    ASSERT_NO_ERROR(fs::current_path(CurrentDir));
+
+    SmallString<128> ExpectedPath(ExpectedDir);
+    fs::make_absolute(ExpectedPath);
+
+#ifdef _WIN32
+    // On Windows, normalize path separators and case
+    sys::path::native(CurrentDir, sys::path::Style::windows_backslash);
+    sys::path::native(ExpectedPath, sys::path::Style::windows_backslash);
+
+    // Case-insensitive comparison on Windows
+    if (CurrentDir.equals_insensitive(ExpectedPath))
+      exit(0);
+#else
+    if (CurrentDir == ExpectedPath)
+      exit(0);
+#endif
+
+    llvm::errs() << "Expected working directory: " << ExpectedPath << "\n";
+    llvm::errs() << "Actual working directory: " << CurrentDir << "\n";
+    exit(1);
+  }
+
+  // Parent process - create a test directory and spawn child with WorkingDir
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(
+      fs::createUniqueDirectory("program-working-dir-test", TestDirectory));
+
+  std::string Executable =
+      sys::fs::getMainExecutable(TestMainArgv0, &ProgramTestStringArg1);
+  StringRef argv[] = {
+      Executable, "--gtest_filter=ProgramEnvTest.TestExecuteAndWaitWorkingDir"};
+
+  // Add LLVM_PROGRAM_TEST_WORKING_DIR to the environment of the child
+  std::string EnvVar = "LLVM_PROGRAM_TEST_WORKING_DIR=";
+  EnvVar += TestDirectory.str();
+  addEnvVar(EnvVar);
+
+  std::string Error;
+  bool ExecutionFailed;
+  int RetCode =
+      ExecuteAndWait(Executable, argv, getEnviron(), {}, /*SecondsToWait=*/10,
+                     /*MemoryLimit=*/0, &Error, &ExecutionFailed,
+                     /*ProcStat=*/nullptr, /*AffinityMask=*/nullptr,
+                     /*WorkingDir=*/TestDirectory);
+
+  EXPECT_FALSE(ExecutionFailed) << Error;
+  EXPECT_EQ(0, RetCode);
+
+  // Clean up
+  ASSERT_NO_ERROR(fs::remove(TestDirectory));
+}
+
+TEST_F(ProgramEnvTest, TestExecuteNoWaitWorkingDir) {
+  using namespace llvm::sys;
+
+  if (const char *ExpectedDir =
+          getenv("LLVM_PROGRAM_TEST_WORKING_DIR_NOWAIT")) {
+    // Child process - verify we're in the expected directory
+    SmallString<128> CurrentDir;
+    ASSERT_NO_ERROR(fs::current_path(CurrentDir));
+
+    SmallString<128> ExpectedPath(ExpectedDir);
+    fs::make_absolute(ExpectedPath);
+
+#ifdef _WIN32
+    // On Windows, normalize path separators and case
+    sys::path::native(CurrentDir, sys::path::Style::windows_backslash);
+    sys::path::native(ExpectedPath, sys::path::Style::windows_backslash);
+
+    // Case-insensitive comparison on Windows
+    if (CurrentDir.equals_insensitive(ExpectedPath))
+      exit(0);
+#else
+    if (CurrentDir == ExpectedPath)
+      exit(0);
+#endif
+
+    llvm::errs() << "Expected working directory: " << ExpectedPath << "\n";
+    llvm::errs() << "Actual working directory: " << CurrentDir << "\n";
+    exit(1);
+  }
+
+  // Parent process - create a test directory and spawn child with WorkingDir
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(fs::createUniqueDirectory("program-working-dir-nowait-test",
+                                            TestDirectory));
+
+  std::string Executable =
+      sys::fs::getMainExecutable(TestMainArgv0, &ProgramTestStringArg1);
+  StringRef argv[] = {
+      Executable, "--gtest_filter=ProgramEnvTest.TestExecuteNoWaitWorkingDir"};
+
+  // Add LLVM_PROGRAM_TEST_WORKING_DIR_NOWAIT to the environment of the child
+  std::string EnvVar = "LLVM_PROGRAM_TEST_WORKING_DIR_NOWAIT=";
+  EnvVar += TestDirectory.str();
+  addEnvVar(EnvVar);
+
+  std::string Error;
+  bool ExecutionFailed;
+  ProcessInfo PI =
+      ExecuteNoWait(Executable, argv, getEnviron(), {}, /*MemoryLimit=*/0,
+                    &Error, &ExecutionFailed, /*AffinityMask=*/nullptr,
+                    /*DetachProcess=*/false, /*WorkingDir=*/TestDirectory);
+
+  ASSERT_FALSE(ExecutionFailed) << Error;
+  ASSERT_NE(PI.Pid, ProcessInfo::InvalidPid) << "Invalid process id";
+
+  // Wait for the process to complete
+  ProcessInfo WaitResult = Wait(PI, /*SecondsToWait=*/std::nullopt, &Error);
+  ASSERT_TRUE(Error.empty()) << Error;
+  EXPECT_EQ(0, WaitResult.ReturnCode);
+
+  // Clean up
+  ASSERT_NO_ERROR(fs::remove(TestDirectory));
+}
+
+TEST_F(ProgramEnvTest, TestWorkingDirWithInvalidPath) {
+  using namespace llvm::sys;
+
+  std::string Executable =
+      sys::fs::getMainExecutable(TestMainArgv0, &ProgramTestStringArg1);
+  StringRef argv[] = {Executable, "--gtest_filter="};
+
+  // Use a non-existent directory path
+  std::string InvalidDir = "/this/path/definitely/does/not/exist/anywhere";
+
+  std::string Error;
+  bool ExecutionFailed = false;
+  int RetCode =
+      ExecuteAndWait(Executable, argv, getEnviron(), {}, /*SecondsToWait=*/10,
+                     /*MemoryLimit=*/0, &Error, &ExecutionFailed,
+                     /*ProcStat=*/nullptr, /*AffinityMask=*/nullptr,
+                     /*WorkingDir=*/InvalidDir);
+
+  // Execution should fail with an invalid working directory
+  EXPECT_TRUE(ExecutionFailed || RetCode < 0)
+      << "Execution should fail with invalid working directory";
+  EXPECT_FALSE(Error.empty()) << "Error message should be set";
+}
+
+TEST_F(ProgramEnvTest, TestWorkingDirEmptyString) {
+  using namespace llvm::sys;
+
+  if (getenv("LLVM_PROGRAM_TEST_WORKING_DIR_EMPTY")) {
+    // Child process - just exit successfully
+    exit(0);
+  }
+
+  std::string Executable =
+      sys::fs::getMainExecutable(TestMainArgv0, &ProgramTestStringArg1);
+  StringRef argv[] = {
+      Executable, "--gtest_filter=ProgramEnvTest.TestWorkingDirEmptyString"};
+
+  addEnvVar("LLVM_PROGRAM_TEST_WORKING_DIR_EMPTY=1");
+
+  std::string Error;
+  bool ExecutionFailed = false;
+
+  // Empty working directory should use the current directory (default behavior)
+  int RetCode =
+      ExecuteAndWait(Executable, argv, getEnviron(), {}, /*SecondsToWait=*/10,
+                     /*MemoryLimit=*/0, &Error, &ExecutionFailed,
+                     /*ProcStat=*/nullptr, /*AffinityMask=*/nullptr,
+                     /*WorkingDir=*/"");
+
+  EXPECT_FALSE(ExecutionFailed) << Error;
+  EXPECT_EQ(0, RetCode);
+}
+
 } // end anonymous namespace

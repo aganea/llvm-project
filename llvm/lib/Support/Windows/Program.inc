@@ -175,7 +175,8 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
                     std::optional<ArrayRef<StringRef>> Env,
                     ArrayRef<std::optional<StringRef>> Redirects,
                     unsigned MemoryLimit, std::string *ErrMsg,
-                    BitVector *AffinityMask, bool DetachProcess) {
+                    BitVector *AffinityMask, bool DetachProcess,
+                    StringRef WorkingDir) {
   if (!sys::fs::can_execute(Program)) {
     if (ErrMsg)
       *ErrMsg = "program not executable";
@@ -284,6 +285,16 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
     return false;
   }
 
+  SmallVector<wchar_t, MAX_PATH> WorkingDirUtf16;
+  if (!WorkingDir.empty()) {
+    if (std::error_code ec =
+            sys::windows::widenPath(WorkingDir, WorkingDirUtf16)) {
+      SetLastError(ec.value());
+      MakeErrMsg(ErrMsg,
+                 std::string("Unable to convert working directory to UTF-16"));
+      return false;
+    }
+  }
   unsigned CreateFlags = CREATE_UNICODE_ENVIRONMENT;
   if (AffinityMask)
     CreateFlags |= CREATE_SUSPENDED;
@@ -292,9 +303,10 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
 
   std::vector<wchar_t> CommandUtf16(Command.size() + 1, 0);
   std::copy(Command.begin(), Command.end(), CommandUtf16.begin());
-  BOOL rc = CreateProcessW(ProgramUtf16.data(), CommandUtf16.data(), 0, 0, TRUE,
-                           CreateFlags, EnvBlock.empty() ? 0 : EnvBlock.data(),
-                           0, &si, &pi);
+  BOOL rc =
+      CreateProcessW(ProgramUtf16.data(), CommandUtf16.data(), 0, 0, TRUE,
+                     CreateFlags, EnvBlock.empty() ? 0 : EnvBlock.data(),
+                     WorkingDir.empty() ? 0 : WorkingDirUtf16.data(), &si, &pi);
   DWORD err = GetLastError();
 
   // Regardless of whether the process got created or not, we are done with
