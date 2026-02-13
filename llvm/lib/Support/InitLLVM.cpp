@@ -12,10 +12,12 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
 
 #ifdef _WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
+#include <process.h>
 #endif
 
 #if defined(HAVE_UNISTD_H)
@@ -69,12 +71,30 @@ void CleanupStdHandles(void *Cookie) {
   llvm::restoreStdHandleAutoConversion(STDERR_FILENO);
 }
 
+static LLVM_THREAD_LOCAL void *CRTInitEvent{};
+static LLVM_THREAD_LOCAL void *CRTExitEvent{};
+
+void OnlyInitializeCRT(void *InitEvent, void *ExitEvent) {
+  CRTInitEvent = InitEvent;
+  CRTExitEvent = ExitEvent;
+}
+
 using namespace llvm;
 using namespace llvm::sys;
 
 InitLLVM::InitLLVM(int &Argc, const char **&Argv,
                    bool InstallPipeSignalExitHandler,
                    bool NeedsPOSIXUtilitySignalHandling) {
+  if (CRTInitEvent) {
+#ifdef _WIN32
+    SetEvent((HANDLE)CRTInitEvent);
+    WaitForSingleObject(CRTExitEvent, INFINITE);
+    llvm_shutdown(); // clean up allocations
+    _cexit();
+    sys::Process::Exit(0);
+#endif
+  }
+
 #ifndef NDEBUG
   static std::atomic<bool> Initialized{false};
   assert(!Initialized && "InitLLVM was already initialized!");
