@@ -10,9 +10,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Basic/TableGen.h"
+#include "llvm/Support/LLVMDriver.h"
 
 /// Command line parameters are shared between llvm-tblgen and llvm-min-tblgen.
 /// The indirection to tblgen_main exists to ensure that the static variables
 /// for the llvm::cl:: mechanism are linked into both executables.
-int main(int argc, char **argv) { return tblgen_main(argc, argv); }
+
+LLVM_DRIVER_IMPL_MAIN("llvm-min-tblgen", tblgen_main)

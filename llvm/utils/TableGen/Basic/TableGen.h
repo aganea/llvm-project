@@ -10,4 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-int tblgen_main(int argc, char **argv);
+#include "llvm/ADT/ArrayRef.h"
+
+namespace llvm {
+class ToolContext;
+}
+int tblgen_main(llvm::ArrayRef<const char *> Args, const llvm::ToolContext &);

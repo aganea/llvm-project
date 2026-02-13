@@ -58,6 +58,9 @@ LLVM_ABI bool CheckAssert(SMLoc Loc, const Init *Condition,
                           const Init *Message);
 LLVM_ABI void dumpMessage(SMLoc Loc, const Init *Message);
 
+// Reset all internal state
+LLVM_ABI void ResetSrcMgr();
+
 extern LLVM_ABI SourceMgr SrcMgr;
 extern LLVM_ABI unsigned ErrorsPrinted;
 
