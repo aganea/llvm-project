@@ -6608,6 +6608,16 @@ def fno_integrated_cc1 : Flag<["-"], "fno-integrated-cc1">,
                          Visibility<[ClangOption, CLOption, DXCOption]>,
                          Group<f_Group>,
                          HelpText<"Spawn a separate process for each cc1">;
+def fintegrated_tools : Flag<["-"], "fintegrated-tools">,
+                        Visibility<[ClangOption, CLOption, DXCOption]>,
+                        Group<f_Group>,
+                        HelpText<"Run all tools (cc1, linker, etc.) in-process "
+                                 "when possible (default)">;
+def fno_integrated_tools
+    : Flag<["-"], "fno-integrated-tools">,
+      Visibility<[ClangOption, CLOption, DXCOption]>,
+      Group<f_Group>,
+      HelpText<"Spawn a separate process for each tool invocation">;
 
 def fintegrated_objemitter : Flag<["-"], "fintegrated-objemitter">,
   Visibility<[ClangOption, CLOption]>,
@@ -6622,10 +6632,11 @@ def : Flag<["-"], "integrated-as">, Alias<fintegrated_as>;
 def : Flag<["-"], "no-integrated-as">, Alias<fno_integrated_as>,
       Visibility<[ClangOption, CC1Option, FlangOption]>;
 
-def working_directory : Separate<["-"], "working-directory">,
-  Visibility<[ClangOption, CC1Option]>,
-  HelpText<"Resolve file paths relative to the specified directory">,
-  MarshallingInfoString<FileSystemOpts<"WorkingDir">>;
+def working_directory
+    : Separate<["-"], "working-directory">,
+      Visibility<[ClangOption, CC1Option, CLOption]>,
+      HelpText<"Resolve file paths relative to the specified directory">,
+      MarshallingInfoString<FileSystemOpts<"WorkingDir">>;
 def working_directory_EQ : Joined<["-"], "working-directory=">,
   Visibility<[ClangOption, CC1Option]>,
   Alias<working_directory>;
@@ -9273,6 +9284,12 @@ def _SLASH_Brepro_ : CLFlag<"Brepro-">,
 def _SLASH_C : CLFlag<"C">,
   HelpText<"Do not discard comments when preprocessing">, Alias<C>;
 def _SLASH_c : CLFlag<"c">, HelpText<"Compile only">, Alias<c>;
+def _SLASH_comp_db : CLJoinedOrSeparate<"compilation-database:", [CLOption]>,
+                     HelpText<"Build with a compilation database">,
+                     MetaVarName<"<file>">;
+def _SLASH_comp_db_no_colon
+    : CLJoinedOrSeparate<"compilation-database", [CLOption]>,
+      Alias<_SLASH_comp_db>;
 def _SLASH_d1PP : CLFlag<"d1PP">,
   HelpText<"Retain macro definitions in /E mode">, Alias<dD>;
 def _SLASH_d1reportAllClassLayout : CLFlag<"d1reportAllClassLayout">,

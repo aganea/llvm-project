@@ -127,12 +127,9 @@ generateReproducerForInvocationArguments(
   DiagnosticsEngine Diags(DiagnosticIDs::create(), DiagOpts,
                           new IgnoringDiagConsumer());
   ProcessWarningOptions(Diags, DiagOpts, *VFS, /*ReportDiags=*/false);
-  Driver TheDriver(ToolContext.getPath().data(),
-                   llvm::sys::getDefaultTargetTriple(), Diags,
+  Driver TheDriver(ToolContext, llvm::sys::getDefaultTargetTriple(), Diags,
                    /*Title=*/"clang LLVM compiler", VFS);
   TheDriver.setTargetAndMode(TargetAndMode);
-  if (ToolContext.invocationArgs().size() > 1)
-    TheDriver.setPrependArg(ToolContext.invocationArgs()[1]);
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Argv));
   if (C && !C->containsError()) {
@@ -149,7 +146,7 @@ generateReproducerForInvocationArguments(
   return std::nullopt;
 }
 
-std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes);
+std::string GetExecutablePath(StringRef Argv0, bool CanonicalPrefixes);
 
 static void printReproducerInformation(
     llvm::raw_ostream &OS, const ClangInvocationInfo &Info,

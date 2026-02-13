@@ -2308,7 +2308,13 @@ void Clang::DumpCompilationDatabase(Compilation &C, StringRef Filename,
   CDB << ", \"file\": \"" << escape(Input.getFilename()) << "\"";
   if (Output.isFilename())
     CDB << ", \"output\": \"" << escape(Output.getFilename()) << "\"";
-  CDB << ", \"arguments\": [\"" << escape(D.ClangExecutable) << "\"";
+  CDB << ", \"arguments\": [";
+  auto InvokeArgs = D.getToolContext().invocationArgs();
+  for (unsigned I = 0; I < InvokeArgs.size(); ++I) {
+    if (I > 0)
+      CDB << ", ";
+    CDB << "\"" << escape(InvokeArgs[I]) << "\"";
+  }
   SmallString<128> Buf;
   Buf = "-x";
   Buf += types::getTypeName(Input.getType());
@@ -5429,20 +5435,15 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
         II.getInputArg().renderAsInput(Args, CmdArgs);
     }
 
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), D.getClangProgramPath(),
-        CmdArgs, Inputs, Output, D.getPrependArg()));
+    C.addCommand(
+        std::make_unique<Command>(JA, *this, ResponseFileSupport::AtFileUTF8(),
+                                  D.getToolContext(), CmdArgs, Inputs, Output));
     return;
   }
 
   if (C.getDriver().embedBitcodeMarkerOnly() && !IsUsingLTO)
     CmdArgs.push_back("-fembed-bitcode=marker");
 
-  // We normally speed up the clang process a bit by skipping destructors at
-  // exit, but when we're generating diagnostics we can rely on some of the
-  // cleanup.
-  if (!C.isForDiagnostics())
-    CmdArgs.push_back("-disable-free");
   CmdArgs.push_back("-clear-ast-before-backend");
 
 #ifdef NDEBUG
@@ -7863,8 +7864,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddAllArgs(CmdArgs, options::OPT_undef);
 
-  const char *Exec = D.getClangProgramPath();
-
   // Optionally embed the -cc1 level arguments into the debug info or a
   // section, for build analysis.
   // Also record command line arguments into the debug info if
@@ -8162,16 +8161,42 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Input.getInputArg().renderAsInput(Args, CmdArgs);
   }
 
-  if (D.CC1Main && !D.CCGenDiagnostics) {
-    // Invoke the CC1 directly in this process
-    C.addCommand(std::make_unique<CC1Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
-  } else {
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+  std::unique_ptr<Command> Job;
+  if (D.isCC1InProcess() && !D.CCGenDiagnostics) {
+    auto EC = D.getToolContext().getCallableTool();
+    if (EC) {
+      // Invoke the CC1 directly in this process
+      Job = std::make_unique<CC1Command>(
+          JA, *this, ResponseFileSupport::AtFileUTF8(), D.getToolContext(), *EC,
+          CmdArgs, Inputs, Output);
+    }
   }
+  if (!Job) {
+    // Execute out-of-process.
+    Job =
+        std::make_unique<Command>(JA, *this, ResponseFileSupport::AtFileUTF8(),
+                                  D.getToolContext(), CmdArgs, Inputs, Output);
+  }
+  // Signify that the Clang tool supports the -disable-free flag, and by default
+  // doesn't free memory or clean resources, it lets the OS do it on process
+  // exit.
+  Job->DisableFree.emplace(true);
+
+  // Adjust the command-line for -disable-free. If the user has decided to force
+  // the flag, don't do anything.
+  bool DisableFreeOverriden =
+      llvm::any_of(C.getArgs().filtered(options::OPT_Xclang), [](auto *Arg) {
+        return StringRef(Arg->getValue()).ends_with("disable-free");
+      });
+  if (!DisableFreeOverriden) {
+    Job->PostBuildJobs = [](Command *Cmd) {
+      auto &Args = Cmd->getArgumentsMutable();
+      assert(StringRef("-cc1") == Args.front());
+      Args.push_back(*Cmd->DisableFree ? "-disable-free" : "-no-disable-free");
+    };
+  }
+
+  C.addCommand(std::move(Job));
 
   // Make the compile command echo its inputs for /showFilenames.
   if (Output.getType() == types::TY_Object &&
@@ -9036,17 +9061,23 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   assert(Input.isFilename() && "Invalid input.");
   CmdArgs.push_back(Input.getFilename());
 
-  const char *Exec = getToolChain().getDriver().getClangProgramPath();
-  if (D.CC1Main && !D.CCGenDiagnostics) {
-    // Invoke cc1as directly in this process.
-    C.addCommand(std::make_unique<CC1Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
-  } else {
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::AtFileUTF8(), Exec, CmdArgs, Inputs,
-        Output, D.getPrependArg()));
+  std::unique_ptr<Command> Job;
+  if (D.isCC1InProcess() && !D.CCGenDiagnostics) {
+    auto EC = D.getToolContext().getCallableTool();
+    if (EC) {
+      // Invoke cc1as directly in this process.
+      Job = std::make_unique<CC1Command>(
+          JA, *this, ResponseFileSupport::AtFileUTF8(), D.getToolContext(), *EC,
+          CmdArgs, Inputs, Output);
+    }
   }
+  if (!Job) {
+    // Spawn cc1as as a separate process.
+    Job =
+        std::make_unique<Command>(JA, *this, ResponseFileSupport::AtFileUTF8(),
+                                  D.getToolContext(), CmdArgs, Inputs, Output);
+  }
+  C.addCommand(std::move(Job));
 }
 
 // Begin OffloadBundler

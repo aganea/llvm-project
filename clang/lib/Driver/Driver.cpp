@@ -85,6 +85,7 @@
 #include "llvm/Option/OptTable.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ExitCodes.h"
 #include "llvm/Support/FileSystem.h"
@@ -100,6 +101,7 @@
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
@@ -170,26 +172,34 @@ std::string CUIDOptions::getCUID(StringRef InputFile,
   }
   return CUID;
 }
+
 Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
+               DiagnosticsEngine &Diags, std::string Title,
+               IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS)
+    : Driver(llvm::ToolContext::buildRoot(nullptr).build(
+                 ArrayRef<const char *>{ClangExecutable.data()}),
+             TargetTriple, Diags, Title, VFS) {}
+
+Driver::Driver(llvm::ToolContext CallingTool, StringRef TargetTriple,
                DiagnosticsEngine &Diags, std::string Title,
                IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS)
     : Diags(Diags), VFS(std::move(VFS)), Mode(GCCMode),
       SaveTemps(SaveTempsNone), BitcodeEmbed(EmbedNone),
       Offload(OffloadHostDevice), CXX20HeaderType(HeaderMode_None),
       ModulesModeCXX20(false), LTOMode(LTOK_None),
-      ClangExecutable(ClangExecutable), SysRoot(DEFAULT_SYSROOT),
+      ClangToolContext(CallingTool), SysRoot(DEFAULT_SYSROOT),
       DriverTitle(Title), CCCPrintBindings(false), CCPrintOptions(false),
       CCLogDiagnostics(false), CCGenDiagnostics(false),
-      CCPrintProcessStats(false), CCPrintInternalStats(false),
-      TargetTriple(TargetTriple), Saver(Alloc), PrependArg(nullptr),
+      CCPrintProcessStats(false), CCPrintInternalStats(false), InProcess(false),
+      TargetTriple(TargetTriple), Saver(Alloc),
       PreferredLinker(CLANG_DEFAULT_LINKER), CheckInputsExist(true),
       ProbePrecompiled(true), SuppressMissingInputWarning(false) {
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
     this->VFS = llvm::vfs::getRealFileSystem();
 
-  Name = std::string(llvm::sys::path::filename(ClangExecutable));
-  Dir = std::string(llvm::sys::path::parent_path(ClangExecutable));
+  Name = std::string(llvm::sys::path::filename(ClangToolContext.getPath()));
+  Dir = std::string(llvm::sys::path::parent_path(ClangToolContext.getPath()));
 
   if ((!SysRoot.empty()) && llvm::sys::path::is_relative(SysRoot)) {
     // Prepend InstalledDir if SysRoot is relative
@@ -217,7 +227,7 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
 #endif
 
   // Compute the path to the resource directory.
-  ResourceDir = GetResourcesPath(ClangExecutable);
+  ResourceDir = GetResourcesPath(ClangToolContext.getPath());
 }
 
 void Driver::setDriverMode(StringRef Value) {
@@ -1480,7 +1490,8 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   // We look for the driver mode option early, because the mode can affect
   // how other options are parsed.
 
-  auto DriverMode = getDriverMode(ClangExecutable, ArgList.slice(1));
+  auto DriverMode =
+      getDriverMode(ClangToolContext.getToolName(), ArgList.slice(1));
   if (!DriverMode.empty())
     setDriverMode(DriverMode);
 
@@ -1547,9 +1558,12 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   Args.ClaimAllArgs(options::OPT_canonical_prefixes);
   Args.ClaimAllArgs(options::OPT_no_canonical_prefixes);
 
-  // f(no-)integated-cc1 is also used very early in main.
+  // f(no-)integrated-cc1 and f(no-)integrated-tools are also used very early
+  // in main.
   Args.ClaimAllArgs(options::OPT_fintegrated_cc1);
   Args.ClaimAllArgs(options::OPT_fno_integrated_cc1);
+  Args.ClaimAllArgs(options::OPT_fintegrated_tools);
+  Args.ClaimAllArgs(options::OPT_fno_integrated_tools);
 
   // Ignore -pipe.
   Args.ClaimAllArgs(options::OPT_pipe);
@@ -1810,6 +1824,13 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
 
   if (!HandleImmediateArgs(*C))
     return C;
+
+  // Handle a Clang database as an input and create jobs accordingly, for each
+  // database entry.
+  if (Arg *CDB = C->getArgs().getLastArg(options::OPT__SLASH_comp_db)) {
+    BuildClangDatabaseJobs(*C, CDB->getValue());
+    return C;
+  }
 
   // Construct the list of inputs.
   InputList Inputs;
@@ -5422,11 +5443,27 @@ void Driver::BuildJobs(Compilation &C) const {
                        /*TargetDeviceOffloadKind*/ Action::OFK_None);
   }
 
-  // If we have more than one job, then disable integrated-cc1 for now. Do this
-  // also when we need to report process execution statistics.
-  if (C.getJobs().size() > 1 || CCPrintProcessStats)
-    for (auto &J : C.getJobs())
+  // Perform some maintenance related to in-process/out-of-process execution.
+  for (auto &J : C.getJobs()) {
+    // If we need to report process execution statistics, the then disable
+    // integrated-cc1 for now.
+    if (CCPrintProcessStats) {
       J.InProcess = false;
+      continue;
+    }
+
+    // Don't leak resources if executing for diagnostics.
+    if (C.isForDiagnostics()) {
+      J.DisableFree = false;
+      continue;
+    }
+
+    // Leak resources only for the last job that is executed, since the process
+    // will shut down just after, and the OS will release the resources
+    // anyway.
+    if (!J.DisableFree.has_value())
+      J.DisableFree = !J.InProcess || &J == &*std::prev(C.getJobs().end());
+  }
 
   if (CCPrintProcessStats) {
     C.setPostCallback([=](const Command &Cmd, int Res) {
@@ -5548,6 +5585,242 @@ void Driver::BuildJobs(Compilation &C) const {
         }
       }
     }
+  }
+
+  // Allow for some last minute adjustements, after all jobs were created.
+  for (auto &Job : C.getJobs())
+    if (Job.PostBuildJobs)
+      Job.PostBuildJobs(&Job);
+}
+
+class EmptyToolchain : public ToolChain {
+public:
+  EmptyToolchain(const Driver &D)
+      : ToolChain(D, computeTargetTriple(D, D.getTargetTriple(), EmptyArgs),
+                  EmptyArgs) {}
+
+  bool isPICDefault() const override { return false; }
+  bool isPIEDefault(const llvm::opt::ArgList &) const override { return false; }
+  bool isPICDefaultForced() const override { return false; }
+
+private:
+  llvm::opt::InputArgList EmptyArgs;
+};
+
+class EmptyTool : public Tool {
+public:
+  EmptyTool(const ToolChain &TC) : Tool("Empty", "empty", TC) {}
+  ~EmptyTool() override {}
+
+  bool hasIntegratedCPP() const override { return false; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override {};
+};
+
+namespace {
+struct CompileCommand {
+  llvm::StringRef Directory;
+  llvm::StringRef File;
+  llvm::StringRef Output;
+  std::vector<llvm::StringRef> Arguments;
+};
+} // namespace
+
+Expected<std::vector<CompileCommand>>
+ReadCompilationDatabase(llvm::StringRef FilePath, llvm::StringSaver &Saver) {
+  auto F = llvm::MemoryBuffer::getFile(FilePath);
+  if (auto E = F.getError())
+    return llvm::errorCodeToError(E);
+
+  auto Doc = llvm::json::parse((*F)->getBuffer());
+  if (!Doc)
+    return Doc.takeError();
+
+  std::vector<CompileCommand> DB;
+
+  llvm::json::Array *All = Doc->getAsArray();
+  if (!All)
+    return llvm::make_error<llvm::StringError>(
+        "expected array at root of compilation database",
+        llvm::inconvertibleErrorCode());
+
+  for (llvm::json::Value &E : *All) {
+    llvm::json::Object *O = E.getAsObject();
+    if (!O)
+      continue;
+
+    CompileCommand Cmd;
+
+    if (auto Dir = O->getString("directory"))
+      Cmd.Directory = Saver.save(*Dir);
+    if (auto File = O->getString("file"))
+      Cmd.File = Saver.save(*File);
+    if (auto Output = O->getString("output"))
+      Cmd.Output = Saver.save(*Output);
+
+    if (llvm::json::Array *Args = O->getArray("arguments")) {
+      for (llvm::json::Value &Arg : *Args) {
+        if (auto S = Arg.getAsString())
+          Cmd.Arguments.push_back(Saver.save(*S));
+      }
+    }
+
+    DB.push_back(std::move(Cmd));
+  }
+
+  return DB;
+}
+
+void Driver::BuildClangDatabaseJobs(Compilation &C, StringRef CDBFile) {
+  llvm::PrettyStackTraceString CrashInfo("Building clang database jobs");
+
+  auto DB = ReadCompilationDatabase(CDBFile, Saver);
+  if (!DB) {
+    Diag(clang::diag::err_cannot_open_file)
+        << CDBFile << llvm::toString(DB.takeError());
+    C.setContainsError();
+    return;
+  }
+
+  // A set of modules that we actually build (are output of our jobs).
+  llvm::StringSet<> OurModules;
+
+  std::vector<CompileCommand> &DBCommands = *DB;
+  C.getJobs().reserve(DBCommands.size());
+
+  ActionList &Actions = C.getActions();
+  Actions.reserve(DBCommands.size());
+
+  for (CompileCommand &DBCommand : DBCommands) {
+    StringRef Toolname = llvm::sys::path::stem(
+        llvm::sys::path::filename(DBCommand.Arguments[0]));
+    SmallString<128> WorkingDir(DBCommand.Directory);
+    llvm::sys::path::remove_dots(WorkingDir, true);
+
+    // Build the target binary path
+    SmallString<128> TargetBinaryPath(DBCommand.Directory);
+    llvm::sys::path::append(TargetBinaryPath, DBCommand.Output);
+    llvm::sys::path::remove_dots(TargetBinaryPath, true);
+
+    if (llvm::sys::path::extension(TargetBinaryPath).equals_insensitive(".exe"))
+      OurModules.insert(TargetBinaryPath);
+
+    // Redirect the binary to our folder. Don't allow running tools from
+    // external folders, except if we build it ourselves in this process.
+    // Allow some MSVC tooling.
+    SmallString<128> BinaryPath(DBCommand.Arguments[0]);
+    llvm::sys::path::remove_dots(BinaryPath, true);
+
+    // Tools that would definitely run out-of-process.
+    bool IsExternalTool = Toolname == "ml64";
+
+    if (!OurModules.contains(BinaryPath) && !IsExternalTool) {
+      BinaryPath = Dir;
+      llvm::sys::path::append(
+          BinaryPath, llvm::sys::path::filename(DBCommand.Arguments[0]));
+    }
+
+    llvm::opt::ArgStringList CmdArgs;
+    for (auto &Arg : DBCommand.Arguments)
+      CmdArgs.push_back(Arg.data());
+
+    // Determine if this tool should run in-process. For clang (cc1)
+    // entries, respect the cc1-specific override (-fintegrated-cc1).
+    // For other tools, use the general InProcess flag (-fintegrated-tools).
+    bool IsClangTool = Toolname.starts_with_insensitive("clang") ||
+                       Toolname.ends_with_insensitive("clang");
+    bool RunInProcess =
+        !IsExternalTool && (IsClangTool ? isCC1InProcess() : InProcess);
+
+    ArrayRef CmdArgsRef = CmdArgs;
+    llvm::CallableTool InProcessTool;
+    if (RunInProcess && !CCGenDiagnostics) {
+      auto EC = getToolContext().getCallableTool(CmdArgsRef);
+      if (EC) {
+        InProcessTool = EC.get();
+      } else {
+        // If the file is not found, attempt to load it in-process if we're
+        // building a LLVM tool as part of our Clang database.
+        if (EC.getError() == llvm::errc::no_such_file_or_directory &&
+            Toolname.starts_with_insensitive("llvm-")) {
+          // Create a fake tool that will attempt to reload the binary later.
+          // This will show up as (in-process) if using the -### flag.
+          auto Fn = [Ctx = getToolContext()](ArrayRef<const char *> Args,
+                                             const llvm::ToolContext &) -> int {
+            auto EC = Ctx.getCallableTool(Args);
+            if (EC)
+              return EC.get().call(Ctx, Args);
+            return 126; // Use "command not found" exit code to fallback on
+                        // out-of-process execution.
+          };
+          InProcessTool = {Saver.save(Toolname), Fn};
+        }
+      }
+    }
+
+    // Remove the binary name or the multi-call driver name.
+    CmdArgs.erase(CmdArgs.begin(), CmdArgsRef.begin() + 1);
+
+    // Add working directory only if running in-process.
+    // FIXME: do this with a cross-tool VFS.
+    // When running out-of-process, the `Command` will create the process along
+    // with the specified working directory.
+    if (InProcessTool) {
+      auto It = llvm::find_if(CmdArgs, [](const char *Arg) {
+        return StringRef(Arg).equals_insensitive("--");
+      });
+      if (Toolname.starts_with_insensitive("clang") ||
+          Toolname.ends_with_insensitive("clang")) {
+        It = CmdArgs.insert(It, "-working-directory");
+        CmdArgs.insert(It + 1, Saver.save(WorkingDir.str()).data());
+        CmdArgs.insert(It, "-Xclang");
+        CmdArgs.insert(It + 1, "-no-disable-free");
+      } else if (Toolname.equals_insensitive("llvm-rc") ||
+                 Toolname.starts_with_insensitive("llvm-ml")) {
+        It = CmdArgs.insert(It, "-working-directory");
+        CmdArgs.insert(It + 1, Saver.save(WorkingDir.str()).data());
+      } else if (Toolname.equals_insensitive("llvm-lib")) {
+        std::string WorkingDirStr =
+            llvm::formatv("-working-directory:{}", WorkingDir).str();
+        CmdArgs.insert(It, Saver.save(WorkingDirStr).data());
+      } else if (Toolname.equals_insensitive("lld-link")) {
+        std::string WorkingDirStr =
+            llvm::formatv("-working-directory:{}", WorkingDir).str();
+        CmdArgs.insert(It, Saver.save(WorkingDirStr).data());
+        CmdArgs.insert(It, "-no-disable-free");
+      }
+    }
+
+    Actions.push_back(
+        C.MakeAction<DatabaseJobAction>(nullptr, types::TY_Nothing));
+
+    static EmptyToolchain TC(*this);
+    static EmptyTool T(TC);
+
+    SmallVector<InputInfo, 1> Inputs;
+    Inputs.push_back(InputInfo(
+        Actions.back(), llvm::sys::path::filename(DBCommand.Output).data(),
+        DBCommand.Output.data()));
+
+    std::unique_ptr<Command> Job;
+    llvm::ToolContext ToolCtx = getToolContext().build(ArrayRef{
+        Saver.save(IsExternalTool ? BinaryPath.str() : Toolname).data()});
+    if (InProcessTool) {
+      // Invoke the tools directly in this process.
+      Job = std::make_unique<CC1Command>(
+          *Actions.back(), T, ResponseFileSupport::AtFileUTF8(), ToolCtx,
+          InProcessTool, CmdArgs, Inputs, ArrayRef<InputInfo>{});
+    } else {
+      Job = std::make_unique<Command>(
+          *Actions.back(), T, ResponseFileSupport::AtFileUTF8(), ToolCtx,
+          CmdArgs, Inputs, ArrayRef<InputInfo>{});
+      Job->setWorkingDir(Saver.save(WorkingDir.str()));
+    }
+    Job->PrintInputFilenames = true;
+    C.addCommand(std::move(Job));
   }
 }
 

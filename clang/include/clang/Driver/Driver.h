@@ -26,9 +26,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/StringSaver.h"
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -179,8 +181,12 @@ public:
   /// command line.
   std::string Dir;
 
-  /// The original path to the clang executable.
-  std::string ClangExecutable;
+  /// The calling conext. Contains the path to the clang executable.
+  /// If canonical prefixes is enabled (default), this will contain be the
+  /// resolved path to the binary (realpath). If canonical prefixes is disabled,
+  /// this will contain either the command-line argument as provided, or a full
+  /// path to the binary, as found through %PATH% or $PATH.
+  llvm::ToolContext ClangToolContext;
 
   /// Target and driver mode components extracted from clang executable name.
   ParsedClangName ClangNameParts;
@@ -292,13 +298,21 @@ public:
   LLVM_PREFERRED_TYPE(bool)
   unsigned CCPrintInternalStats : 1;
 
-  /// Pointer to the ExecuteCC1Tool function, if available.
-  /// When the clangDriver lib is used through clang.exe, this provides a
-  /// shortcut for executing the -cc1 command-line directly, in the same
-  /// process.
-  using CC1ToolFunc =
-      llvm::function_ref<int(SmallVectorImpl<const char *> &ArgV)>;
-  CC1ToolFunc CC1Main = nullptr;
+  /// Whether to call tools in-process if possible (cc1, linker, etc.).
+  /// If false, tools are invoked out-of-process.
+  /// Controlled by -fintegrated-tools / -fno-integrated-tools.
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned InProcess : 1;
+
+  /// Whether to call cc1/cc1as in-process specifically.
+  /// This can be used to override InProcess for cc1 only.
+  /// Controlled by -fintegrated-cc1 / -fno-integrated-cc1.
+  /// When not explicitly set, follows InProcess.
+  std::optional<bool> InProcessCC1;
+
+  /// Whether cc1/cc1as should run in-process. Returns InProcessCC1 if
+  /// explicitly set (via -fintegrated-cc1), otherwise falls back to InProcess.
+  bool isCC1InProcess() const { return InProcessCC1.value_or(InProcess); }
 
 private:
   /// Raw target triple.
@@ -324,12 +338,6 @@ private:
 
   /// Arguments originated from command line.
   std::unique_ptr<llvm::opt::InputArgList> CLOptions;
-
-  /// If this is non-null, the driver will prepend this argument before
-  /// reinvoking clang. This is useful for the llvm-driver where clang's
-  /// realpath will be to the llvm binary and not clang, so it must pass
-  /// "clang" as it's first argument.
-  const char *PrependArg;
 
   /// The default value of -fuse-ld= option. An empty string means the default
   /// system linker.
@@ -400,6 +408,10 @@ private:
                               SmallString<128> &CrashDiagDir);
 
 public:
+  Driver(llvm::ToolContext CallingTool, StringRef TargetTriple,
+         DiagnosticsEngine &Diags, std::string Title = "clang LLVM compiler",
+         IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
+
   Driver(StringRef ClangExecutable, StringRef TargetTriple,
          DiagnosticsEngine &Diags, std::string Title = "clang LLVM compiler",
          IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
@@ -427,9 +439,6 @@ public:
   bool getProbePrecompiled() const { return ProbePrecompiled; }
   void setProbePrecompiled(bool Value) { ProbePrecompiled = Value; }
 
-  const char *getPrependArg() const { return PrependArg; }
-  void setPrependArg(const char *Value) { PrependArg = Value; }
-
   void setTargetAndMode(const ParsedClangName &TM) { ClangNameParts = TM; }
 
   const std::string &getTitle() { return DriverTitle; }
@@ -438,9 +447,13 @@ public:
   std::string getTargetTriple() const { return TargetTriple; }
 
   /// Get the path to the main clang executable.
+  /// This is provided for compatibility reasons. For a wider view of the
+  /// calling context, use getToolContext().
   const char *getClangProgramPath() const {
-    return ClangExecutable.c_str();
+    return ClangToolContext.getPath().data();
   }
+
+  const llvm::ToolContext &getToolContext() const { return ClangToolContext; }
 
   StringRef getPreferredLinker() const { return PreferredLinker; }
   void setPreferredLinker(std::string Value) {
@@ -548,6 +561,12 @@ public:
   ///
   /// \param C - The compilation that is being built.
   void BuildJobs(Compilation &C) const;
+
+  /// BuildClangDatabaseJobs - Build jobs from an externally provided clang
+  /// database json file.
+  ///
+  /// \param C - The compilation that is being built.
+  void BuildClangDatabaseJobs(Compilation &C, StringRef CDBFile);
 
   /// ExecuteCompilation - Execute the compilation according to the command line
   /// arguments and return an appropriate exit code.

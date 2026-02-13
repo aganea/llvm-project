@@ -474,9 +474,10 @@ void HIP::constructGenerateObjFileFromHIPFatBinary(
                        "-o",      Output.getFilename(),
                        "-x",      "assembler",
                        ObjinFile, "-c"};
+  llvm::ToolContext CallContext = C.getDriver().getToolContext();
   C.addCommand(std::make_unique<Command>(JA, T, ResponseFileSupport::None(),
-                                         D.getClangProgramPath(), ClangArgs,
-                                         Inputs, Output, D.getPrependArg()));
+                                         CallContext, ClangArgs, Inputs,
+                                         Output));
 }
 
 // Convenience function for creating temporary file for both modes of

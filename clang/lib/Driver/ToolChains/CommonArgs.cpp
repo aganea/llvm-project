@@ -985,9 +985,16 @@ void tools::addDTLTOOptions(const ToolChain &ToolChain, const ArgList &Args,
     const Driver &D = ToolChain.getDriver();
     CmdArgs.push_back(Args.MakeArgString("--thinlto-remote-compiler=" +
                                          Twine(D.getClangProgramPath())));
-    if (auto *PA = D.getPrependArg())
+    // When the compiler is the multicall binary ("llvm.exe clang ..."),
+    // the remote side needs to know which tool to invoke. When it's a
+    // tool-named binary or hardlink (e.g. "clang.exe"), the multicall
+    // driver dispatches correctly based on argv[0], so no prepend arg
+    // is needed.
+    auto InvokeArgs = D.getToolContext().invocationArgs();
+    if (InvokeArgs.size() > 1 &&
+        llvm::ToolContext::isMulticallBinary(InvokeArgs[0]))
       CmdArgs.push_back(Args.MakeArgString(
-          "--thinlto-remote-compiler-prepend-arg=" + Twine(PA)));
+          "--thinlto-remote-compiler-prepend-arg=" + Twine(InvokeArgs[1])));
 
     for (const auto &A :
          Args.getAllArgValues(options::OPT_Xthinlto_distributor_EQ))

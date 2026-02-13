@@ -1295,9 +1295,8 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
       runtime.hasSubscripting())
     return;
 
-  SmallString<128> P(getDriver().ClangExecutable);
-  llvm::sys::path::remove_filename(P); // 'clang'
-  llvm::sys::path::remove_filename(P); // 'bin'
+  // 'Dir' points to the path where the clang binary lives into.
+  SmallString<128> P(llvm::sys::path::parent_path(getDriver().Dir));
   llvm::sys::path::append(P, "lib", "arc");
 
   // 'libarclite' usually lives in the same toolchain as 'clang'. However, the

@@ -65,7 +65,7 @@
 // STATIC: "{{.*[/\\]}}clang-offload-bundler" {{.*}}-unbundle
 // STATIC: "{{.*[/\\]}}lld" -flavor gnu -m elf64_amdgpu
 // STATIC: "{{.*[/\\]}}clang-offload-bundler"
-// STATIC: {{.*}}clang{{.*}} -target x86_64-unknown-linux-gnu
+// STATIC: "{{.*[/\\]}}clang{{.*}}" -target x86_64-unknown-linux-gnu
 // STATIC: "{{.*[/\\]}}llvm-ar"
 
 // RUN: %clang -v --target=x86_64-unknown-linux-gnu --no-offload-new-driver \

@@ -662,6 +662,7 @@ Tool *ToolChain::getTool(Action::ActionClass AC) const {
   case Action::BinaryAnalyzeJobClass:
   case Action::BinaryTranslatorJobClass:
   case Action::ObjcopyJobClass:
+  case Action::DatabaseJobClass:
     llvm_unreachable("Invalid tool kind.");
 
   case Action::CompileJobClass:

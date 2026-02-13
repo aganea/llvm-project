@@ -22,6 +22,7 @@
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/IOSandbox.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Program.h"
@@ -32,16 +33,20 @@
 #include <system_error>
 #include <utility>
 
+#ifdef _WIN32
+#include <crtdbg.h>
+#endif
+
 using namespace clang;
 using namespace driver;
 
 Command::Command(const Action &Source, const Tool &Creator,
-                 ResponseFileSupport ResponseSupport, const char *Executable,
+                 ResponseFileSupport ResponseSupport,
+                 llvm::ToolContext CallContext,
                  const llvm::opt::ArgStringList &Arguments,
-                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                 const char *PrependArg)
+                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs)
     : Source(Source), Creator(Creator), ResponseSupport(ResponseSupport),
-      Executable(Executable), PrependArg(PrependArg), Arguments(Arguments) {
+      Arguments(Arguments), CallContext(CallContext) {
   for (const auto &II : Inputs)
     if (II.isFilename())
       InputInfoList.push_back(II);
@@ -49,6 +54,14 @@ Command::Command(const Action &Source, const Tool &Creator,
     if (II.isFilename())
       OutputFilenames.push_back(II.getFilename());
 }
+
+Command::Command(const Action &Source, const Tool &Creator,
+                 ResponseFileSupport ResponseSupport, const char *Executable,
+                 const llvm::opt::ArgStringList &Arguments,
+                 ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs)
+    : Command(Source, Creator, ResponseSupport,
+              llvm::ToolContext::buildRoot(nullptr).build(ArrayRef{Executable}),
+              Arguments, Inputs, Outputs) {}
 
 /// Check if the compiler flag in question should be skipped when
 /// emitting a reproducer. Also track how many arguments it has and if the
@@ -138,16 +151,11 @@ void Command::buildArgvForResponseFile(
   // This leaves us to set the argv to a single parameter, requesting the tool
   // to read the response file.
   if (ResponseSupport.ResponseKind != ResponseFileSupport::RF_FileList) {
-    Out.push_back(Executable);
     Out.push_back(ResponseFileFlag.c_str());
     return;
   }
 
   llvm::StringSet<> Inputs(llvm::from_range, InputFileList);
-  Out.push_back(Executable);
-
-  if (PrependArg)
-    Out.push_back(PrependArg);
 
   // In a file list, build args vector ignoring parameters that will go in the
   // response file (elements of the InputFileList vector)
@@ -206,17 +214,16 @@ rewriteIncludes(const llvm::ArrayRef<const char *> &Args, size_t Idx,
 void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
                     CrashReportInfo *CrashInfo) const {
   // Always quote the exe.
-  OS << ' ';
-  llvm::sys::printArg(OS, Executable, /*Quote=*/true);
+  for (auto Arg : CallContext.invocationArgs()) {
+    OS << ' ';
+    llvm::sys::printArg(OS, Arg, /*Quote=*/true);
+  }
 
   ArrayRef<const char *> Args = Arguments;
   SmallVector<const char *, 128> ArgsRespFile;
   if (ResponseFile != nullptr) {
     buildArgvForResponseFile(ArgsRespFile);
-    Args = ArrayRef<const char *>(ArgsRespFile).slice(1); // no executable name
-  } else if (PrependArg) {
-    OS << ' ';
-    llvm::sys::printArg(OS, PrependArg, /*Quote=*/true);
+    Args = ArrayRef<const char *>(ArgsRespFile);
   }
 
   bool HaveCrashVFS = CrashInfo && !CrashInfo->VFSPath.empty();
@@ -316,6 +323,9 @@ void Command::setRedirectFiles(
 
 void Command::PrintFileNames() const {
   if (PrintInputFilenames) {
+    if (InProcess)
+      llvm::outs() << "(in-process) ";
+    llvm::outs() << CallContext.getToolName() << " ";
     for (const auto &Arg : InputInfoList)
       llvm::outs() << llvm::sys::path::filename(Arg.getFilename()) << "\n";
     llvm::outs().flush();
@@ -327,10 +337,11 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   PrintFileNames();
 
   SmallVector<const char *, 128> Argv;
+  for (auto Arg : CallContext.invocationArgs()) {
+    Argv.push_back(Arg);
+  }
+
   if (ResponseFile == nullptr) {
-    Argv.push_back(Executable);
-    if (PrependArg)
-      Argv.push_back(PrependArg);
     Argv.append(Arguments.begin(), Arguments.end());
     Argv.push_back(nullptr);
   } else {
@@ -376,26 +387,28 @@ int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
       else
         RedirectFilesOptional.push_back(std::nullopt);
 
-    return llvm::sys::ExecuteAndWait(Executable, Args, Env,
+    return llvm::sys::ExecuteAndWait(Args[0], Args, Env,
                                      ArrayRef(RedirectFilesOptional),
                                      /*secondsToWait=*/0, /*memoryLimit=*/0,
-                                     ErrMsg, ExecutionFailed, &ProcStat);
+                                     ErrMsg, ExecutionFailed, &ProcStat,
+                                     /*AffinityMask=*/nullptr, WorkingDir);
   }
 
-  return llvm::sys::ExecuteAndWait(Executable, Args, Env, Redirects,
+  return llvm::sys::ExecuteAndWait(Args[0], Args, Env, Redirects,
                                    /*secondsToWait*/ 0, /*memoryLimit*/ 0,
-                                   ErrMsg, ExecutionFailed, &ProcStat);
+                                   ErrMsg, ExecutionFailed, &ProcStat,
+                                   /*AffinityMask=*/nullptr, WorkingDir);
 }
 
-CC1Command::CC1Command(const Action &Source, const Tool &Creator,
+CC1Command::CC1Command(const Action &Source, const clang::driver::Tool &Creator,
                        ResponseFileSupport ResponseSupport,
-                       const char *Executable,
+                       llvm::ToolContext CallContext, llvm::CallableTool Tool,
                        const llvm::opt::ArgStringList &Arguments,
-                       ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs,
-                       const char *PrependArg)
-    : Command(Source, Creator, ResponseSupport, Executable, Arguments, Inputs,
-              Outputs, PrependArg) {
+                       ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs)
+    : Command(Source, Creator, ResponseSupport, CallContext, Arguments, Inputs,
+              Outputs) {
   InProcess = true;
+  ExecTool = Tool;
 }
 
 void CC1Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
@@ -416,7 +429,7 @@ int CC1Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   PrintFileNames();
 
   SmallVector<const char *, 128> Argv;
-  Argv.push_back(getExecutable());
+  Argv.push_back(CallContext.getToolName().data());
   Argv.append(getArguments().begin(), getArguments().end());
   Argv.push_back(nullptr);
   Argv.pop_back(); // The terminating null element shall not be part of the
@@ -435,14 +448,30 @@ int CC1Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
   CRC.DumpStackAndCleanupOnFailure = true;
 
   const void *PrettyState = llvm::SavePrettyStackState();
-  const Driver &D = getCreator().getToolChain().getDriver();
 
-  int R = 0;
+  // For displaying leaks between jobs
+#ifdef _CRTDBG_MAP_ALLOC
+  _CrtMemState s1, s2, sDiff;
+  _CrtMemCheckpoint(&s1);
+#endif
   // Enter ExecuteCC1Tool() instead of starting up a new process
-  if (!CRC.RunSafely([&]() { R = D.CC1Main(Argv); })) {
+  int R = 0;
+  if (!CRC.RunSafely([&]() { R = ExecTool.call(CallContext, Argv); })) {
     llvm::RestorePrettyStackState(PrettyState);
     return CRC.RetCode;
   }
+  // Display leaks between jobs
+#ifdef _CRTDBG_MAP_ALLOC
+  _CrtMemCheckpoint(&s2);
+  if (_CrtMemDifference(&sDiff, &s1, &s2)) {
+    _CrtMemDumpStatistics(&sDiff);
+    _CrtMemDumpAllObjectsSince(&s1);
+  }
+#endif
+  // If the command is "not found" anymore in-process, then attempt
+  // out-of-process execution.
+  if (R == 126)
+    return Command::Execute(Redirects, ErrMsg, ExecutionFailed);
   return R;
 }
 

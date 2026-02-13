@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Option/Option.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Program.h"
 #include <memory>
 #include <optional>
@@ -113,11 +114,9 @@ class Command {
   /// Whether and how to generate response files if the arguments are too long.
   ResponseFileSupport ResponseSupport;
 
-  /// The executable to run.
-  const char *Executable;
-
-  /// Optional argument to prepend.
-  const char *PrependArg;
+  /// The working directory for the command, or empty if inheriting the current
+  /// process's current directory.
+  StringRef WorkingDir;
 
   /// The list of program arguments (not including the implicit first
   /// argument, which will be the executable).
@@ -169,10 +168,24 @@ public:
   /// Whether the command will be executed in this process or not.
   bool InProcess = false;
 
+  /// Signify the tool supports leaking resources, for faster shutdown.
+  /// If it does support it, the resources cleanup is left to the OS.
+  std::optional<bool> DisableFree;
+
+  /// Give an opportunity to the caller to perform some late changes to the
+  /// command, after all of the commands were created.
+  std::function<void(Command *)> PostBuildJobs;
+
+  Command(const Action &Source, const Tool &Creator,
+          ResponseFileSupport ResponseSupport, llvm::ToolContext CallContext,
+          const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
+          ArrayRef<InputInfo> Outputs = {});
+
   Command(const Action &Source, const Tool &Creator,
           ResponseFileSupport ResponseSupport, const char *Executable,
           const llvm::opt::ArgStringList &Arguments, ArrayRef<InputInfo> Inputs,
-          ArrayRef<InputInfo> Outputs = {}, const char *PrependArg = nullptr);
+          ArrayRef<InputInfo> Outputs = {});
+
   // FIXME: This really shouldn't be copyable, but is currently copied in some
   // error handling in Driver::generateCompilationDiagnostics.
   Command(const Command &) = default;
@@ -217,11 +230,16 @@ public:
     Arguments = std::move(List);
   }
 
-  void replaceExecutable(const char *Exe) { Executable = Exe; }
+  void replaceExecutable(const char *Exe) {
+    CallContext = CallContext.build(ArrayRef{Exe});
+  }
 
-  const char *getExecutable() const { return Executable; }
+  // Provided for compatibility reasons. This might not work if CallContext
+  // represents a multicall binary.
+  const char *getExecutable() const { return CallContext.getPath().data(); }
 
   const llvm::opt::ArgStringList &getArguments() const { return Arguments; }
+  llvm::opt::ArgStringList &getArgumentsMutable() { return Arguments; }
 
   const std::vector<InputInfo> &getInputInfos() const { return InputInfoList; }
 
@@ -233,19 +251,26 @@ public:
     return ProcStat;
   }
 
+  /// Sets the current working directory to be used when the new command will be
+  /// created.
+  void setWorkingDir(StringRef Dir) { WorkingDir = Dir; }
+
 protected:
   /// Optionally print the filenames to be compiled
   void PrintFileNames() const;
+
+  /// The executable path to run. In a multicall build, this could also contain
+  /// the tool argument.
+  llvm::ToolContext CallContext;
 };
 
 /// Use the CC1 tool callback when available, to avoid creating a new process
 class CC1Command : public Command {
 public:
   CC1Command(const Action &Source, const Tool &Creator,
-             ResponseFileSupport ResponseSupport, const char *Executable,
-             const llvm::opt::ArgStringList &Arguments,
-             ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs = {},
-             const char *PrependArg = nullptr);
+             ResponseFileSupport ResponseSupport, llvm::ToolContext CallContext,
+             llvm::CallableTool Tool, const llvm::opt::ArgStringList &Arguments,
+             ArrayRef<InputInfo> Inputs, ArrayRef<InputInfo> Outputs = {});
 
   void Print(llvm::raw_ostream &OS, const char *Terminator, bool Quote,
              CrashReportInfo *CrashInfo = nullptr) const override;
@@ -254,6 +279,10 @@ public:
               bool *ExecutionFailed) const override;
 
   void setEnvironment(llvm::ArrayRef<const char *> NewEnvironment) override;
+
+private:
+  /// Whether we use the llvm-driver to call a tool in-process.
+  llvm::CallableTool ExecTool;
 };
 
 /// JobList - A sequence of jobs to perform.
@@ -276,6 +305,10 @@ public:
 
   /// Clear the job list.
   void clear();
+
+  /// Reserve a known amount of entries to optimize insertion time and avoid
+  /// memory fragmentation.
+  void reserve(size_t Size) { Jobs.reserve(Size); }
 
   const list_type &getJobs() const { return Jobs; }
 

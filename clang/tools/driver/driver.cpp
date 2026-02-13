@@ -63,7 +63,7 @@ using namespace clang;
 using namespace clang::driver;
 using namespace llvm::opt;
 
-std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {
+std::string GetExecutablePath(StringRef Argv0, bool CanonicalPrefixes) {
   if (!CanonicalPrefixes) {
     SmallString<128> ExecutablePath(Argv0);
     // Do a PATH lookup if Argv0 isn't a valid path.
@@ -77,7 +77,7 @@ std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {
   // This just needs to be some symbol in the binary; C++ doesn't
   // allow taking the address of ::main however.
   void *P = (void*) (intptr_t) GetExecutablePath;
-  return llvm::sys::fs::getMainExecutable(Argv0, P);
+  return llvm::sys::fs::getMainExecutable(Argv0.data(), P);
 }
 
 static const char *GetStableCStr(llvm::StringSet<> &SavedStrings, StringRef S) {
@@ -198,7 +198,7 @@ static bool SetBackdoorDriverOutputsFromEnvVars(Driver &TheDriver) {
 }
 
 static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
-                                   const std::string &Path) {
+                                   StringRef Path) {
   // If the clang binary happens to be named cl.exe for compatibility reasons,
   // use clang-cl.exe as the prefix to avoid confusion between clang and MSVC.
   StringRef ExeBasename(llvm::sys::path::stem(Path));
@@ -256,8 +256,7 @@ int clang_main(ArrayRef<const char *> ArgsV,
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver(A);
 
-  const char *ProgName = ToolContext.getToolName().data();
-
+  StringRef ProgName = ToolContext.getToolName();
   bool ClangCLMode =
       IsClangCL(getDriverMode(ProgName, llvm::ArrayRef(Args).slice(1)));
 
@@ -279,7 +278,12 @@ int clang_main(ArrayRef<const char *> ArgsV,
   }
 
   // Handle options that need handling before the real command line parsing in
-  // Driver::BuildCompilation()
+  // Driver::BuildCompilation().
+  // Canonical prefixes means that we will resolve the first command-line arg
+  // (the binary) to its original path by calling realpath(). This is the
+  // default behavior.
+  // When disabled, we either keep the arg as it is, if the target binary
+  // exists, or we will resolve it using %PATH% or $PATH.
   bool CanonicalPrefixes = true;
   for (int i = 1, size = Args.size(); i < size; ++i) {
     // Skip end-of-line response file markers
@@ -323,19 +327,43 @@ int clang_main(ArrayRef<const char *> ArgsV,
                                  "CCC_OVERRIDE_OPTIONS", &llvm::errs());
   }
 
+  // The full binary path for the running process. If the command-line path was
+  // a relative path or a symlink, this will resolve to the original binary
+  // path. For example if called with 'clang++' this might resolve to
+  // '/path/to/clang++'.
+  // In llvm-driver mode, if we call '/path/to/clang++', this might resolve to
+  // '/path/to/llvm' which is a multicall binary.
   std::string Path =
-      GetExecutablePath(ToolContext.getPath().data(), CanonicalPrefixes);
+      GetExecutablePath(ToolContext.getPath(), CanonicalPrefixes);
 
-  // Whether the cc1 tool should be called inside the current process, or if we
-  // should spawn a new clang subprocess (old behavior).
-  // Not having an additional process saves some execution time of Windows,
+  // Whether tools should be called inside the current process, or if we
+  // should spawn a new subprocess for each tool invocation (old behavior).
+  // Not having an additional process saves some execution time on Windows,
   // and makes debugging and profiling easier.
-  bool UseNewCC1Process = CLANG_SPAWN_CC1;
-  for (const char *Arg : Args)
-    UseNewCC1Process = llvm::StringSwitch<bool>(Arg)
-                           .Case("-fno-integrated-cc1", true)
-                           .Case("-fintegrated-cc1", false)
-                           .Default(UseNewCC1Process);
+  //
+  // LLVM_INTEGRATED_TOOLS (CMake) controls the default for all tools.
+  // -fintegrated-tools / -fno-integrated-tools overrides at the command line.
+  //
+  // CLANG_SPAWN_CC1 (CMake) controls the default for cc1 specifically.
+  // -fintegrated-cc1 / -fno-integrated-cc1 overrides cc1 at the command line.
+  //
+  // When neither CMake variable is set, the default is in-process for all
+  // tools.
+  bool UseInProcessTools = LLVM_INTEGRATED_TOOLS;
+  std::optional<bool> UseInProcessCC1; // Explicit cc1 override.
+  if (CLANG_SPAWN_CC1)
+    UseInProcessCC1 = false; // CMake default: spawn cc1 out-of-process.
+  for (const char *Arg : Args) {
+    llvm::StringRef A(Arg);
+    if (A == "-fintegrated-tools")
+      UseInProcessTools = true;
+    else if (A == "-fno-integrated-tools")
+      UseInProcessTools = false;
+    else if (A == "-fintegrated-cc1")
+      UseInProcessCC1 = true;
+    else if (A == "-fno-integrated-cc1")
+      UseInProcessCC1 = false;
+  }
 
   std::unique_ptr<DiagnosticOptions> DiagOpts = CreateAndPopulateDiagOpts(Args);
   // Driver's diagnostics don't use suppression mappings, so don't bother
@@ -359,41 +387,46 @@ int clang_main(ArrayRef<const char *> ArgsV,
 
   ProcessWarningOptions(Diags, *DiagOpts, *VFS, /*ReportDiags=*/false);
 
-  Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags,
+  // This might be running from a different process which is not clang. Rebuild
+  // the proper clang binary name.
+  SmallString<128> ClangPath = llvm::sys::path::parent_path(Path.data());
+  llvm::sys::path::append(ClangPath, "clang");
+#ifdef _WIN32
+  llvm::sys::path::replace_extension(ClangPath, ".exe");
+#endif
+
+  // Build a new context which accounts for the canonical prefixes flag.
+  // If canonical prefixes is enabled (default), Path might differ from the
+  // original argument, if it's a symlink or if running in a multicall binary
+  // build. For example if provinding '/path/to/clang-cl.exe', then Path could
+  // resolve to '/path/to/llvm.exe'. In that case we must retain the tool name.
+  SmallVector<const char *, 2> ToolArgs;
+  ToolArgs.push_back(ClangPath.c_str());
+  if (CanonicalPrefixes && llvm::ToolContext::isMulticallBinary(Path))
+    ToolArgs.push_back(llvm::sys::path::stem(ToolContext.getToolName()).data());
+  llvm::ToolContext NewToolContext = ToolContext.build(ToolArgs);
+
+  Driver TheDriver(NewToolContext, llvm::sys::getDefaultTargetTriple(), Diags,
                    /*Title=*/"clang LLVM compiler", VFS);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
-  // If this is a multicall invocation (e.g. "llvm clang++"), always set the
-  // prepend arg to the tool name so the driver knows the effective program.
-  // For standalone invocations with -canonical-prefixes, check if the resolved
-  // path differs from the invoked name (e.g. symlinks on Linux).
-  if (ToolContext.invocationArgs().size() > 1) {
-    TheDriver.setPrependArg(ToolContext.invocationArgs()[1]);
-  } else if (CanonicalPrefixes) {
-    // Only set PrependArg if the canonical path resolved to a different
-    // binary name than what was invoked. This handles symlinks
-    // (e.g. clang -> llvm-driver on Linux) but avoids issues on Windows
-    // where clang.exe is a hardlink and the canonical path is unchanged.
-    StringRef PathStem = llvm::sys::path::stem(Path);
-    StringRef InvokedStem = llvm::sys::path::stem(ToolContext.getPath());
-    if (!PathStem.equals_insensitive(InvokedStem))
-      TheDriver.setPrependArg(ProgName);
-  }
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
 
   if (!SetBackdoorDriverOutputsFromEnvVars(TheDriver))
     return 1;
 
-  auto ExecuteCC1WithContext = [&ToolContext,
-                                &VFS](SmallVectorImpl<const char *> &ArgV) {
-    return ExecuteCC1Tool(ArgV, ToolContext, VFS);
-  };
-  if (!UseNewCC1Process) {
-    TheDriver.CC1Main = ExecuteCC1WithContext;
+  if (UseInProcessTools) {
+    TheDriver.InProcess = true;
     // Ensure the CC1Command actually catches cc1 crashes
     llvm::CrashRecoveryContext::Enable(
         /*NeedsPOSIXUtilitySignalHandling=*/true);
+  }
+  // -fintegrated-cc1 / -fno-integrated-cc1 can override cc1-specific behavior.
+  if (UseInProcessCC1.has_value()) {
+    TheDriver.InProcessCC1 = *UseInProcessCC1;
+    if (*UseInProcessCC1)
+      llvm::CrashRecoveryContext::Enable();
   }
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
@@ -468,8 +501,9 @@ int clang_main(ArrayRef<const char *> ArgsV,
 
   Diags.getClient()->finish();
 
-  if (!UseNewCC1Process && IsCrash) {
-    // When crashing in -fintegrated-cc1 mode, bury the timer pointers, because
+  bool AnyInProcess = UseInProcessTools || UseInProcessCC1.value_or(false);
+  if (AnyInProcess && IsCrash) {
+    // When crashing in integrated-tools mode, bury the timer pointers, because
     // the internal linked list might point to already released stack frames.
     llvm::BuryPointer(llvm::TimerGroup::acquireTimerGlobals());
   } else {

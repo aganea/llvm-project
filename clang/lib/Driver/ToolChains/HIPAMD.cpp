@@ -181,10 +181,10 @@ void AMDGCN::Linker::constructLinkAndEmitSpirvCommand(
                     LinkedBCFile.getFilename(), "-o", Output.getFilename()});
 
     const Driver &Driver = getToolChain().getDriver();
-    const char *Exec = Driver.getClangProgramPath();
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::None(), Exec, CmdArgs, LinkedBCFile,
-        Output, Driver.getPrependArg()));
+    llvm::ToolContext CallContext = Driver.getToolContext();
+    C.addCommand(
+        std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
+                                  CallContext, CmdArgs, LinkedBCFile, Output));
   } else {
     // Emit SPIR-V binary using the translator
     llvm::opt::ArgStringList TrArgs{
