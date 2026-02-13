@@ -98,6 +98,7 @@ add_llvm_unittest(SupportTests
   Threading.cpp
   TimerTest.cpp
   TimeProfilerTest.cpp
+  ToolContextTest.cpp
   ToolOutputFileTest.cpp
   TypeNameTest.cpp
   TypeSizeTest.cpp

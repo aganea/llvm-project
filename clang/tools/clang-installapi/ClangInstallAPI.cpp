@@ -210,7 +210,6 @@ int clang_installapi_main(ArrayRef<const char *> Args,
   if (llvm::sys::Process::FixupStandardFileDescriptors())
     return EXIT_FAILURE;
 
-  const char *ProgName =
-      ToolContext.NeedsPrependArg ? ToolContext.PrependArg : ToolContext.Path;
+  const char *ProgName = ToolContext.getToolName().data();
   return run(Args, ProgName);
 }

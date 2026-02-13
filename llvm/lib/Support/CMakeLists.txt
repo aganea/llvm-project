@@ -182,6 +182,7 @@ add_llvm_component_library(LLVMSupport
   DeltaAlgorithm.cpp
   DeltaTree.cpp
   DivisionByConstantInfo.cpp
+  DriverUtils.cpp
   DAGDeltaAlgorithm.cpp
   DJB.cpp
   DXILABI.cpp

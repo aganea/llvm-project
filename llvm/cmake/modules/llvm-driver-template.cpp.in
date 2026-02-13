@@ -6,14 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/LLVMDriver.h"
 
-int @TOOL_NAME@_main(llvm::ArrayRef<const char *>, const llvm::ToolContext &);
-
-int main(int argc, char **argv) {
-  llvm::InitLLVM X(argc, argv, @INITLLVM_ARGS@);
-  auto Args = X.getArgs();
-  return @TOOL_NAME@_main(Args, {Args[0], nullptr, false});
-}
+LLVM_DRIVER_IMPL_MAIN("@TOOL_NAME@", @TOOL_NAME@_main, @INITLLVM_ARGS@)

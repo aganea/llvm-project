@@ -421,6 +421,10 @@ set(LLVM_FORCE_VC_REPOSITORY
 
 option(LLVM_TOOL_LLVM_DRIVER_BUILD "Enables building the llvm multicall tool" OFF)
 
+option(LLVM_INTEGRATED_TOOLS
+  "Whether LLVM tools should call other tools in-process when possible, instead of spawning separate processes"
+  ON)
+
 set(PACKAGE_NAME LLVM)
 set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "https://github.com/llvm/llvm-project/issues/")

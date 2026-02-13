@@ -256,8 +256,7 @@ int clang_main(ArrayRef<const char *> ArgsV,
   llvm::BumpPtrAllocator A;
   llvm::StringSaver Saver(A);
 
-  const char *ProgName =
-      ToolContext.NeedsPrependArg ? ToolContext.PrependArg : ToolContext.Path;
+  const char *ProgName = ToolContext.getToolName().data();
 
   bool ClangCLMode =
       IsClangCL(getDriverMode(ProgName, llvm::ArrayRef(Args).slice(1)));
@@ -324,7 +323,8 @@ int clang_main(ArrayRef<const char *> ArgsV,
                                  "CCC_OVERRIDE_OPTIONS", &llvm::errs());
   }
 
-  std::string Path = GetExecutablePath(ToolContext.Path, CanonicalPrefixes);
+  std::string Path =
+      GetExecutablePath(ToolContext.getPath().data(), CanonicalPrefixes);
 
   // Whether the cc1 tool should be called inside the current process, or if we
   // should spawn a new clang subprocess (old behavior).
@@ -363,22 +363,21 @@ int clang_main(ArrayRef<const char *> ArgsV,
                    /*Title=*/"clang LLVM compiler", VFS);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
-  // If -canonical-prefixes is set, GetExecutablePath will have resolved Path
-  // to the llvm driver binary, not clang. In this case, we need to use
-  // PrependArg which should be clang-*. When the resolved path still matches
-  // the tool name (e.g. hardlinks on Windows), PrependArg is not needed.
-  if (ToolContext.NeedsPrependArg) {
-    TheDriver.setPrependArg(ToolContext.PrependArg);
-  } else if (CanonicalPrefixes && ToolContext.PrependArg) {
+  // If this is a multicall invocation (e.g. "llvm clang++"), always set the
+  // prepend arg to the tool name so the driver knows the effective program.
+  // For standalone invocations with -canonical-prefixes, check if the resolved
+  // path differs from the invoked name (e.g. symlinks on Linux).
+  if (ToolContext.invocationArgs().size() > 1) {
+    TheDriver.setPrependArg(ToolContext.invocationArgs()[1]);
+  } else if (CanonicalPrefixes) {
     // Only set PrependArg if the canonical path resolved to a different
-    // binary name than what PrependArg indicates. This handles symlinks
+    // binary name than what was invoked. This handles symlinks
     // (e.g. clang -> llvm-driver on Linux) but avoids issues on Windows
     // where clang.exe is a hardlink and the canonical path is unchanged.
     StringRef PathStem = llvm::sys::path::stem(Path);
-    StringRef PrependStem =
-        llvm::sys::path::stem(StringRef(ToolContext.PrependArg));
-    if (!PathStem.equals_insensitive(PrependStem))
-      TheDriver.setPrependArg(ToolContext.PrependArg);
+    StringRef InvokedStem = llvm::sys::path::stem(ToolContext.getPath());
+    if (!PathStem.equals_insensitive(InvokedStem))
+      TheDriver.setPrependArg(ProgName);
   }
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);

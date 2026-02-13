@@ -67,7 +67,7 @@ public:
     assert(!Failed && "Crash recovery context already failed!");
     Failed = true;
 
-    if (CRC->DumpStackAndCleanupOnFailure)
+    if (CRC->DumpStackAndCleanupOnFailure && RetCode != 0)
       sys::CleanupOnSignal(Context);
 
     CRC->RetCode = RetCode;

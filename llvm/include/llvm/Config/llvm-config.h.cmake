@@ -152,4 +152,10 @@
 /* Define to 1 to enable LLVM OnDisk Content Addressable Storage */
 #cmakedefine01 LLVM_ENABLE_ONDISK_CAS
 
+/* Define if building LLVM busybox-style */
+#cmakedefine01 LLVM_TOOL_LLVM_DRIVER_BUILD
+
+/* Whether LLVM tools should call other tools in-process when possible */
+#cmakedefine01 LLVM_INTEGRATED_TOOLS
+
 #endif
