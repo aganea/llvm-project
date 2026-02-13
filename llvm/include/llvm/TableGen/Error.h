@@ -52,6 +52,9 @@ void PrintError(const RecordVal *RecVal, const Twine &Msg);
 bool CheckAssert(SMLoc Loc, const Init *Condition, const Init *Message);
 void dumpMessage(SMLoc Loc, const Init *Message);
 
+// Reset all internal state
+void ResetSrcMgr();
+
 extern SourceMgr SrcMgr;
 extern unsigned ErrorsPrinted;
 

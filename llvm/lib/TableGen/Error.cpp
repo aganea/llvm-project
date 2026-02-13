@@ -24,6 +24,11 @@ using namespace llvm;
 SourceMgr llvm::SrcMgr;
 unsigned llvm::ErrorsPrinted = 0;
 
+void llvm::ResetSrcMgr() {
+  SrcMgr = SourceMgr();
+  ErrorsPrinted = 0;
+}
+
 static void PrintMessage(ArrayRef<SMLoc> Locs, SourceMgr::DiagKind Kind,
                          const Twine &Msg) {
   // Count the total number of errors printed.

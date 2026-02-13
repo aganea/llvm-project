@@ -14,7 +14,7 @@
 #include "TableGen.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Main.h"
 #include "llvm/TableGen/Record.h"
@@ -69,12 +69,12 @@ static TableGen::Emitter::Opt X[] = {
     {"print-sets", printSets, "Print expanded sets for testing DAG exprs"},
 };
 
-int tblgen_main(int argc, char **argv) {
-  InitLLVM X(argc, argv);
-  cl::ParseCommandLineOptions(argc, argv);
+int tblgen_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+  cl::ResetAllOptionOccurrences();
+  cl::ParseCommandLineOptions(Args.size(), Args.data());
 
   MultiFileTableGenMainFn MainFn = nullptr;
-  return TableGenMain(argv[0], MainFn);
+  return TableGenMain(Args[0], MainFn);
 }
 
 #ifndef __has_feature

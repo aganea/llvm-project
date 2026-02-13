@@ -128,6 +128,8 @@ static int WriteOutput(const char *argv0, StringRef Filename,
 }
 
 int llvm::TableGenMain(const char *argv0, MultiFileTableGenMainFn MainFn) {
+  ResetSrcMgr();
+
   RecordKeeper Records;
   TGTimer &Timer = Records.getTimer();
 
