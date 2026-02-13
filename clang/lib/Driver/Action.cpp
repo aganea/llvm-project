@@ -52,6 +52,8 @@ const char *Action::getClassName(ActionClass AC) {
     return "binary-translator";
   case ObjcopyJobClass:
     return "objcopy";
+  case DatabaseJobClass:
+    return "database";
   }
 
   llvm_unreachable("invalid class");
@@ -462,3 +464,8 @@ void ObjcopyJobAction::anchor() {}
 
 ObjcopyJobAction::ObjcopyJobAction(ActionList &Inputs, types::ID Type)
     : JobAction(ObjcopyJobClass, Inputs, Type) {}
+
+void DatabaseJobAction::anchor() {}
+
+DatabaseJobAction::DatabaseJobAction(Action *Input, types::ID Type)
+    : JobAction(DatabaseJobClass, Input, Type) {}

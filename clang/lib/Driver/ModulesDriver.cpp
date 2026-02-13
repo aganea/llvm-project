@@ -1295,9 +1295,9 @@ createClangModulePrecompileJob(Compilation &C, const Command &ImportingJob,
   const auto &D = C.getDriver();
   return std::make_unique<Command>(
       *PA, ImportingJob.getCreator(), ResponseFileSupport::AtFileUTF8(),
-      D.getDriverProgramPath(), JobArgs,
+      D.getToolContext(), JobArgs,
       /*Inputs=*/ArrayRef<InputInfo>{},
-      /*Outputs=*/ArrayRef<InputInfo>{}, D.getPrependArg());
+      /*Outputs=*/ArrayRef<InputInfo>{});
 }
 
 /// Creates a \c ClangModuleJobNode with associated job for each unique Clang

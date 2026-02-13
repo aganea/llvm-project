@@ -1580,9 +1580,7 @@ void Flang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Handle "clang --driver-mode=flang" case
   bool isClangDriverWithFlangMode = false;
-  std::string DriverName = D.Name;
-  if (const char *PA = D.getPrependArg())
-    DriverName = PA;
+  std::string DriverName = D.getToolContext().getToolName().str();
   if (DriverName.find("clang") != std::string::npos && D.IsFlangMode())
     isClangDriverWithFlangMode = true;
 

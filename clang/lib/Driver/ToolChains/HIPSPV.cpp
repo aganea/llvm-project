@@ -174,10 +174,9 @@ void HIPSPV::Linker::constructLinkAndEmitSpirvCommand(
     Cc1Args.push_back(Output.getFilename());
 
     const Driver &Drv = C.getDriver();
-    const char *Clang = Drv.getDriverProgramPath();
-    C.addCommand(std::make_unique<Command>(
-        JA, *this, ResponseFileSupport::None(), Clang, Cc1Args, Inputs, Output,
-        Drv.getPrependArg()));
+    C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
+                                           Drv.getToolContext(), Cc1Args, Inputs,
+                                           Output));
     return;
   }
 
