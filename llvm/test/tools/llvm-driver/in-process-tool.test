@@ -1,0 +1,21 @@
+# Test that the llvm multicall driver dispatches tools correctly and handles
+# unknown tools and --help.
+
+# REQUIRES: llvm-driver
+
+## Test that a known tool is dispatched correctly via the multicall binary.
+# RUN: %llvm ar --help | FileCheck %s --check-prefix=AR
+# AR: OVERVIEW: LLVM Archiver
+
+## Test that --help on the multicall binary itself lists subcommands.
+# RUN: %llvm --help | FileCheck %s --check-prefix=HELP
+# HELP: USAGE: llvm [subcommand]
+# HELP: SUBCOMMANDS:
+
+## Test that invoking the multicall binary with no arguments shows help and
+## returns a non-zero exit code.
+# RUN: not %llvm 2>&1 | FileCheck %s --check-prefix=NOARGS
+# NOARGS: USAGE: llvm [subcommand]
+
+## Test that an unknown tool returns a non-zero exit code.
+# RUN: not %llvm nonexistent-tool 2>&1
