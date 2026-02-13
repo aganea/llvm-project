@@ -42,6 +42,10 @@ def dry_run : F<"dry-run", "Don't compile the input; only try to parse it.">;
 
 def no_preprocess : F<"no-preprocess", "Don't try to preprocess the input file.">;
 
+def no_integrated_clang
+    : F<"no-integrated-clang", "Don't run clang in-process for preprocessing; "
+                               "spawn a separate process.">;
+
 def working_dir
     : JS<"working-directory", "Provide the default working directory">;
 

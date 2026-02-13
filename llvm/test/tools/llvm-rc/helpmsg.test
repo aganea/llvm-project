@@ -15,6 +15,7 @@
 ; CHECK-NEXT:    /I <value>  Add an include path.
 ; CHECK-NEXT:    /LN <value> Set the default language name.
 ; CHECK-NEXT:    /L <value>  Set the default language identifier.
+; CHECK-NEXT:    /no-integrated-clang Don't run clang in-process for preprocessing; spawn a separate process.
 ; CHECK-NEXT:    /no-preprocess Don't try to preprocess the input file.
 ; CHECK-NEXT:    /N          Null-terminate all strings in the string table.
 ; CHECK-NEXT:    /U <value>  Undefine a symbol for the C preprocessor.

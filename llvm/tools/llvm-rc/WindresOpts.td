@@ -61,3 +61,7 @@ defm help : F<"h", "help", "Display this message and exit">;
 def _HASH_HASH_HASH : Flag<["-"], "###">;
 
 def no_preprocess : Flag<["--"], "no-preprocess">;
+
+def no_integrated_clang : Flag<["--"], "no-integrated-clang">,
+                          HelpText<"Don't run clang in-process for "
+                                   "preprocessing; spawn a separate process.">;
