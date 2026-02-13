@@ -9,8 +9,8 @@
 ; RUN: ln -fs llvm-windres %t/arm64ec-w64-mingw32-windres
 ; RUN: %t/aarch64-w64-mingw32-windres -### %p/Inputs/empty.rc %t.res | FileCheck %s --check-prefix=CHECK-PREPROC
 ; RUN: %t/arm64ec-w64-mingw32-windres -### %p/Inputs/empty.rc %t.res | FileCheck %s --check-prefix=CHECK-PREPROC-EC
-; CHECK-PREPROC: "clang" "--driver-mode=gcc" "-target" "aarch64-w64-mingw32"
-; CHECK-PREPROC-EC: "clang" "--driver-mode=gcc" "-target" "arm64ec-w64-mingw32"
+; CHECK-PREPROC: "{{.*}}clang{{.*}}" "--driver-mode=gcc" "-target" "aarch64-w64-mingw32"
+; CHECK-PREPROC-EC: "{{.*}}clang{{.*}}" "--driver-mode=gcc" "-target" "arm64ec-w64-mingw32"
 
 ; Check that the triple prefix also affects the output object file type.
 

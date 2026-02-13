@@ -229,27 +229,35 @@ struct RcOptions {
   WriterParams Params;
   bool AppendNull = false;
   bool IsDryRun = false;
+  bool IntegratedClang = LLVM_INTEGRATED_TOOLS;
   std::string WorkingDirectory;
   // Set the default language; choose en-US arbitrarily.
   unsigned LangId = (/*PrimaryLangId*/ 0x09) | (/*SubLangId*/ 0x01 << 10);
 };
 
 void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
-                const char *Argv0) {
-  std::string Clang;
-  if (Opts.PrintCmdAndExit || Opts.Preprocessor) {
-    Clang = "clang";
-  } else {
-    ErrorOr<std::string> ClangOrErr = findClang(Argv0, Opts.Triple);
-    if (ClangOrErr) {
-      Clang = *ClangOrErr;
-    } else {
-      errs() << "llvm-rc: Unable to find clang for preprocessing."
-             << "\n";
-      StringRef OptionName =
-          Opts.IsWindres ? "--no-preprocess" : "-no-preprocess";
-      errs() << "Pass " << OptionName << " to disable preprocessing.\n";
-      fatalError("llvm-rc: Unable to preprocess.");
+                const char *Argv0, const ToolContext &ToolCtx) {
+  std::string Clang = "clang";
+  llvm::CallableTool InProcessTool;
+  if (!Opts.Preprocessor) {
+    if (Opts.IntegratedClang) {
+      const char *CmdArg = Clang.c_str();
+      ArrayRef<const char *> CmdArgs(CmdArg); // single-element constructor
+      auto EC = ToolCtx.getCallableTool(CmdArgs);
+      if (EC)
+        InProcessTool = EC.get();
+    }
+    if (!InProcessTool) {
+      if (auto ClangOrErr = findClang(Argv0, Opts.Triple)) {
+        Clang = *ClangOrErr;
+      } else {
+        errs() << "llvm-rc: Unable to find clang for preprocessing."
+               << "\n";
+        StringRef OptionName =
+            Opts.IsWindres ? "--no-preprocess" : "-no-preprocess";
+        errs() << "Pass " << OptionName << " to disable preprocessing.\n";
+        fatalError("llvm-rc: Unable to preprocess.");
+      }
     }
   }
 
@@ -272,6 +280,8 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
   Args.push_back("-o");
   Args.push_back(Dst);
   if (Opts.PrintCmdAndExit || Opts.BeVerbose) {
+    if (InProcessTool)
+      outs() << " (in-process)\n";
     for (const auto &A : Args) {
       outs() << " ";
       sys::printArg(outs(), A, Opts.PrintCmdAndExit);
@@ -280,18 +290,25 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
     if (Opts.PrintCmdAndExit)
       exit(0);
   }
-  // The llvm Support classes don't handle reading from stdout of a child
-  // process; otherwise we could avoid using a temp file.
+  std::optional<int> Res;
   std::string ErrMsg;
-  int Res =
-      sys::ExecuteAndWait(Args[0], Args, /*Env=*/std::nullopt, /*Redirects=*/{},
-                          /*SecondsToWait=*/0, /*MemoryLimit=*/0, &ErrMsg);
-  if (Res) {
-    if (!ErrMsg.empty())
-      fatalError("llvm-rc: Preprocessing failed: " + ErrMsg);
-    else
-      fatalError("llvm-rc: Preprocessing failed.");
+  if (InProcessTool) {
+    SmallVector<const char *, 8> ArgsV(Args.size());
+    llvm::transform(Args, ArgsV.begin(), [](StringRef A) { return A.data(); });
+    Res = InProcessTool.call(ToolCtx, ArgsV);
+    if (!Res)
+      ErrMsg = "cannot call clang in-process";
+  } else {
+    // The llvm Support classes don't handle reading from stdout of a child
+    // process; otherwise we could avoid using a temp file.
+    Res = sys::ExecuteAndWait(Args[0], Args, /*Env=*/std::nullopt,
+                              /*Redirects=*/{},
+                              /*SecondsToWait=*/0, /*MemoryLimit=*/0, &ErrMsg);
   }
+  if (Res && *Res != 0 && ErrMsg.empty())
+    ErrMsg = ("return code " + Twine(*Res)).str();
+  if (!Res || *Res != 0)
+    fatalError("llvm-rc: Preprocessing failed: " + ErrMsg);
 }
 
 static std::pair<bool, std::string> isWindres(llvm::StringRef Argv0) {
@@ -420,6 +437,8 @@ RcOptions parseWindresOptions(ArrayRef<const char *> ArgsArr,
 
   Opts.PrintCmdAndExit = InputArgs.hasArg(WINDRES__HASH_HASH_HASH);
   Opts.Preprocess = !InputArgs.hasArg(WINDRES_no_preprocess);
+  if (InputArgs.hasArg(WINDRES_no_integrated_clang))
+    Opts.IntegratedClang = false;
   Triple TT(Prefix);
   if (InputArgs.hasArg(WINDRES_target)) {
     StringRef Value = InputArgs.getLastArgValue(WINDRES_target);
@@ -552,6 +571,8 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   }
   Opts.BeVerbose = InputArgs.hasArg(OPT_verbose);
   Opts.Preprocess = !InputArgs.hasArg(OPT_no_preprocess);
+  if (InputArgs.hasArg(OPT_no_integrated_clang))
+    Opts.IntegratedClang = false;
   Opts.Params.Include = InputArgs.getAllArgValues(OPT_includepath);
   Opts.Params.NoInclude = InputArgs.hasArg(OPT_noinclude);
   if (Opts.Params.NoInclude) {
@@ -609,13 +630,13 @@ RcOptions getOptions(const char *Argv0, ArrayRef<const char *> ArgsArr,
     return parseRcOptions(ArgsArr, InputArgs);
 }
 
-void doRc(std::string Src, std::string Dest, RcOptions &Opts,
-          const char *Argv0) {
+void doRc(std::string Src, std::string Dest, RcOptions &Opts, const char *Argv0,
+          const llvm::ToolContext &ToolCtx) {
   std::string PreprocessedFile = Src;
   if (Opts.Preprocess) {
     std::string OutFile = createTempFile("preproc", "rc");
     TempPreprocFile.setFile(OutFile);
-    preprocess(Src, OutFile, Opts, Argv0);
+    preprocess(Src, OutFile, Opts, Argv0, ToolCtx);
     PreprocessedFile = OutFile;
   }
 
@@ -751,7 +772,8 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
 
 } // anonymous namespace
 
-int llvm_rc_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
+int llvm_rc_main(ArrayRef<const char *> Args,
+                 const llvm::ToolContext &ToolCtx) {
   ExitOnErr.setBanner("llvm-rc: ");
 
   ArrayRef<const char *> ArgsArr, FileArgsArr;
@@ -772,7 +794,7 @@ int llvm_rc_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
       ResFile = createTempFile("rc", "res");
       TempResFile.setFile(ResFile);
     }
-    doRc(Opts.InputFile, ResFile, Opts, Args[0]);
+    doRc(Opts.InputFile, ResFile, Opts, Args[0], ToolCtx);
   } else {
     ResFile = Opts.InputFile;
   }
