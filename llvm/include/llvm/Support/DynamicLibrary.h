@@ -14,6 +14,7 @@
 #define LLVM_SUPPORT_DYNAMICLIBRARY_H
 
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
 #include <string>
 
 namespace llvm {
