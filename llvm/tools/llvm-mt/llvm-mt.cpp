@@ -79,10 +79,10 @@ static void error(Error EC) {
     });
 }
 
-int llvm_mt_main(int Argc, char **Argv, const llvm::ToolContext &) {
+int llvm_mt_main(ArrayRef<const char *> Args, const llvm::ToolContext &) {
   CvtResOptTable T;
   unsigned MAI, MAC;
-  ArrayRef<const char *> ArgsArr = ArrayRef(Argv + 1, Argc - 1);
+  ArrayRef<const char *> ArgsArr = Args.drop_front();
   opt::InputArgList InputArgs = T.ParseArgs(ArgsArr, MAI, MAC);
 
   for (auto *Arg : InputArgs.filtered(OPT_INPUT)) {
