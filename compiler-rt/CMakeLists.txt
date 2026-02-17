@@ -343,6 +343,14 @@ option(COMPILER_RT_BUILD_PROFILE_ROCM
   ${COMPILER_RT_BUILD_PROFILE_ROCM_DEFAULT})
 mark_as_advanced(COMPILER_RT_BUILD_PROFILE_ROCM)
 
+# Detect clang-cl: Clang targeting the MSVC ABI.  This is used in various
+# CMakeLists.txt to guard MSVC-only flags that clang-cl doesn't support.
+# In non-standalone builds this is set by LLVM's CheckCompilerVersion.cmake,
+# but compiler-rt doesn't include that module.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID MATCHES "MSVC")
+  set(CLANG_CL 1)
+endif()
+
 include(config-ix)
 
 #================================

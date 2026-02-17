@@ -48,6 +48,12 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringRef.h"
 
+// Windows SDK defines GetClassName as a macro (-> GetClassNameW/A).
+// Undefine it to avoid mangling ScriptedMetadata::GetClassName() calls below.
+#ifdef GetClassName
+#undef GetClassName
+#endif
+
 namespace lldb_private {
 
 OptionEnumValues GetDynamicValueTypes();

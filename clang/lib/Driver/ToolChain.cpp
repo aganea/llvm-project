@@ -38,6 +38,7 @@
 #include "llvm/Option/Option.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -937,6 +938,24 @@ std::string ToolChain::buildCompilerRTBasename(const llvm::opt::ArgList &Args,
 
 std::string ToolChain::getCompilerRT(const ArgList &Args, StringRef Component,
                                      FileType Type, bool IsFortran) const {
+  // Helper to check a candidate path via status() and report unexpected errors.
+  auto CheckCandidatePath = [this](const llvm::Twine &P) -> bool {
+    auto Stat = getVFS().status(P);
+    if (Stat) {
+      if (Stat->exists() &&
+          Stat->getType() == llvm::sys::fs::file_type::regular_file)
+        return true;
+      // status() succeeded but the type is unexpected (directory, device, etc.)
+      llvm::errs() << "clang: note: stat('" << P << "') returned type "
+                   << static_cast<int>(Stat->getType()) << "\n";
+      return false;
+    }
+    if (Stat.getError() != std::errc::no_such_file_or_directory)
+      llvm::errs() << "clang: warning: stat('" << P
+                   << "') failed: " << Stat.getError().message() << "\n";
+    return false;
+  };
+
   // Check for runtime files in the new layout without the architecture first.
   std::string CRTBasename = buildCompilerRTBasename(
       Args, Component, Type, /*AddArch=*/false, IsFortran);
@@ -944,7 +963,7 @@ std::string ToolChain::getCompilerRT(const ArgList &Args, StringRef Component,
   for (const auto &LibPath : getLibraryPaths()) {
     SmallString<128> P(LibPath);
     llvm::sys::path::append(P, CRTBasename);
-    if (getVFS().exists(P))
+    if (CheckCandidatePath(P))
       return std::string(P);
     if (Path.empty())
       Path = P;
@@ -955,8 +974,12 @@ std::string ToolChain::getCompilerRT(const ArgList &Args, StringRef Component,
                                         /*AddArch=*/!IsFortran, IsFortran);
   SmallString<128> OldPath(getCompilerRTPath());
   llvm::sys::path::append(OldPath, CRTBasename);
-  if (Path.empty() || getVFS().exists(OldPath))
+  if (Path.empty()) {
     return std::string(OldPath);
+  } else {
+    if (CheckCandidatePath(OldPath))
+      return std::string(OldPath);
+  }
 
   // If none is found, use a file name from the new layout, which may get
   // printed in an error message, aiding users in knowing what Clang is

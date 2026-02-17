@@ -1,0 +1,204 @@
+# =============================================================================
+# LLVM Release Build -- GCP Windows VM Startup Script
+#
+# This script is rendered by Terraform and runs automatically when the VM
+# boots.  It clones the LLVM repo, runs the build, uploads artifacts to GCS,
+# signals completion via guest attributes, and stops the VM.
+# =============================================================================
+
+$ErrorActionPreference = 'Continue'
+
+# Transcript captures all output to a log file for later upload.
+$logFile = 'C:\build_log.txt'
+Start-Transcript -Path $logFile -Append
+
+function Set-BuildStatus {
+    param([string]$Status)
+    try {
+        Invoke-RestMethod -Headers @{ "Metadata-Flavor" = "Google" } `
+            -Uri "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/llvm-build/status" `
+            -Method PUT -Body $Status
+        Write-Host "Build status: $Status"
+    } catch {
+        Write-Warning "Failed to set guest attribute: $_"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 1. Signal that the build is starting
+# ---------------------------------------------------------------------------
+Set-BuildStatus "starting"
+
+# ---------------------------------------------------------------------------
+# 2. Install Git (needed to clone the repo; winget is available on Server 2025)
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Installing Git ====`n"
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if (-not $gitCmd) {
+    # winget may need a moment after first boot.
+    Start-Sleep -Seconds 10
+    winget install Git.Git --accept-package-agreements --accept-source-agreements --silent
+    if ($LASTEXITCODE -ne 0) {
+        Set-BuildStatus "failed:git-install"
+        Stop-Transcript
+        Stop-Computer -Force
+        exit 1
+    }
+    # Refresh PATH so git is found.
+    $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [Environment]::GetEnvironmentVariable("PATH", "User")
+}
+Write-Host "Git: $(git --version)"
+
+# ---------------------------------------------------------------------------
+# 3. Install Google Cloud SDK (for `gcloud storage`)
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Installing Google Cloud SDK ====`n"
+$gcloudCmd = Get-Command gcloud -ErrorAction SilentlyContinue
+if (-not $gcloudCmd) {
+    # The GCP guest environment on Windows usually includes the Cloud SDK,
+    # but check both possible install locations before downloading it again --
+    # the standalone installer defaults to Program Files (x86) even on x64.
+    # $${...} escapes Terraform's own template interpolation -- this file is
+    # rendered by templatefile(), so a bare ${env:...} here would be parsed
+    # as a (nonexistent) Terraform variable instead of reaching PowerShell.
+    $gcloudCandidates = @(
+        "$${env:ProgramFiles(x86)}\Google\Cloud SDK\google-cloud-sdk\bin"
+        "$env:ProgramFiles\Google\Cloud SDK\google-cloud-sdk\bin"
+    )
+    $gcloudPath = $gcloudCandidates | Where-Object { Test-Path "$_\gcloud.cmd" } | Select-Object -First 1
+    if ($gcloudPath) {
+        $env:PATH = "$gcloudPath;$env:PATH"
+    } else {
+        Write-Host "gcloud not found; installing Google Cloud SDK..."
+        $installer = "$env:TEMP\GoogleCloudSDKInstaller.exe"
+        Invoke-WebRequest -Uri "https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe" `
+            -OutFile $installer
+        Start-Process -FilePath $installer -ArgumentList "/S", "/noreporting" -Wait
+        $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                    [Environment]::GetEnvironmentVariable("PATH", "User")
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 4. Clone the LLVM repository (shallow)
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Cloning LLVM (${git_ref}) ====`n"
+Set-BuildStatus "cloning"
+
+$repoDir = "C:\llvm-project"
+if (Test-Path $repoDir) {
+    Remove-Item -Recurse -Force $repoDir
+}
+git clone --depth 1 --branch "${git_ref}" "${git_repo}" $repoDir
+if ($LASTEXITCODE -ne 0) {
+    Set-BuildStatus "failed:git-clone"
+    Stop-Transcript
+    gcloud storage cp $logFile "gs://${bucket_name}/build_log.txt"
+    Stop-Computer -Force
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# 5. Run the LLVM build script
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Starting LLVM build ====`n"
+Set-BuildStatus "building"
+
+$buildScript = Join-Path $repoDir "llvm\utils\release\build_llvm_release.ps1"
+
+# Build the argument list.
+$buildArgs = @("-InstallPrerequisites")
+%{ for arch in split(" ", arch_flags) ~}
+$buildArgs += "${arch}"
+%{ endfor ~}
+%{ if llvm_version != "" ~}
+$buildArgs += @("-Version", "${llvm_version}")
+%{ endif ~}
+
+Write-Host "Build arguments: $($buildArgs -join ' ')"
+
+# Run the build.  Use Start-Process to capture the exit code reliably.
+# -WorkingDirectory matters: build_llvm_release.ps1 writes its output under
+# $PWD\llvm_package_<version>, and without it Start-Process inherits this
+# script's own working directory (wherever the GCE agent happened to launch
+# it from) instead of $repoDir, so the artifact-upload step below would
+# search the wrong place.
+$buildProcess = Start-Process -FilePath "pwsh" `
+    -ArgumentList (@("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $buildScript) + $buildArgs) `
+    -WorkingDirectory $repoDir `
+    -Wait -PassThru -NoNewWindow -RedirectStandardOutput "C:\build_stdout.txt" `
+    -RedirectStandardError "C:\build_stderr.txt"
+
+$buildExitCode = $buildProcess.ExitCode
+
+# Append build output to the log.
+if (Test-Path "C:\build_stdout.txt") {
+    Get-Content "C:\build_stdout.txt" | Out-File -Append $logFile
+}
+if (Test-Path "C:\build_stderr.txt") {
+    Get-Content "C:\build_stderr.txt" | Out-File -Append $logFile
+}
+
+Write-Host "Build exit code: $buildExitCode"
+
+# ---------------------------------------------------------------------------
+# 6. Upload artifacts to GCS
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Uploading artifacts to gs://${bucket_name}/ ====`n"
+Set-BuildStatus "uploading"
+
+# Find the build output directory.  build_llvm_release.ps1 writes it under
+# $PWD\llvm_package_<version>, and $PWD was pinned to $repoDir via
+# -WorkingDirectory above, so check there first.
+$packageDirs = Get-ChildItem -Path $repoDir -Directory -Filter "llvm_package_*" -ErrorAction SilentlyContinue
+if (-not $packageDirs) {
+    # Fall back to C:\ in case -WorkingDirectory above is ever removed.
+    $packageDirs = Get-ChildItem -Path "C:\" -Directory -Filter "llvm_package_*" -ErrorAction SilentlyContinue
+}
+
+if ($packageDirs) {
+    foreach ($dir in $packageDirs) {
+        # Upload NSIS installers (.exe)
+        $exeFiles = Get-ChildItem -Path $dir.FullName -Filter "LLVM-*.exe" -Recurse -ErrorAction SilentlyContinue
+        foreach ($f in $exeFiles) {
+            Write-Host "Uploading: $($f.Name)"
+            gcloud storage cp $f.FullName "gs://${bucket_name}/$($f.Name)"
+        }
+        # Upload tarballs (.tar.xz)
+        $tarFiles = Get-ChildItem -Path $dir.FullName -Filter "clang+llvm-*.tar.xz" -Recurse -ErrorAction SilentlyContinue
+        foreach ($f in $tarFiles) {
+            Write-Host "Uploading: $($f.Name)"
+            gcloud storage cp $f.FullName "gs://${bucket_name}/$($f.Name)"
+        }
+    }
+} else {
+    Write-Warning "No llvm_package_* directory found. Build may have failed before producing artifacts."
+}
+
+# Always upload the build log.
+Stop-Transcript
+gcloud storage cp $logFile "gs://${bucket_name}/build_log.txt"
+if (Test-Path "C:\build_stdout.txt") {
+    gcloud storage cp "C:\build_stdout.txt" "gs://${bucket_name}/build_stdout.txt"
+}
+if (Test-Path "C:\build_stderr.txt") {
+    gcloud storage cp "C:\build_stderr.txt" "gs://${bucket_name}/build_stderr.txt"
+}
+
+# ---------------------------------------------------------------------------
+# 7. Signal completion or failure
+# ---------------------------------------------------------------------------
+if ($buildExitCode -eq 0) {
+    Set-BuildStatus "success"
+} else {
+    Set-BuildStatus "failed:$buildExitCode"
+}
+
+# ---------------------------------------------------------------------------
+# 8. Stop the VM to save costs.
+#    The VM stays in TERMINATED state so Terraform can still manage it.
+#    Run 'terraform destroy' to clean up.
+# ---------------------------------------------------------------------------
+Write-Host "`n==== Build finished (exit code: $buildExitCode). Stopping VM. ====`n"
+Stop-Computer -Force

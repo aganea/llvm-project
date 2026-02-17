@@ -103,8 +103,17 @@ set(ASAN_DYNAMIC_UNITTEST_INSTRUMENTED_LINK_FLAGS
 
 set(ASAN_UNITTEST_INSTRUMENTED_LIBS)
 
+set(ASAN_UNITTEST_NOINST_CFLAGS ${ASAN_UNITTEST_COMMON_CFLAGS})
 set(ASAN_UNITTEST_NOINST_LINK_FLAGS ${ASAN_UNITTEST_COMMON_LINK_FLAGS})
-append_list_if(MSVC -Wl,-nodefaultlib:msvcrt ASAN_UNITTEST_NOINST_LINK_FLAGS)
+if(MSVC)
+  # Noinst tests link with the static CRT (libcmt) by excluding msvcrt.
+  # Define _MT so that UCRT headers don't declare functions as dllimport,
+  # which would cause LNK4217 warnings when linking statically.
+  # Also suppress LNK4217 for symbols in the runtime library objects that
+  # were compiled with /MD and already have dllimport baked in.
+  list(APPEND ASAN_UNITTEST_NOINST_CFLAGS -D_MT)
+  list(APPEND ASAN_UNITTEST_NOINST_LINK_FLAGS -D_MT -Wl,-nodefaultlib:msvcrt -Wl,/ignore:4217)
+endif()
 if(NOT APPLE)
   append_list_if(COMPILER_RT_HAS_LIBM -lm ASAN_UNITTEST_NOINST_LINK_FLAGS)
   append_list_if(COMPILER_RT_HAS_LIBDL -ldl ASAN_UNITTEST_NOINST_LINK_FLAGS)
@@ -236,7 +245,7 @@ function(add_asan_tests arch test_runtime)
   generate_asan_tests(ASAN_NOINST_TEST_OBJECTS
     AsanUnitTests "Asan-${arch}${TEST_KIND}-Noinst-Test"
     SUBDIR "${CONFIG_NAME}"
-    CFLAGS ${ASAN_UNITTEST_COMMON_CFLAGS}
+    CFLAGS ${ASAN_UNITTEST_NOINST_CFLAGS}
     LINK_FLAGS ${ASAN_UNITTEST_NOINST_LINK_FLAGS} ${TARGET_LINK_FLAGS}
     SOURCES ${ASAN_NOINST_TEST_SOURCES}
     RUNTIME ${test_runtime})

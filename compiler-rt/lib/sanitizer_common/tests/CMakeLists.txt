@@ -98,6 +98,12 @@ list(APPEND SANITIZER_TEST_LINK_FLAGS_COMMON -g)
 
 if(NOT MSVC)
   list(APPEND SANITIZER_TEST_LINK_FLAGS_COMMON --driver-mode=g++)
+else()
+  # Suppress LNK4217 warnings.  The sanitizer runtime objects are compiled
+  # with /MD (dynamic CRT) so CRT functions have dllimport attributes baked
+  # in.  When the test executable links the static CRT, the linker resolves
+  # those symbols locally and warns.  The warning is benign.
+  list(APPEND SANITIZER_TEST_LINK_FLAGS_COMMON -Wl,/ignore:4217)
 endif()
 
 if(ANDROID)

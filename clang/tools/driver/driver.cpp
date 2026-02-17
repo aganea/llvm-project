@@ -361,12 +361,29 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
                    /*Title=*/"clang LLVM compiler", VFS);
   auto TargetAndMode = ToolChain::getTargetAndModeFromProgramName(ProgName);
   TheDriver.setTargetAndMode(TargetAndMode);
-  // If -canonical-prefixes is set, GetExecutablePath will have resolved Path
-  // to the llvm driver binary, not clang. In this case, we need to use
-  // PrependArg which should be clang-*. Checking just CanonicalPrefixes is
-  // safe even in the normal case because PrependArg will be null so
-  // setPrependArg will be a no-op.
-  if (ToolContext.NeedsPrependArg || CanonicalPrefixes)
+  // When the llvm-driver multicall binary dispatches to clang, it sets
+  // NeedsPrependArg if the executable path alone is not sufficient to
+  // re-invoke the correct tool (e.g. the user ran "llvm clang ..." so
+  // Argv[0] is "llvm", not "clang").
+  //
+  // When -canonical-prefixes is in effect (the default), GetExecutablePath
+  // resolves symlinks, which on platforms that use symlinks (Linux) can turn
+  // "clang" into "llvm".  In that case we also need PrependArg so that the
+  // out-of-process -cc1 re-invocation passes the tool name to the driver.
+  // On Windows with hard links, GetModuleFileNameW already returns the
+  // invoked name ("clang.exe"), so PrependArg would be a harmful duplicate.
+  //
+  // Therefore: set PrependArg when the resolved Path no longer identifies
+  // this tool, or when the llvm-driver explicitly says it is needed.
+  bool NeedPrepend = ToolContext.NeedsPrependArg;
+  if (!NeedPrepend && CanonicalPrefixes && ToolContext.PrependArg) {
+    // Check whether the resolved executable still looks like "clang*".
+    // If it was resolved to e.g. "llvm", we need the prepend arg.
+    StringRef ResolvedStem = llvm::sys::path::stem(Path);
+    StringRef ToolStem = llvm::sys::path::stem(ToolContext.PrependArg);
+    NeedPrepend = !ResolvedStem.contains_insensitive(ToolStem);
+  }
+  if (NeedPrepend)
     TheDriver.setPrependArg(ToolContext.PrependArg);
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);

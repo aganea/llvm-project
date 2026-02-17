@@ -498,6 +498,44 @@ if(WIN32 AND NOT UNIX)
     # The WIX installer needs admin privileges unless we use this flag.
     set(CPACK_WIX_LIGHT_EXTRA_FLAGS "-sval")
   endif()
+
+  # When building with the llvm-driver multicall binary, materialize the
+  # per-tool aliases (clang.exe, lld-link.exe, ...) after install and remove
+  # them before uninstall, using llvm-link-mode.ps1 and the
+  # llvm-driver-tools.txt manifest it ships alongside llvm.exe.  'auto' tries
+  # a hard link first (zero extra disk) and only falls back to the stub or a
+  # full copy if that fails, so this is correct whether or not
+  # LLVM_INSTALL_DRIVER_ALIASES already staged the aliases as real files.
+  #
+  # NOTE: deliberately NOT inside the `CPACK_GENERATOR STREQUAL "NSIS"` block
+  # above.  CPACK_GENERATOR is normally empty at configure time -- it is only
+  # populated by include(CPack) below, or by an explicit -DCPACK_GENERATOR on
+  # the command line -- so that block is skipped in a default configure.  With
+  # LLVM_INSTALL_DRIVER_ALIASES=OFF the aliases are not staged, so failing to
+  # emit these commands yields an installer with no clang.exe at all.  These
+  # two variables are consumed only by the NSIS generator and ignored by every
+  # other one, so setting them unconditionally is harmless.
+  # Both the backslashes and the double quotes below are deliberately
+  # double-escaped.  CPack writes every CPACK_* variable into
+  # CPackConfig.cmake as a bare set(VAR "<value>") without re-escaping the
+  # value (see cpack_encode_variables in CPack.cmake), and cpack then reads
+  # that file back with include().  So the value has to arrive already
+  # escaped for CMake, or the round-trip is a hard syntax error -- an
+  # unescaped `\b` in `$INSTDIR\bin` is an "Invalid character escape", and an
+  # unescaped `"` around the path silently splits the value into a list.
+  # `\\\\` yields a literal `\\` and `\\\"` a literal `\"`, which read back as
+  # the single `\` and `"` that NSIS should ultimately see.
+  #
+  # powershell.exe (Windows PowerShell 5.1) is used rather than pwsh.exe:
+  # 5.1 is present on every supported Windows install, while PowerShell 7 is
+  # not installed by default and may well be absent on an end user's machine.
+  # llvm-link-mode.ps1 is kept 5.1-compatible for exactly this reason.
+  if(LLVM_TOOL_LLVM_DRIVER_BUILD)
+    set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
+      "ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \\\"$INSTDIR\\\\bin\\\\llvm-link-mode.ps1\\\" auto'")
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
+      "ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \\\"$INSTDIR\\\\bin\\\\llvm-link-mode.ps1\\\" remove'")
+  endif()
 endif()
 include(CPack)
 

@@ -98,6 +98,14 @@ if (NOT LLVM_ENABLE_THREADS)
   target_compile_definitions("${gtest_name}" PUBLIC GTEST_HAS_PTHREAD=0)
 endif ()
 
+# GTest is always built statically in LLVM. Define these to 0 so that
+# gtest-port.h's #if checks don't trigger -Wundef warnings.  Use PUBLIC so
+# the definitions propagate to all targets that link against gtest.
+target_compile_definitions("${gtest_name}" PUBLIC
+  GTEST_LINKED_AS_SHARED_LIBRARY=0
+  GTEST_CREATE_SHARED_LIBRARY=0
+)
+
 target_include_directories("${gtest_name}"
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/googletest/include>
          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/googlemock/include>

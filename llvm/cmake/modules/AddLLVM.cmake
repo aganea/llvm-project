@@ -2392,6 +2392,58 @@ function(add_lit_testsuites project directory)
   endif()
 endfunction()
 
+## Determine the preferred method for creating tool aliases (symlinks, hard
+## links, or copies).  The result is stored in the variable named by
+## \p output_variable, set to one of: create_symlink, create_hardlink, copy.
+##
+## On Windows, hard links are preferred by default: they have zero disk cost
+## and require no elevation (unlike symlinks).  The hard link probe runs once
+## at configure time and the result is cached.  If the filesystem does not
+## support hard links (e.g. FAT32), we fall back to copy.
+##
+## If LLVM_USE_SYMLINKS is ON, symlinks are used on all platforms.
+## Otherwise, non-Windows platforms default to copy.
+function(llvm_get_link_or_copy output_variable)
+  if(LLVM_USE_SYMLINKS)
+    set(${output_variable} create_symlink PARENT_SCOPE)
+    return()
+  endif()
+
+  if(WIN32)
+    # Probe once at configure time whether the build directory's filesystem
+    # supports hard links.  Cache the result so we don't re-probe every time.
+    if(NOT DEFINED LLVM_HARDLINKS_SUPPORTED)
+      set(_probe_src "${CMAKE_BINARY_DIR}/CMakeFiles/hardlink_probe_src.txt")
+      set(_probe_dst "${CMAKE_BINARY_DIR}/CMakeFiles/hardlink_probe_dst.txt")
+      file(WRITE "${_probe_src}" "hardlink probe")
+      execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E create_hardlink "${_probe_src}" "${_probe_dst}"
+        RESULT_VARIABLE _hardlink_result
+        OUTPUT_QUIET ERROR_QUIET)
+      file(REMOVE "${_probe_src}" "${_probe_dst}")
+      if(_hardlink_result EQUAL 0)
+        set(LLVM_HARDLINKS_SUPPORTED ON CACHE INTERNAL
+            "Whether the build filesystem supports hard links")
+        message(STATUS "Hard links supported -- tool aliases will use hard links")
+      else()
+        set(LLVM_HARDLINKS_SUPPORTED OFF CACHE INTERNAL
+            "Whether the build filesystem supports hard links")
+        message(STATUS "Hard links not supported -- tool aliases will use copies")
+      endif()
+    endif()
+
+    if(LLVM_HARDLINKS_SUPPORTED)
+      set(${output_variable} create_hardlink PARENT_SCOPE)
+    else()
+      set(${output_variable} copy PARENT_SCOPE)
+    endif()
+    return()
+  endif()
+
+  # Non-Windows, no symlinks requested: copy.
+  set(${output_variable} copy PARENT_SCOPE)
+endfunction()
+
 function(llvm_install_library_symlink name dest type)
   cmake_parse_arguments(ARG "FULL_DEST" "COMPONENT" "" ${ARGN})
   foreach(path ${CMAKE_MODULE_PATH})
@@ -2413,11 +2465,7 @@ function(llvm_install_library_symlink name dest type)
     set(full_dest ${CMAKE_${type}_LIBRARY_PREFIX}${dest}${CMAKE_${type}_LIBRARY_SUFFIX})
   endif()
 
-  if(LLVM_USE_SYMLINKS)
-    set(LLVM_LINK_OR_COPY create_symlink)
-  else()
-    set(LLVM_LINK_OR_COPY copy)
-  endif()
+  llvm_get_link_or_copy(LLVM_LINK_OR_COPY)
 
   set(output_dir lib${LLVM_LIBDIR_SUFFIX})
   if((WIN32 OR CYGWIN) AND "${type}" STREQUAL "SHARED")
@@ -2462,11 +2510,7 @@ function(llvm_install_symlink project name dest)
     set(full_dest llvm${CMAKE_EXECUTABLE_SUFFIX})
   endif()
 
-  if(LLVM_USE_SYMLINKS)
-    set(LLVM_LINK_OR_COPY create_symlink)
-  else()
-    set(LLVM_LINK_OR_COPY copy)
-  endif()
+  llvm_get_link_or_copy(LLVM_LINK_OR_COPY)
 
   set(output_dir "${${project}_TOOLS_INSTALL_DIR}")
 
@@ -2489,6 +2533,13 @@ function(llvm_add_tool_symlink project link_name target)
 
   if (${target} IN_LIST LLVM_DRIVER_TOOLS)
     set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_ALIASES_${target} ${link_name})
+    # Create a custom target for the alias so that test dependencies
+    # (add_dependencies on the alias name) resolve correctly.
+    if(NOT TARGET ${link_name})
+      add_custom_target(${link_name} DEPENDS llvm-driver)
+    endif()
+    # The actual symlink/copy is created by generate_driver_tool_targets.
+    return()
   endif()
   set(dest_binary "$<TARGET_FILE:${target}>")
 
@@ -2528,11 +2579,7 @@ function(llvm_add_tool_symlink project link_name target)
     endif()
   endif()
 
-  if(LLVM_USE_SYMLINKS)
-    set(LLVM_LINK_OR_COPY create_symlink)
-  else()
-    set(LLVM_LINK_OR_COPY copy)
-  endif()
+  llvm_get_link_or_copy(LLVM_LINK_OR_COPY)
 
   set(output_path "${ARG_OUTPUT_DIR}/${link_name}${CMAKE_EXECUTABLE_SUFFIX}")
 
