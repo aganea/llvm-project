@@ -14,6 +14,12 @@
 #include "lldb/Utility/StructuredData.h"
 #include "llvm/ADT/Hashing.h"
 
+// Windows SDK defines GetClassName as a macro (GetClassNameA/GetClassNameW).
+// Undefine it so it doesn't conflict with our method name.
+#ifdef GetClassName
+#undef GetClassName
+#endif
+
 namespace lldb_private {
 class ScriptedMetadata {
 public:

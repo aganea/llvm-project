@@ -102,11 +102,16 @@ if(COMPILER_RT_DEFAULT_TARGET_ARCH IN_LIST FUZZER_SUPPORTED_ARCH)
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
   set(FuzzedDataProviderTestObjects)
+  # FuzzedDataProvider.h uses 'if constexpr' which requires C++17.
+  # Always use the GCC-style flag because compiler-rt tests are compiled
+  # with clang++ (--driver-mode=g++), not clang-cl, even on Windows.
+  set(FUZZED_DATA_PROVIDER_CFLAGS ${LIBFUZZER_UNITTEST_CFLAGS} ${LIBFUZZER_TEST_RUNTIME_CFLAGS}
+      -std=c++17)
   generate_compiler_rt_tests(FuzzedDataProviderTestObjects
     FuzzedDataProviderUnitTests "FuzzerUtils-${arch}-Test" ${arch}
     SOURCES FuzzedDataProviderUnittest.cpp ${COMPILER_RT_GTEST_SOURCE}
     DEPS ${LIBFUZZER_TEST_RUNTIME_DEPS} ${COMPILER_RT_SOURCE_DIR}/include/fuzzer/FuzzedDataProvider.h
-    CFLAGS ${LIBFUZZER_UNITTEST_CFLAGS} ${LIBFUZZER_TEST_RUNTIME_CFLAGS}
+    CFLAGS ${FUZZED_DATA_PROVIDER_CFLAGS}
     LINK_FLAGS ${LIBFUZZER_UNITTEST_LINK_FLAGS} ${LIBFUZZER_TEST_RUNTIME_LINK_FLAGS})
   set_target_properties(FuzzedDataProviderUnitTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})

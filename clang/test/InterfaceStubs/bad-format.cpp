@@ -1,26 +1,26 @@
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=bad-format %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=bad-format %s 2>&1 | \
 // RUN: FileCheck %s
 
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=experimental-tapi-elf-v1 %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=experimental-tapi-elf-v1 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-TAPI-DEPRECATED %s
 
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=experimental-yaml-elf-v1 %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=experimental-yaml-elf-v1 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-YAML-DEPRECATED %s
 
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=experimental-ifs-v1 %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=experimental-ifs-v1 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-V1-DEPRECATED %s
 
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=experimental-ifs-v2 %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=experimental-ifs-v2 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-V2-DEPRECATED %s
 
-// RUN: not %clang -emit-interface-stubs -interface-stub-version=bad-format %s 2>&1 | \
+// RUN: not %clang -S -emit-interface-stubs -interface-stub-version=bad-format %s 2>&1 | \
 // RUN: FileCheck %s
 
-// RUN: not %clang -emit-interface-stubs \
+// RUN: not %clang -S -emit-interface-stubs \
 // RUN: -interface-stub-version=experimental-tapi-elf-v1 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-TAPI-DEPRECATED %s
 
-// RUN: not %clang -emit-interface-stubs \
+// RUN: not %clang -S -emit-interface-stubs \
 // RUN: -interface-stub-version=experimental-yaml-elf-v1 %s 2>&1 | \
 // RUN: FileCheck -check-prefix=CHECK-YAML-DEPRECATED %s
 

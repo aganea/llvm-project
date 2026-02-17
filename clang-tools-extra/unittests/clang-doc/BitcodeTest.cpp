@@ -14,6 +14,7 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/Bitstream/BitstreamWriter.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "gtest/gtest.h"
 
 namespace clang {
@@ -49,6 +50,7 @@ static std::string writeInfo(Info *I, DiagnosticsEngine &Diags) {
   case InfoType::IT_default:
     return "";
   }
+  llvm_unreachable("Unknown InfoType");
 }
 
 static std::vector<Info *> readInfo(StringRef Bitcode, size_t NumInfos,

@@ -688,7 +688,7 @@ TEST_F(OnlyValidArguments, GetCommandShortLength) {
 
 TEST_F(ZeroArguments, GetPID) {
   // pid should always greater than 0, in both linux and windows
-  EXPECT_GT(RTNAME(GetPID)(), 0);
+  EXPECT_GT(RTNAME(GetPID)(), 0u);
 }
 
 class EnvironmentVariables : public CommandFixture {

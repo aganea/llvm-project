@@ -9,6 +9,10 @@
 # traversing each directory.
 create_llvm_tool_options()
 
+# llvm-driver-stub is added explicitly inside the LLVM_TOOL_LLVM_DRIVER_BUILD
+# block below, so prevent the automatic subdirectory scan from adding it twice.
+set(LLVM_TOOL_LLVM_DRIVER_STUB_BUILD OFF)
+
 if(NOT LLVM_BUILD_LLVM_DYLIB AND NOT LLVM_BUILD_LLVM_C_DYLIB)
   set(LLVM_TOOL_LLVM_SHLIB_BUILD Off)
 endif()
@@ -70,4 +74,6 @@ if (LLVM_TOOL_LLVM_DRIVER_BUILD)
   # it can't add_custom_command that happens after llvm-driver is built because
   # llvm-driver was not created in that directory.
   generate_driver_tool_targets()
+  # Minimal stub used as fallback when hard links to llvm.exe can't be created.
+  add_subdirectory(llvm-driver-stub)
 endif()
