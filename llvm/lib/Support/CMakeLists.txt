@@ -136,6 +136,7 @@ endif()
 
 add_subdirectory(BLAKE3)
 add_subdirectory(LSP)
+add_subdirectory(HTTP)
 
 add_llvm_component_library(LLVMSupport
   ABIBreak.cpp
