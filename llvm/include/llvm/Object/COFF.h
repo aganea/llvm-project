@@ -915,6 +915,8 @@ private:
   const coff_section *toSec(DataRefImpl Sec) const;
   const coff_relocation *toRel(DataRefImpl Rel) const;
 
+  bool Live = false;
+
   // Finish initializing the object and return success or an error.
   Error initialize();
 
@@ -928,9 +930,11 @@ private:
   Error initLoadConfigPtr();
   Error initDynamicRelocPtr(uint32_t SectionIndex, uint32_t SectionOffset);
 
+  uint32_t getSectionDataPtr(const coff_section *Sec) const;
+
 public:
   static Expected<std::unique_ptr<COFFObjectFile>>
-  create(MemoryBufferRef Object);
+  create(MemoryBufferRef Object, bool Live = false);
 
   uintptr_t getSymbolTable() const {
     if (SymbolTable16)

@@ -44,7 +44,8 @@ MemoryBufferRef Binary::getMemoryBufferRef() const { return Data; }
 
 Expected<std::unique_ptr<Binary>> object::createBinary(MemoryBufferRef Buffer,
                                                        LLVMContext *Context,
-                                                       bool InitContent) {
+                                                       bool InitContent,
+                                                       bool Live) {
   file_magic Type = identify_magic(Buffer.getBuffer());
 
   switch (Type) {
@@ -76,7 +77,8 @@ Expected<std::unique_ptr<Binary>> object::createBinary(MemoryBufferRef Buffer,
   case file_magic::xcoff_object_64:
   case file_magic::wasm_object:
   case file_magic::dxcontainer_object:
-    return ObjectFile::createSymbolicFile(Buffer, Type, Context, InitContent);
+    return ObjectFile::createSymbolicFile(Buffer, Type, Context, InitContent,
+                                          Live);
   case file_magic::macho_universal_binary:
     return MachOUniversalBinary::create(Buffer);
   case file_magic::windows_resource:

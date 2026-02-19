@@ -468,7 +468,7 @@ Error COFFObjectFile::getVaPtr(uint64_t Addr, uintptr_t &Res) const {
   return getRvaPtr((uint32_t)Rva, Res);
 }
 
-// Returns the file offset for the given RVA.
+// Returns the file or in-memory offset for the given RVA.
 Error COFFObjectFile::getRvaPtr(uint32_t Addr, uintptr_t &Res,
                                 const char *ErrorContext) const {
   for (const SectionRef &S : sections()) {
@@ -490,7 +490,7 @@ Error COFFObjectFile::getRvaPtr(uint32_t Addr, uintptr_t &Res,
         return make_error<SectionStrippedError>();
       }
       uint32_t Offset = Addr - SectionStart;
-      Res = reinterpret_cast<uintptr_t>(base()) + Section->PointerToRawData +
+      Res = reinterpret_cast<uintptr_t>(base()) + getSectionDataPtr(Section) +
             Offset;
       return Error::success();
     }
@@ -515,7 +515,7 @@ Error COFFObjectFile::getRvaAndSizeAsBytes(uint32_t RVA, uint32_t Size,
     if (SectionStart <= RVA && OffsetIntoSection < Section->VirtualSize &&
         Size <= Section->VirtualSize - OffsetIntoSection) {
       uintptr_t Begin = reinterpret_cast<uintptr_t>(base()) +
-                        Section->PointerToRawData + OffsetIntoSection;
+                        getSectionDataPtr(Section) + OffsetIntoSection;
       Contents =
           ArrayRef<uint8_t>(reinterpret_cast<const uint8_t *>(Begin), Size);
       return Error::success();
@@ -858,8 +858,9 @@ Error COFFObjectFile::initDynamicRelocPtr(uint32_t SectionIndex,
 }
 
 Expected<std::unique_ptr<COFFObjectFile>>
-COFFObjectFile::create(MemoryBufferRef Object) {
+COFFObjectFile::create(MemoryBufferRef Object, bool Live) {
   std::unique_ptr<COFFObjectFile> Obj(new COFFObjectFile(std::move(Object)));
+  Obj->Live = Live;
   if (Error E = Obj->initialize())
     return E;
   return std::move(Obj);
@@ -1295,17 +1296,23 @@ uint64_t COFFObjectFile::getSectionSize(const coff_section *Sec) const {
   return Sec->SizeOfRawData;
 }
 
+// We don't access directly these entries to account for whether we map a live
+// (active, reallocated) module in memory, or inert file-backed data.
+uint32_t COFFObjectFile::getSectionDataPtr(const coff_section *Sec) const {
+  return Live ? Sec->VirtualAddress : Sec->PointerToRawData;
+}
+
 Error COFFObjectFile::getSectionContents(const coff_section *Sec,
                                          ArrayRef<uint8_t> &Res) const {
   // In COFF, a virtual section won't have any in-file
   // content, so the file pointer to the content will be zero.
-  if (Sec->PointerToRawData == 0)
+  if (getSectionDataPtr(Sec) == 0)
     return Error::success();
   // The only thing that we need to verify is that the contents is contained
   // within the file bounds. We don't need to make sure it doesn't cover other
   // data, as there's nothing that says that is not allowed.
   uintptr_t ConStart =
-      reinterpret_cast<uintptr_t>(base()) + Sec->PointerToRawData;
+      reinterpret_cast<uintptr_t>(base()) + getSectionDataPtr(Sec);
   uint32_t SectionSize = getSectionSize(Sec);
   if (Error E = checkOffset(Data, ConStart, SectionSize))
     return E;
@@ -1893,8 +1900,8 @@ Error ImportedSymbolRef::getOrdinal(uint16_t &Result) const {
 }
 
 Expected<std::unique_ptr<COFFObjectFile>>
-ObjectFile::createCOFFObjectFile(MemoryBufferRef Object) {
-  return COFFObjectFile::create(Object);
+ObjectFile::createCOFFObjectFile(MemoryBufferRef Object, bool Live) {
+  return COFFObjectFile::create(Object, Live);
 }
 
 bool BaseRelocRef::operator==(const BaseRelocRef &Other) const {

@@ -193,9 +193,11 @@ DEFINE_ISA_CONVERSION_FUNCTIONS(Binary, LLVMBinaryRef)
 /// Create a Binary from Source, autodetecting the file type.
 ///
 /// @param Source The data to create the Binary from.
+/// @param Live Whether pointing to a live module in memory or to an inert
+/// file-backed buffer
 LLVM_ABI Expected<std::unique_ptr<Binary>>
 createBinary(MemoryBufferRef Source, LLVMContext *Context = nullptr,
-             bool InitContent = true);
+             bool InitContent = true, bool Live = false);
 
 template <typename T> class OwningBinary {
   std::unique_ptr<T> Bin;

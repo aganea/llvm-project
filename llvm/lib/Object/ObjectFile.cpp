@@ -148,7 +148,7 @@ Triple ObjectFile::makeTriple() const {
 
 Expected<std::unique_ptr<ObjectFile>>
 ObjectFile::createObjectFile(MemoryBufferRef Object, file_magic Type,
-                             bool InitContent) {
+                             bool InitContent, bool Live) {
   StringRef Data = Object.getBuffer();
   if (Type == file_magic::unknown)
     Type = identify_magic(Data);
@@ -194,7 +194,7 @@ ObjectFile::createObjectFile(MemoryBufferRef Object, file_magic Type,
   case file_magic::coff_object:
   case file_magic::coff_import_library:
   case file_magic::pecoff_executable:
-    return createCOFFObjectFile(Object);
+    return createCOFFObjectFile(Object, Live);
   case file_magic::xcoff_object_32:
     return createXCOFFObjectFile(Object, Binary::ID_XCOFF32);
   case file_magic::xcoff_object_64:

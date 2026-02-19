@@ -170,7 +170,8 @@ public:
   // construction aux.
   static Expected<std::unique_ptr<SymbolicFile>>
   createSymbolicFile(MemoryBufferRef Object, llvm::file_magic Type,
-                     LLVMContext *Context, bool InitContent = true);
+                     LLVMContext *Context, bool InitContent = true,
+                     bool Live = false);
 
   static Expected<std::unique_ptr<SymbolicFile>>
   createSymbolicFile(MemoryBufferRef Object) {

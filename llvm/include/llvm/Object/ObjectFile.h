@@ -373,7 +373,7 @@ public:
 
   static Expected<std::unique_ptr<ObjectFile>>
   createObjectFile(MemoryBufferRef Object, llvm::file_magic Type,
-                   bool InitContent = true);
+                   bool InitContent = true, bool Live = false);
   static Expected<std::unique_ptr<ObjectFile>>
   createObjectFile(MemoryBufferRef Object) {
     return createObjectFile(Object, llvm::file_magic::unknown);
@@ -384,7 +384,7 @@ public:
   }
 
   static Expected<std::unique_ptr<COFFObjectFile>>
-  createCOFFObjectFile(MemoryBufferRef Object);
+  createCOFFObjectFile(MemoryBufferRef Object, bool Live = false);
 
   static Expected<std::unique_ptr<ObjectFile>>
   createXCOFFObjectFile(MemoryBufferRef Object, unsigned FileType);
