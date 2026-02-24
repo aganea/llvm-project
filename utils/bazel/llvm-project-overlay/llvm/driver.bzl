@@ -159,7 +159,7 @@ def llvm_driver_cc_binary(
     """cc_binary wrapper for binaries using the llvm-driver template."""
     init_llvm_args = ""
     if needs_posix_utility_signal_handling:
-        init_llvm_args = ", /*InstallPipeSignalExitHandler=*/true, /*NeedsPOSIXUtilitySignalHandling=*/true"
+        init_llvm_args = "/*NeedsPOSIXUtilitySignalHandling=*/true"
 
     expand_template(
         name = "_gen_" + name,

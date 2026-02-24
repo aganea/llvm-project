@@ -1121,7 +1121,7 @@ macro(generate_llvm_objects name)
     # When Clang is invoked as an OS utility (e.g., c17), it needs to follow the POSIX specification
     # for how utilities respond to signals.
     if(${name} STREQUAL "clang")
-      set(INITLLVM_ARGS ", /*InstallPipeSignalExitHandler=*/true, /*NeedsPOSIXUtilitySignalHandling=*/true")
+      set(INITLLVM_ARGS "/*NeedsPOSIXUtilitySignalHandling=*/true")
     endif()
 
     foreach(path ${CMAKE_MODULE_PATH})

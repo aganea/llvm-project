@@ -110,7 +110,7 @@ struct ToolSymbolTable {
 
 // Implement a module-exported function meant to be retrieved dynamically when
 // loading the binary (DLL or EXE) in-process.
-#define LLVM_DRIVER_IMPL_MAIN(N, Fn)                                           \
+#define LLVM_DRIVER_IMPL_MAIN(N, Fn, PosixSignalHandling)                      \
   using namespace llvm;                                                        \
   int Fn(ArrayRef<const char *>, const ToolContext &);                         \
   /* In C:\Program Files\Microsoft Visual Studio\{vs_version}\{variant}\ */    \
@@ -122,9 +122,10 @@ struct ToolSymbolTable {
     *static_cast<ToolSymbolTable *>(Out) =                                     \
         LLVMDriverImplementTool(N, Fn, &mainCRTStartup);                       \
   }                                                                            \
-  int LLVMDriverCallMain(int, char **, StringRef, ToolMainFn MainFn);          \
+  int LLVMDriverCallMain(int, char **, StringRef, ToolMainFn MainFn,           \
+                         bool NeedsPOSIXUtilitySignalHandling);                \
   int main(int argc, char **argv) {                                            \
-    return LLVMDriverCallMain(argc, argv, N, Fn);                              \
+    return LLVMDriverCallMain(argc, argv, N, Fn, PosixSignalHandling);         \
   }
 } // namespace llvm
 

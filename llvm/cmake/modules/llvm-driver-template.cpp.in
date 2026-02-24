@@ -8,4 +8,4 @@
 
 #include "llvm/Support/LLVMDriver.h"
 
-LLVM_DRIVER_IMPL_MAIN("@TOOL_NAME@", @TOOL_NAME@_main)
+LLVM_DRIVER_IMPL_MAIN("@TOOL_NAME@", @TOOL_NAME@_main, @INITLLVM_ARGS@)
