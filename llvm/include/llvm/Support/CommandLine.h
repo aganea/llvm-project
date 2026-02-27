@@ -35,6 +35,7 @@
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
+#include <stack>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -176,6 +177,52 @@ enum MiscFlags {             // Miscellaneous flags to adjust argument
 };
 
 //===----------------------------------------------------------------------===//
+// Thread-local storage infrastructure for command line options
+//
+
+/// Interface class for option storage registration. Implementations of this
+/// class are used to register the size, alignment, and construction/destruction
+/// functions for option storage.
+class OptionStorageInfoI {
+public:
+  virtual ~OptionStorageInfoI() = default;
+
+  /// Returns the size in bytes needed to store this option's value.
+  virtual size_t getStorageSize() const = 0;
+
+  /// Returns the alignment requirement for this option's storage.
+  virtual size_t getStorageAlignment() const = 0;
+
+  /// Constructs the option value in-place at \p Ptr.
+  virtual void constructStorage(void *Ptr) const = 0;
+
+  /// Destructs the option value at \p Ptr.
+  virtual void destructStorage(void *Ptr) const = 0;
+
+  /// Copies the option value from \p Src to \p Dst.
+  virtual void copyStorage(const void *Src, void *Dst) const = 0;
+};
+
+/// Handle for accessing option storage. Contains an offset and pointer to the
+/// storage implementation info.
+struct OptionStorageHandle {
+  const size_t Offset;
+  OptionStorageInfoI *const Impl;
+};
+
+/// Registers the given option storage and returns a handle that can be used to
+/// access it. The offset in the handle is guaranteed to be unique among all
+/// registered options in the same CLI state.
+LLVM_ABI OptionStorageHandle
+registerOptionStorage(std::shared_ptr<OptionStorageInfoI> &&Opt);
+
+/// Returns a pointer to the storage for the option with the given offset in the
+/// storage of the current thread's CLI state.  The returned pointer is
+/// properly aligned for the option's type and points to initialized storage
+/// containing the option's value.
+LLVM_ABI void *getOptionStorage(size_t Offset, OptionStorageInfoI *Opt);
+
+//===----------------------------------------------------------------------===//
 //
 class OptionCategory {
 private:
@@ -225,6 +272,14 @@ public:
 
   LLVM_ABI void reset();
 
+  // Copy the contents (options, positional opts, etc.) from another SubCommand.
+  LLVM_ABI void copyContentsFrom(const SubCommand &Other);
+
+  bool hasOptions() const {
+    return (!OptionsMap.empty() || !PositionalOpts.empty() ||
+            nullptr != ConsumeAfterOpt);
+  }
+
   LLVM_ABI explicit operator bool() const;
 
   StringRef getName() const { return Name; }
@@ -265,7 +320,6 @@ class LLVM_ABI Option {
   // Out of line virtual function to provide home for the class.
   virtual void anchor();
 
-  uint16_t NumOccurrences; // The number of times specified
   // Occurrences, HiddenFlag, and Formatting are all enum types but to avoid
   // problems with signed enums in bitfields.
   uint16_t Occurrences : 3; // enum NumOccurrencesFlag
@@ -276,7 +330,6 @@ class LLVM_ABI Option {
   uint16_t Formatting : 2; // enum FormattingFlags
   uint16_t Misc : 5;
   uint16_t FullyInitialized : 1; // Has addArgument been called?
-  uint16_t Position;             // Position of last occurrence of the option
   uint16_t AdditionalVals;       // Greater than 0 for multi-valued option.
 
 public:
@@ -304,8 +357,13 @@ public:
   }
 
   inline unsigned getMiscFlags() const { return Misc; }
-  inline unsigned getPosition() const { return Position; }
   inline unsigned getNumAdditionalVals() const { return AdditionalVals; }
+
+  // Getters for CLI-state dependent properties of this option.  These
+  // properties are set by the command line parser when it parses an option, and
+  // they are stored in the CLI state of the current thread.
+  unsigned getPosition() const;
+  int getNumOccurrences() const;
 
   // Return true if the argstr != ""
   bool hasArgStr() const { return !ArgStr.empty(); }
@@ -328,16 +386,16 @@ public:
   void setHiddenFlag(enum OptionHidden Val) { HiddenFlag = Val; }
   void setFormattingFlag(enum FormattingFlags V) { Formatting = V; }
   void setMiscFlag(enum MiscFlags M) { Misc |= M; }
-  void setPosition(unsigned pos) { Position = pos; }
+  void setPosition(unsigned pos);
   void addCategory(OptionCategory &C);
   void addSubCommand(SubCommand &S) { Subs.insert(&S); }
 
 protected:
   explicit Option(enum NumOccurrencesFlag OccurrencesFlag,
                   enum OptionHidden Hidden)
-      : NumOccurrences(0), Occurrences(OccurrencesFlag), Value(0),
-        HiddenFlag(Hidden), Formatting(NormalFormatting), Misc(0),
-        FullyInitialized(false), Position(0), AdditionalVals(0) {
+      : Occurrences(OccurrencesFlag), Value(0), HiddenFlag(Hidden),
+        Formatting(NormalFormatting), Misc(0), FullyInitialized(false),
+        AdditionalVals(0) {
     Categories.push_back(&getGeneralCategory());
   }
 
@@ -397,7 +455,6 @@ public:
     return error(Message, StringRef(), Errs);
   }
 
-  inline int getNumOccurrences() const { return NumOccurrences; }
   void reset();
 };
 
@@ -1347,12 +1404,31 @@ template <class Opt, class Mod> void apply(Opt *O, const Mod &M) {
 }
 
 //===----------------------------------------------------------------------===//
+// Helper for registering option storage
+//
+template <class DataType> class OptionStorageInfo : public OptionStorageInfoI {
+public:
+  size_t getStorageSize() const override { return sizeof(DataType); }
+
+  size_t getStorageAlignment() const override { return alignof(DataType); }
+
+  void constructStorage(void *Ptr) const override { new (Ptr) DataType(); }
+
+  void destructStorage(void *Ptr) const override {
+    static_cast<DataType *>(Ptr)->~DataType();
+  }
+
+  void copyStorage(const void *Src, void *Dst) const override {
+    *static_cast<DataType *>(Dst) = *static_cast<const DataType *>(Src);
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Default storage class definition: external storage.  This implementation
 // assumes the user will specify a variable to store the data into with the
 // cl::location(x) modifier.
 //
-template <class DataType, bool ExternalStorage, bool isClass>
-class opt_storage {
+template <class DataType, bool ExternalStorage> class opt_storage {
   DataType *Location = nullptr; // Where to store the object...
   OptionValue<DataType> Default;
 
@@ -1394,54 +1470,38 @@ public:
   const OptionValue<DataType> &getDefault() const { return Default; }
 };
 
-// Define how to hold a class type object, such as a string.  Since we can
-// inherit from a class, we do so.  This makes us exactly compatible with the
-// object in all cases that it is used.
+// Define a partial specialization to handle objects not in external storage. In
+// this case, we use thread-local storage and overload operators to get at the
+// value.
 //
-template <class DataType>
-class opt_storage<DataType, false, true> : public DataType {
-public:
+template <class DataType> class opt_storage<DataType, false> {
+  const OptionStorageHandle Storage;
   OptionValue<DataType> Default;
 
+  DataType *getLocation() const {
+    return reinterpret_cast<DataType *>(
+        getOptionStorage(Storage.Offset, Storage.Impl));
+  }
+
+public:
+  opt_storage()
+      : Storage(registerOptionStorage(
+            std::make_shared<OptionStorageInfo<DataType>>())) {}
+
   template <class T> void setValue(const T &V, bool initial = false) {
-    DataType::operator=(V);
+    *getLocation() = V;
     if (initial)
       Default = V;
   }
 
-  DataType &getValue() { return *this; }
-  const DataType &getValue() const { return *this; }
-
-  const OptionValue<DataType> &getDefault() const { return Default; }
-};
-
-// Define a partial specialization to handle things we cannot inherit from.  In
-// this case, we store an instance through containment, and overload operators
-// to get at the value.
-//
-template <class DataType> class opt_storage<DataType, false, false> {
-public:
-  DataType Value;
-  OptionValue<DataType> Default;
-
-  // Make sure we initialize the value with the default constructor for the
-  // type.
-  opt_storage() : Value(DataType()), Default() {}
-
-  template <class T> void setValue(const T &V, bool initial = false) {
-    Value = V;
-    if (initial)
-      Default = V;
-  }
-  DataType &getValue() { return Value; }
-  DataType getValue() const { return Value; }
+  DataType &getValue() const { return *getLocation(); }
 
   const OptionValue<DataType> &getDefault() const { return Default; }
 
-  operator DataType() const { return getValue(); }
+  operator DataType &() const { return getValue(); }
 
-  // If the datatype is a pointer, support -> on it.
-  DataType operator->() const { return Value; }
+  DataType *operator->() const { return getLocation(); }
+  DataType &operator*() const { return getValue(); }
 };
 
 //===----------------------------------------------------------------------===//
@@ -1449,9 +1509,7 @@ public:
 //
 template <class DataType, bool ExternalStorage = false,
           class ParserClass = parser<DataType>>
-class opt
-    : public Option,
-      public opt_storage<DataType, ExternalStorage, std::is_class_v<DataType>> {
+class opt : public Option, public opt_storage<DataType, ExternalStorage> {
   ParserClass Parser;
 
   bool handleOccurrence(unsigned pos, StringRef ArgName,
@@ -1608,74 +1666,83 @@ public:
 // FIXME: Reduce this API to a more narrow subset of std::vector
 //
 template <class DataType> class list_storage<DataType, bool> {
-  std::vector<DataType> Storage;
+  const OptionStorageHandle Storage;
   std::vector<OptionValue<DataType>> Default;
   bool DefaultAssigned = false;
 
+  std::vector<DataType> *getLocation() const {
+    return reinterpret_cast<std::vector<DataType> *>(
+        getOptionStorage(Storage.Offset, Storage.Impl));
+  }
+
 public:
+  list_storage()
+      : Storage(registerOptionStorage(
+            std::make_shared<OptionStorageInfo<std::vector<DataType>>>())) {}
+
   using iterator = typename std::vector<DataType>::iterator;
 
-  iterator begin() { return Storage.begin(); }
-  iterator end() { return Storage.end(); }
+  iterator begin() { return getLocation()->begin(); }
+  iterator end() { return getLocation()->end(); }
 
   using const_iterator = typename std::vector<DataType>::const_iterator;
 
-  const_iterator begin() const { return Storage.begin(); }
-  const_iterator end() const { return Storage.end(); }
+  const_iterator begin() const { return getLocation()->begin(); }
+  const_iterator end() const { return getLocation()->end(); }
 
   using size_type = typename std::vector<DataType>::size_type;
 
-  size_type size() const { return Storage.size(); }
+  size_type size() const { return getLocation()->size(); }
 
-  bool empty() const { return Storage.empty(); }
+  bool empty() const { return getLocation()->empty(); }
 
-  void push_back(const DataType &value) { Storage.push_back(value); }
-  void push_back(DataType &&value) { Storage.push_back(value); }
+  void push_back(const DataType &value) { getLocation()->push_back(value); }
+  void push_back(DataType &&value) { getLocation()->push_back(value); }
 
   using reference = typename std::vector<DataType>::reference;
   using const_reference = typename std::vector<DataType>::const_reference;
 
-  reference operator[](size_type pos) { return Storage[pos]; }
-  const_reference operator[](size_type pos) const { return Storage[pos]; }
-
-  void clear() {
-    Storage.clear();
+  reference operator[](size_type pos) { return (*getLocation())[pos]; }
+  const_reference operator[](size_type pos) const {
+    return (*getLocation())[pos];
   }
 
-  iterator erase(const_iterator pos) { return Storage.erase(pos); }
+  void clear() { getLocation()->clear(); }
+
+  iterator erase(const_iterator pos) { return getLocation()->erase(pos); }
   iterator erase(const_iterator first, const_iterator last) {
-    return Storage.erase(first, last);
+    return getLocation()->erase(first, last);
   }
 
-  iterator erase(iterator pos) { return Storage.erase(pos); }
+  iterator erase(iterator pos) { return getLocation()->erase(pos); }
   iterator erase(iterator first, iterator last) {
-    return Storage.erase(first, last);
+    return getLocation()->erase(first, last);
   }
 
   iterator insert(const_iterator pos, const DataType &value) {
-    return Storage.insert(pos, value);
+    return getLocation()->insert(pos, value);
   }
   iterator insert(const_iterator pos, DataType &&value) {
-    return Storage.insert(pos, value);
+    return getLocation()->insert(pos, value);
   }
 
   iterator insert(iterator pos, const DataType &value) {
-    return Storage.insert(pos, value);
+    return getLocation()->insert(pos, value);
   }
   iterator insert(iterator pos, DataType &&value) {
-    return Storage.insert(pos, value);
+    return getLocation()->insert(pos, value);
   }
 
-  reference front() { return Storage.front(); }
-  const_reference front() const { return Storage.front(); }
+  reference front() { return getLocation()->front(); }
+  const_reference front() const { return getLocation()->front(); }
 
-  operator std::vector<DataType> &() { return Storage; }
-  operator ArrayRef<DataType>() const { return Storage; }
-  std::vector<DataType> *operator&() { return &Storage; }
-  const std::vector<DataType> *operator&() const { return &Storage; }
+  operator std::vector<DataType> &() { return *getLocation(); }
+  operator ArrayRef<DataType>() const { return *getLocation(); }
+  std::vector<DataType> *operator&() { return getLocation(); }
+  const std::vector<DataType> *operator&() const { return getLocation(); }
 
   template <class T> void addValue(const T &V, bool initial = false) {
-    Storage.push_back(V);
+    getLocation()->push_back(V);
     if (initial)
       Default.push_back(OptionValue<DataType>(V));
   }
@@ -1851,7 +1918,12 @@ public:
 // This makes us exactly compatible with the bits in all cases that it is used.
 //
 template <class DataType> class bits_storage<DataType, bool> {
-  unsigned Bits{0}; // Where to store the bits...
+  const OptionStorageHandle Storage;
+
+  unsigned *getLocation() const {
+    return reinterpret_cast<unsigned *>(
+        getOptionStorage(Storage.Offset, Storage.Impl));
+  }
 
   template <class T> static unsigned Bit(const T &V) {
     unsigned BitPos = static_cast<unsigned>(V);
@@ -1861,13 +1933,19 @@ template <class DataType> class bits_storage<DataType, bool> {
   }
 
 public:
-  template <class T> void addValue(const T &V) { Bits |= Bit(V); }
+  bits_storage()
+      : Storage(registerOptionStorage(
+            std::make_shared<OptionStorageInfo<unsigned>>())) {}
 
-  unsigned getBits() { return Bits; }
+  template <class T> void addValue(const T &V) { *getLocation() |= Bit(V); }
 
-  void clear() { Bits = 0; }
+  unsigned getBits() { return *getLocation(); }
 
-  template <class T> bool isSet(const T &V) { return (Bits & Bit(V)) != 0; }
+  void clear() { *getLocation() = 0; }
+
+  template <class T> bool isSet(const T &V) {
+    return (*getLocation() & Bit(V)) != 0;
+  }
 };
 
 //===----------------------------------------------------------------------===//
@@ -2333,6 +2411,51 @@ LLVM_ABI void ResetCommandLineParser();
 
 /// Parses `Arg` into the option handler `Handler`.
 LLVM_ABI bool ProvidePositionalOption(Option *Handler, StringRef Arg, int i);
+
+/// Configuration for creating a new thread-local parser state.
+struct ThreadLocalStateConfig {
+  enum class SourceState {
+    Fresh,       ///< Create a completely new state
+    MainState,   ///< Copy state structure from the main shared state
+    TopOfStack,  ///< Copy state structure from top of thread-local stack
+    CurrentState ///< Copy state structure from current state
+  };
+
+  SourceState Source = SourceState::MainState;
+  bool CopyStorageValues =
+      false; ///< If true, copy option values from source storage
+};
+
+/// Push a new CLI state onto the thread-local stack.
+/// By default, copies structure from main state with fresh values.
+LLVM_ABI void PushCLIState(const ThreadLocalStateConfig &Config = {});
+
+/// Push an existing CLI state onto the thread-local stack, using the provided
+/// token to identify it.
+LLVM_ABI void PushCLIState(std::shared_ptr<void> &&Token);
+
+/// Get the token for the current CLI state, which can be used to push the same
+/// state onto another thread's stack.
+/// Returns nullptr if the current state is the main shared state, which cannot
+/// be pushed onto another thread's stack but will be at the bottom of every
+/// thread's stack.
+LLVM_ABI std::shared_ptr<void> GetCurrentCLIStateToken();
+
+/// Pop the current CLI state from the thread-local stack.
+LLVM_ABI void PopCLIState();
+
+/// RAII guard for thread-local CLI state.
+/// Automatically pushes a new state on construction and pops it on destruction.
+struct ThreadLocalParserStateGuard {
+  ThreadLocalParserStateGuard(const ThreadLocalStateConfig &Config = {})
+      : Config(Config) {
+    PushCLIState(Config);
+  }
+  ~ThreadLocalParserStateGuard() { PopCLIState(); }
+
+private:
+  ThreadLocalStateConfig Config;
+};
 
 } // end namespace cl
 
