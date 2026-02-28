@@ -16,4 +16,5 @@
 /// The indirection to tblgen_main exists to ensure that the static variables
 /// for the llvm::cl:: mechanism are linked into both executables.
 
-LLVM_DRIVER_IMPL_MAIN("llvm-tblgen", tblgen_main)
+LLVM_DRIVER_IMPL_MAIN("llvm-tblgen", tblgen_main,
+                      /*NeedsPOSIXUtilitySignalHandling=*/false)

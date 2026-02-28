@@ -6,9 +6,9 @@ template("driver_executable") {
   tool_name = string_replace(target_name, "-", "_")
   if (defined(invoker.needs_posix_utility_signal_handling) &&
       invoker.needs_posix_utility_signal_handling) {
-    initllvm_args = ", /*InstallPipeSignalExitHandler=*/true, /*NeedsPOSIXUtilitySignalHandling=*/true"
+    initllvm_args = "/*NeedsPOSIXUtilitySignalHandling=*/true"
   } else {
-    initllvm_args = ""
+    initllvm_args = "/*NeedsPOSIXUtilitySignalHandling=*/false"
   }
 
   write_cmake_config("${tool_name}-driver") {

@@ -298,9 +298,10 @@ int LLVMDriverMain(int Argc, char **Argv, ArrayRef<CallableTool> Tools) {
 ///
 /// Registers the tool under both its canonical name (e.g. "lld") and the
 /// binary name from argv[0] (e.g. "lld-link"), then dispatches.
-int LLVMDriverCallMain(int Argc, char **Argv, StringRef Name,
-                       ToolMainFn MainFn) {
-  InitLLVM X(Argc, Argv);
+int LLVMDriverCallMain(int Argc, char **Argv, StringRef Name, ToolMainFn MainFn,
+                       bool NeedsPOSIXUtilitySignalHandling) {
+  InitLLVM X(Argc, Argv, /*InstallPipeSignalExitHandler=*/true,
+             NeedsPOSIXUtilitySignalHandling);
   StringRef ThisTool = sys::path::stem(X.getArgs()[0]);
 
   const CallableTool Tools[] = {
