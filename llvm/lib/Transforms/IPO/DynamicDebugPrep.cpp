@@ -29,6 +29,7 @@
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/raw_ostream.h"
@@ -38,10 +39,24 @@ using namespace llvm;
 
 #define DEBUG_TYPE "dynamic-debug-prep"
 
+static cl::list<std::string> ExternKeepFunctions(
+    "dynamic-debug-extern-keep", cl::Hidden,
+    cl::desc("Functions to keep (not externalize) in DynamicDebugExternPass. "
+             "Matched as substring against the IR function name."));
+
+static cl::opt<std::string> ExternTUHash(
+    "dynamic-debug-extern-hash", cl::Hidden,
+    cl::desc("Override TU hash for DynamicDebugExternPass (extracted from the "
+             "optimized binary's PDB). When set, the extern pass uses this "
+             "hash instead of recomputing it."));
+
 static std::string computeTUHash(const Module &M) {
+  // Hash only the source filename so the TU hash is stable across
+  // different compilation modes (build-time -O3 vs recompile-time -O0).
+  // getModuleIdentifier() can differ (e.g. different -o paths), so we
+  // exclude it.
   MD5 Hash;
   Hash.update(M.getSourceFileName());
-  Hash.update(M.getModuleIdentifier());
   MD5::MD5Result Result;
   Hash.final(Result);
   SmallString<16> Str;
@@ -110,7 +125,8 @@ PreservedAnalyses DynamicDebugPrepPass::run(Module &M,
 
 PreservedAnalyses DynamicDebugExternPass::run(Module &M,
                                               ModuleAnalysisManager &) {
-  std::string TUHash = computeTUHash(M);
+  std::string TUHash =
+      ExternTUHash.empty() ? computeTUHash(M) : ExternTUHash.getValue();
   bool Changed = false;
 
   // Externalize internal-linkage globals: rename to the promoted name,
@@ -134,6 +150,14 @@ PreservedAnalyses DynamicDebugExternPass::run(Module &M,
     Changed = true;
   }
 
+  // Build a set of function names to keep (not externalize).
+  auto shouldKeep = [](StringRef Name) {
+    for (const auto &Keep : ExternKeepFunctions)
+      if (Name.contains(Keep))
+        return true;
+    return false;
+  };
+
   // Externalize internal-linkage functions: rename to the promoted name,
   // delete the body, set external linkage.  Calls from unoptimized code
   // will go through the PDB-resolved address (which points into the
@@ -141,6 +165,12 @@ PreservedAnalyses DynamicDebugExternPass::run(Module &M,
   for (Function &F : make_early_inc_range(M)) {
     if (F.isDeclaration() || !F.hasLocalLinkage() || F.isIntrinsic())
       continue;
+
+    if (shouldKeep(F.getName())) {
+      LLVM_DEBUG(dbgs() << "DynamicDebugExtern: keeping function "
+                        << F.getName() << "\n");
+      continue;
+    }
 
     std::string NewName = (F.getName() + ".dyndbg." + TUHash).str();
     LLVM_DEBUG(dbgs() << "DynamicDebugExtern: externalized function "
