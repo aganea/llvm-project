@@ -155,6 +155,15 @@ VALUE_CODEGENOPT(PatchableFunctionEntryOffset , 32, 0, Benign)
 CODEGENOPT(HotPatch, 1, 0, Benign) ///< Supports the Microsoft /HOTPATCH flag and
                                    ///< generates a 'patchable-function' attribute.
 
+CODEGENOPT(DynamicDebugPrep, 1, 0, Benign) ///< Prepare for dynamic debugging:
+                                            ///< promotes internal-linkage symbols,
+                                            ///< enables hotpatch padding.
+
+CODEGENOPT(DynamicDebugExtern, 1, 0, Benign) ///< Recompile-time: rename
+                                              ///< internal-linkage symbols to
+                                              ///< promoted .dyndbg names and
+                                              ///< make them extern declarations.
+
 CODEGENOPT(TlsGuards , 1, 1, Benign) ///< Controls emission of tls guards via -fms-tls-guards
 CODEGENOPT(JMCInstrument, 1, 0, Benign) ///< Set when -fjmc is enabled.
 CODEGENOPT(InstrumentForProfiling , 1, 0, Benign) ///< Set when -pg is enabled.

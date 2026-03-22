@@ -61,6 +61,7 @@
 #include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/HipStdPar/HipStdPar.h"
+#include "llvm/Transforms/IPO/DynamicDebugPrep.h"
 #include "llvm/Transforms/IPO/EmbedBitcodePass.h"
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
 #include "llvm/Transforms/IPO/LowerTypeTests.h"
@@ -1084,6 +1085,21 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
               // has a non-trivial effect on generated IR size (attributes).
               MPM.addPass(InferFunctionAttrsPass());
             }
+          });
+    }
+
+    if (CodeGenOpts.DynamicDebugPrep) {
+      PB.registerPipelineStartEPCallback(
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
+            if (Level != OptimizationLevel::O0)
+              MPM.addPass(DynamicDebugPrepPass());
+          });
+    }
+
+    if (CodeGenOpts.DynamicDebugExtern) {
+      PB.registerPipelineStartEPCallback(
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
+            MPM.addPass(DynamicDebugExternPass());
           });
     }
 

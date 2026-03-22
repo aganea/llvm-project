@@ -76,6 +76,8 @@ MODULE_PASS("declare-runtime-libcalls", DeclareRuntimeLibcallsPass())
 MODULE_PASS("dfsan", DataFlowSanitizerPass())
 MODULE_PASS("dot-callgraph", CallGraphDOTPrinterPass())
 MODULE_PASS("dxil-upgrade", DXILUpgradePass())
+MODULE_PASS("dynamic-debug-prep", DynamicDebugPrepPass())
+MODULE_PASS("dynamic-debug-extern", DynamicDebugExternPass())
 MODULE_PASS("elim-avail-extern", EliminateAvailableExternallyPass())
 MODULE_PASS("extract-blocks", BlockExtractorPass({}, false))
 MODULE_PASS("expand-variadics",

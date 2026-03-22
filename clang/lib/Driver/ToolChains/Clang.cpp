@@ -6877,6 +6877,30 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fms_hotpatch);
 
+  // /dynamicdeopt[:hybrid|:aot] enables dynamic debug preparation:
+  // symbol promotion + hotpatch padding.  Translated to cc1-only
+  // -fdynamic-debug-prep.
+  if (auto *A = Args.getLastArg(options::OPT__SLASH_dynamicdeopt,
+                                options::OPT__SLASH_dynamicdeopt_mode)) {
+    StringRef Val;
+    if (A->getOption().getID() == options::OPT__SLASH_dynamicdeopt_mode)
+      Val = A->getValue();
+    if (Val.empty() || Val == "hybrid") {
+      CmdArgs.push_back("-fdynamic-debug-prep");
+      if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
+        CmdArgs.push_back("-fms-hotpatch");
+    } else if (Val == "aot") {
+      D.Diag(diag::warn_drv_unused_argument)
+          << "/dynamicdeopt:aot (not yet implemented; falling back to :hybrid)";
+      CmdArgs.push_back("-fdynamic-debug-prep");
+      if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
+        CmdArgs.push_back("-fms-hotpatch");
+    } else {
+      D.Diag(diag::err_drv_unsupported_option_argument)
+          << A->getSpelling() << Val;
+    }
+  }
+
   if (Args.hasArg(options::OPT_fms_secure_hotpatch_functions_file))
     Args.AddLastArg(CmdArgs, options::OPT_fms_secure_hotpatch_functions_file);
 

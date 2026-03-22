@@ -4209,6 +4209,17 @@ def fms_hotpatch : Flag<["-"], "fms-hotpatch">, Group<f_Group>,
   HelpText<"Ensure that all functions can be hotpatched at runtime">,
   MarshallingInfoFlag<CodeGenOpts<"HotPatch">>;
 
+def fdynamic_debug_prep : Flag<["-"], "fdynamic-debug-prep">, Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"Prepare for dynamic debugging: promote internal-linkage symbols "
+           "and enable hotpatch padding">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugPrep">>;
+def fdynamic_debug_extern : Flag<["-"], "fdynamic-debug-extern">, Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"Recompile-time: externalize internal-linkage symbols using "
+           "promoted .dyndbg names">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugExtern">>;
+
 // See llvm/lib/CodeGen/WindowsSecureHotPatching.cpp
 def fms_secure_hotpatch_functions_file
     : Joined<["-"], "fms-secure-hotpatch-functions-file=">,
@@ -9410,6 +9421,12 @@ def _SLASH_help : CLFlag<"help", [CLOption, DXCOption]>, Alias<help>,
 def _SLASH_HELP : CLFlag<"HELP">, Alias<help>;
 def _SLASH_hotpatch : CLFlag<"hotpatch">, Alias<fms_hotpatch>,
   HelpText<"Create hotpatchable image">;
+def _SLASH_dynamicdeopt_mode
+    : CLJoined<"dynamicdeopt:">,
+      HelpText<"Enable dynamic deoptimization (hybrid, aot)">;
+def _SLASH_dynamicdeopt
+    : CLFlag<"dynamicdeopt">,
+      HelpText<"Enable dynamic deoptimization (same as /dynamicdeopt:hybrid)">;
 def _SLASH_I : CLJoinedOrSeparate<"I", [CLOption, DXCOption]>,
   HelpText<"Add directory to include search path">, MetaVarName<"<dir>">,
   Alias<I>;
@@ -9808,7 +9825,6 @@ def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_d1 : CLJoined<"d1">;
 def _SLASH_d2 : CLJoined<"d2">;
 def _SLASH_doc : CLJoined<"doc">;
-def _SLASH_dynamicdeopt : CLJoined<"dynamicdeopt">;
 def _SLASH_experimental : CLJoined<"experimental:">;
 def _SLASH_exportHeader : CLFlag<"exportHeader">;
 def _SLASH_external : CLJoined<"external:">;

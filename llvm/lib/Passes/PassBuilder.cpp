@@ -215,6 +215,7 @@
 #include "llvm/Transforms/IPO/ConstantMerge.h"
 #include "llvm/Transforms/IPO/CrossDSOCFI.h"
 #include "llvm/Transforms/IPO/DeadArgumentElimination.h"
+#include "llvm/Transforms/IPO/DynamicDebugPrep.h"
 #include "llvm/Transforms/IPO/ElimAvailExtern.h"
 #include "llvm/Transforms/IPO/EmbedBitcodePass.h"
 #include "llvm/Transforms/IPO/ExpandVariadics.h"
