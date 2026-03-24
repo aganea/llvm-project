@@ -1,13 +1,13 @@
 ---
 name: Dynamic Debugging COFF Analysis
-overview: Comprehensive analysis of approaches to debugging optimized C++ code on COFF/CodeView (Windows), comparing the LLVM RFC, Microsoft's /dynamicdeopt, Live++, and proposed alternatives. Defines a unified framework with /dynamicdeopt:{aot,hybrid} supporting both ahead-of-time (MSVC-compatible .alt.obj output) and on-demand (bitcode or source-based) deoptimization modes, sharing common build-time preparation and debug-time infrastructure.
+overview: Comprehensive analysis of approaches to debugging optimized C++ code on COFF/CodeView (Windows), comparing the LLVM RFC, Microsoft's /dynamicdeopt, Live++, and proposed alternatives. Defines a unified framework with /dynamicdeopt:{dynamic,hybrid,aot} (PoC) supporting ahead-of-time (MSVC-style), hybrid bitcode storage, and source-only prep; sharing common build-time preparation where implemented.
 todos:
   - id: add-dynamic-debug-prep-flag
     content: "Add -fdynamic-debug-prep Clang flag: enables hotpatch padding on all functions and prevents ABI-changing IPO"
-    status: pending
+    status: completed
   - id: preserve-symbols
     content: "Symbol preservation: promote internal-linkage functions to external with TU-unique suffix aliases; prevent dead function elimination; keep out-of-line definitions for functions that would be fully inlined"
-    status: pending
+    status: in_progress
   - id: prevent-abi-changing-ipo
     content: Add preserve-abi function attribute; disable function specialization, argument promotion, dead argument elimination for marked functions in GlobalOpt, FunctionSpecialization, etc.
     status: pending
@@ -24,14 +24,14 @@ todos:
     content: "Implement Mechanism 2 in LLDB: runtime step-into interception that swaps optimized callee with unoptimized version, with on-demand deopt or fall-through options"
     status: pending
   - id: bc-file-output
-    content: Add -fdynamic-debug-prep-bc flag to write compressed unoptimized bitcode to separate .dyndbg.bc file alongside .obj; implement parallel zstd compression during -O3 pipeline
-    status: pending
+    content: "PoC: -fdynamic-debug-bitcode embeds zstd-compressed pre-opt IR in .dyndbg (or -fdynamic-debug-bitcode-sidecar); sequential compression in Clang"
+    status: completed
   - id: lld-link-integration
     content: Ensure lld-link auto-enables /functionpadmin for -fdynamic-debug-prep objects; preserve promoted symbol aliases; disable or restrict /OPT:ICF for preserve-abi functions; (future) collect .llvmbc into archive
-    status: pending
+    status: in_progress
   - id: version-metadata
     content: Embed build-compatibility hash in both .dyndbg.bc header and PDB (S_ENVBLOCK or custom record) so the debugger can verify bitcode matches the optimized binary
-    status: pending
+    status: in_progress
   - id: inlined-breakpoints
     content: Build inliners map from PDB S_INLINESITE records; when setting breakpoint on an inlined function, deoptimize all parent functions that inline it; support scoping to specific callers
     status: pending
@@ -43,10 +43,10 @@ todos:
     status: pending
   - id: demo-binary
     content: "Create end-to-end demo: multi-TU C++ program with static functions, inline functions, and globals; build with -fdynamic-debug-prep; debug in LLDB showcasing on-demand deopt"
-    status: pending
+    status: completed
   - id: tier2-bitcode-embed
     content: (Tier 2) Implement per-function lazy extraction + -O0 codegen in LLDB using ExtractGVPass + FastISel; cache lazy-loaded Modules for sub-100ms repeat extractions from unity TUs
-    status: pending
+    status: in_progress
   - id: aot-pipeline-fork
     content: "AOT mode: implement CloneModule after frontend CodeGen + background thread -O0 codegen (FastISel + trivial RegAlloc); produce .alt.obj alongside .obj"
     status: pending
@@ -63,12 +63,41 @@ todos:
     content: "AOT storage option /dynamicdeopt-storage:archive: lld-link collects .alt.obj or .dyndbg sections into single .dyndbg.bca sidecar archive with per-module index"
     status: pending
   - id: unified-flag-design
-    content: Implement /dynamicdeopt:{aot,hybrid} flag in Clang driver and -fdynamic-deopt={aot,hybrid} GCC-style flag; /dynamicdeopt-storage:{separate,embed,archive} for AOT storage selection
-    status: pending
+    content: "PoC: clang-cl /dynamicdeopt:{dynamic,hybrid,aot}; cc1 -fdynamic-debug-bitcode*; GCC-style -fdynamic-deopt= and /dynamicdeopt-storage:* not done"
+    status: in_progress
 isProject: false
 ---
 
 # Dynamic Debugging for Optimized C++ on COFF/CodeView: Analysis and Implementation Plan
+
+## PoC branch status (LLVM tree)
+
+This section records what the **experimental PoC branch** implements today versus this document. Strikethrough (**~~done~~**) marks items that are **substantially** landed in code; partial work is called out explicitly.
+
+### `llvm-dyndbg --function` vs “only patch one function”
+
+**Today:** `--function NAME` only adds `-mllvm -dynamic-debug-extern-keep=NAME` for the `-O0` replay compile. That **preserves full IR bodies** for **internal-linkage** functions whose mangled/IR name **contains** `NAME`. The translation unit is still compiled **in full**: every **external/COMDAT** function in the TU still emits a **complete** `-O0` definition into `*.dyndbg.obj`. So you do **not** get “strip all symbols except `DiagnoseUseOfDecl`.”
+
+**Target (per this document):** To load and patch **only one** function in memory, you need **Tier 2–style per-function extraction** (see [Two Tiers of Implementation](#two-tiers-of-implementation)): lazy bitcode, materialize one function, `GlobalDCE`, codegen — or **Option C**-style compiler support to emit **only** selected definitions with everything else `extern`. Neither is wired to `--function` yet.
+
+**Option B** (recommended Tier 1 in the doc) explicitly allows a **fat** `-O0` object and relies on the **debugger loader** binding symbols to PDB addresses; it does **not** require a single-function object.
+
+### Implemented in PoC (high level)
+
+| Area | What landed |
+|------|-------------|
+| Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dynamicdeopt*` (clang-cl); `MSVC.cpp` treats `/dynamicdeopt*` like hotpatch for `/functionpadmin` |
+| Recompile-time | ~~`-fdynamic-debug-extern`~~, `DynamicDebugExternPass` (externalize locals; ~~GlobalAlias fix~~; PCH strip in tool for `-O0` replay) |
+| Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + size + flag); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
+| Driver | ~~`/dynamicdeopt`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ warns; help lists modes |
+| Tooling | ~~`llvm-dyndbg`~~: PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~ |
+| Demo | ~~`demo/dynamic-debugging/`~~ CMake + sources (math_utils / static / inline) |
+
+### Not implemented (still per this doc)
+
+LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception, thread-safe patching, `preserve-abi` IPO guards, `__ref_*` globals path, AOT `.alt.obj` / lld dual-link, per-function bitcode extract in the debugger, `/dynamicdeopt-storage:*`, parallel PCH-safe single-function compile flags.
+
+---
 
 ## Problem Statement
 
@@ -811,11 +840,12 @@ Our on-demand approach avoids this entirely by not generating unoptimized machin
 
 Expose the feature under a single flag with mode selection:
 
-- `**/dynamicdeopt:aot`** -- Ahead-of-time: CloneModule + background -O0 codegen at build time. Default storage: separate `.alt.obj` / `.alt.pdb` (MSVC-compatible, works with Visual Studio debugger). Alternative storage selectable via `/dynamicdeopt-storage:{embed,archive}`.
-- `**/dynamicdeopt:hybrid`** -- On-demand: store bitcode (Tier 2) or just command-line info (Tier 1) at build time; codegen at debug time. Default: Tier 2 (bitcode) if bitcode embedding is enabled, otherwise Tier 1 (source-based).
-- `**/dynamicdeopt`** (no mode) -- Alias for `/dynamicdeopt:hybrid` (the default, lowest build-time cost).
+- `**/dynamicdeopt:aot`** -- Ahead-of-time: CloneModule + background -O0 codegen at build time. Default storage: separate `.alt.obj` / `.alt.pdb` (MSVC-compatible, works with Visual Studio debugger). Alternative storage selectable via `/dynamicdeopt-storage:{embed,archive}`. **PoC:** accepted with warning; falls back to hybrid behavior.
+- `**/dynamicdeopt:hybrid`** -- On-demand: store compressed pre-opt bitcode in `.dyndbg` (PoC) at build time; codegen at debug time from source or (future) from extracted bitcode.
+- `**/dynamicdeopt:dynamic`** -- **PoC:** prep + hotpatch only; no embedded bitcode (Tier 1 storage: LF_BUILDINFO only).
+- `**/dynamicdeopt`** (no mode) -- Alias for `/dynamicdeopt:hybrid` (PoC).
 
-For Clang's GCC-style flags: `-fdynamic-deopt={aot,hybrid}`, `-fdynamic-deopt-storage={separate,embed,archive}`.
+For Clang's GCC-style flags: `-fdynamic-deopt={aot,hybrid}`, `-fdynamic-deopt-storage={separate,embed,archive}` — **not** in PoC; cc1 uses `-fdynamic-debug-prep`, `-fdynamic-debug-bitcode`, etc.
 
 All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion, ABI stability, hotpatch padding). This is the **common groundwork** that benefits the entire LLVM project regardless of which deoptimization strategy a user or platform prefers.
 
@@ -823,9 +853,9 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 
 **Phase 1: Common groundwork** (all modes depend on this):
 
-1. Symbol promotion and alias creation for internal-linkage functions
-2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion)
-3. Auto-enabling hotpatch padding when `/dynamicdeopt` is specified
+1. ~~Symbol promotion and alias creation for internal-linkage functions~~ — **PoC:** `DynamicDebugPrepPass` (aliases + `@llvm.used`). *Still missing:* full “keep out-of-line if inlined everywhere” story.
+2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) — **not in PoC**
+3. ~~Auto-enabling hotpatch padding when `/dynamicdeopt` is specified~~ — **PoC:** driver + `MSVC.cpp` `/functionpadmin` coupling for `/dynamicdeopt*`
 
 **Phase 2: AOT mode** (fastest path to a testable end-to-end demo, VS-compatible):
 
@@ -842,8 +872,8 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 
 **Phase 4: Hybrid Tier 2** (bitcode-based on-demand, per-function extraction):
 
-1. Build-time: serialize + compress unoptimized bitcode in background, write `.dyndbg.bc`
-2. Debug-time: lazy bitcode loading, per-function extraction via `ExtractGVPass`, -O0 codegen via FastISel, Module caching
+1. ~~Build-time: serialize + compress unoptimized bitcode~~ — **PoC:** sequential clone + zstd + embed in `.dyndbg` or sidecar (`llvm-dyndbg --extract-bc`). *Not:* background thread / parallel compression.
+2. Debug-time: lazy bitcode loading, per-function extraction via `ExtractGVPass`, -O0 codegen via FastISel, Module caching — **not in PoC** (no LLDB path; `--function` does not trim codegen)
 
 **Phase 5: Alternative AOT storage** (embed, archive):
 
@@ -915,15 +945,14 @@ int main() {
 ### Build Steps
 
 ```bash
-# 1. Build with -fdynamic-debug-prep (enables hotpatch + symbol preservation + bitcode emission)
-clang-cl /O2 /Z7 -fdynamic-debug-prep -fdynamic-debug-prep-bc -c math_utils.cpp -o math_utils.obj
-clang-cl /O2 /Z7 -fdynamic-debug-prep -fdynamic-debug-prep-bc -c main.cpp -o main.obj
+# 1. Build with /dynamicdeopt:hybrid (prep + hotpatch + embedded hybrid bitcode) or :dynamic (prep only)
+clang-cl /O2 /Z7 /dynamicdeopt:hybrid -c math_utils.cpp -o math_utils.obj
+clang-cl /O2 /Z7 /dynamicdeopt:hybrid -c main.cpp -o main.obj
 
 # Produces:
-#   math_utils.obj          -- optimized object with hotpatch padding, promoted symbols
-#   math_utils.dyndbg.bc    -- zstd-compressed unoptimized LLVM bitcode
-#   main.obj                -- optimized object
-#   main.dyndbg.bc          -- zstd-compressed unoptimized LLVM bitcode
+#   math_utils.obj          -- optimized object; .dyndbg section with compressed pre-opt bitcode
+#   main.obj                -- same (hybrid mode)
+# Optional: -fdynamic-debug-bitcode-sidecar on cc1 for stem.dyndbg.bc instead of embed
 
 # 2. Link with hotpatch padding and full debug info
 lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
@@ -933,9 +962,9 @@ lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
 #   demo.pdb    -- PDB with LF_BUILDINFO per TU, promoted symbol addresses
 
 # 3. Verify the build artifacts
-llvm-readobj --sections math_utils.obj    # should show hotpatch padding
+llvm-readobj --sections math_utils.obj    # should show .dyndbg (hybrid) and hotpatch padding
 llvm-pdbutil dump --modules demo.pdb      # should show ObjFileName, S_BUILDINFO per module
-ls *.dyndbg.bc                            # should show the bitcode files
+llvm-dyndbg --extract-bc out.bc --input-obj math_utils.obj   # optional: recover embedded bitcode
 ```
 
 ### Debug Session in LLDB
