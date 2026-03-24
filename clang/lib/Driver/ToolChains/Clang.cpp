@@ -6877,9 +6877,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fms_hotpatch);
 
-  // /dynamicdeopt[:hybrid|:aot] enables dynamic debug preparation:
-  // symbol promotion + hotpatch padding.  Translated to cc1-only
-  // -fdynamic-debug-prep.
+  // /dynamicdeopt[:dynamic|:hybrid|:aot] enables dynamic debug preparation.
+  // :dynamic  -- symbol promotion + hotpatch only (recompile from source)
+  // :hybrid   -- additionally stores pre-opt LLVM IR (default)
+  // :aot      -- full ahead-of-time deopt binary (not yet implemented)
   if (auto *A = Args.getLastArg(options::OPT__SLASH_dynamicdeopt,
                                 options::OPT__SLASH_dynamicdeopt_mode)) {
     StringRef Val;
@@ -6887,12 +6888,18 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Val = A->getValue();
     if (Val.empty() || Val == "hybrid") {
       CmdArgs.push_back("-fdynamic-debug-prep");
+      CmdArgs.push_back("-fdynamic-debug-bitcode");
+      if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
+        CmdArgs.push_back("-fms-hotpatch");
+    } else if (Val == "dynamic") {
+      CmdArgs.push_back("-fdynamic-debug-prep");
       if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
         CmdArgs.push_back("-fms-hotpatch");
     } else if (Val == "aot") {
       D.Diag(diag::warn_drv_unused_argument)
           << "/dynamicdeopt:aot (not yet implemented; falling back to :hybrid)";
       CmdArgs.push_back("-fdynamic-debug-prep");
+      CmdArgs.push_back("-fdynamic-debug-bitcode");
       if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
         CmdArgs.push_back("-fms-hotpatch");
     } else {

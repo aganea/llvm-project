@@ -48,6 +48,9 @@ void emitBackendOutput(CompilerInstance &CI, CodeGenOptions &CGOpts,
 void EmbedBitcode(llvm::Module *M, const CodeGenOptions &CGOpts,
                   llvm::MemoryBufferRef Buf);
 
+void EmbedDynamicDebugBitcode(llvm::Module *M, const CodeGenOptions &CGOpts,
+                              StringRef OutputPath);
+
 void EmbedObject(llvm::Module *M, const CodeGenOptions &CGOpts,
                  llvm::vfs::FileSystem &VFS, DiagnosticsEngine &Diags);
 } // namespace clang

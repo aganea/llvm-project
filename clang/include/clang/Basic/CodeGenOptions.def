@@ -164,6 +164,13 @@ CODEGENOPT(DynamicDebugExtern, 1, 0, Benign) ///< Recompile-time: rename
                                               ///< promoted .dyndbg names and
                                               ///< make them extern declarations.
 
+CODEGENOPT(DynamicDebugBitcode, 1, 0, Benign) ///< Store pre-optimization LLVM IR
+                                               ///< (bitcode) alongside the optimized
+                                               ///< object, compressed with Zstd.
+CODEGENOPT(DynamicDebugBitcodeSidecar, 1, 0, Benign) ///< Write bitcode as a sidecar
+                                                      ///< .bc file instead of embedding
+                                                      ///< in the .obj.
+
 CODEGENOPT(TlsGuards , 1, 1, Benign) ///< Controls emission of tls guards via -fms-tls-guards
 CODEGENOPT(JMCInstrument, 1, 0, Benign) ///< Set when -fjmc is enabled.
 CODEGENOPT(InstrumentForProfiling , 1, 0, Benign) ///< Set when -pg is enabled.

@@ -4219,6 +4219,15 @@ def fdynamic_debug_extern : Flag<["-"], "fdynamic-debug-extern">, Group<f_Group>
   HelpText<"Recompile-time: externalize internal-linkage symbols using "
            "promoted .dyndbg names">,
   MarshallingInfoFlag<CodeGenOpts<"DynamicDebugExtern">>;
+def fdynamic_debug_bitcode : Flag<["-"], "fdynamic-debug-bitcode">, Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"Store pre-optimization LLVM IR (bitcode) compressed with Zstd">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugBitcode">>;
+def fdynamic_debug_bitcode_sidecar : Flag<["-"], "fdynamic-debug-bitcode-sidecar">,
+  Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"Write dynamic debug bitcode as a sidecar .bc file instead of embedding">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugBitcodeSidecar">>;
 
 // See llvm/lib/CodeGen/WindowsSecureHotPatching.cpp
 def fms_secure_hotpatch_functions_file
@@ -9423,7 +9432,7 @@ def _SLASH_hotpatch : CLFlag<"hotpatch">, Alias<fms_hotpatch>,
   HelpText<"Create hotpatchable image">;
 def _SLASH_dynamicdeopt_mode
     : CLJoined<"dynamicdeopt:">,
-      HelpText<"Enable dynamic deoptimization (hybrid, aot)">;
+      HelpText<"Enable dynamic deoptimization (dynamic, hybrid, aot)">;
 def _SLASH_dynamicdeopt
     : CLFlag<"dynamicdeopt">,
       HelpText<"Enable dynamic deoptimization (same as /dynamicdeopt:hybrid)">;

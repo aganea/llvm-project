@@ -47,8 +47,11 @@
 #include "llvm/Support/BuryPointer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Compression.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -90,6 +93,7 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/JumpThreading.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Debugify.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <limits>
@@ -1510,6 +1514,60 @@ void clang::EmbedBitcode(llvm::Module *M, const CodeGenOptions &CGOpts,
       *M, Buf, CGOpts.getEmbedBitcode() != CodeGenOptions::Embed_Marker,
       CGOpts.getEmbedBitcode() != CodeGenOptions::Embed_Bitcode,
       CGOpts.CmdArgs);
+}
+
+void clang::EmbedDynamicDebugBitcode(llvm::Module *M,
+                                     const CodeGenOptions &CGOpts,
+                                     StringRef OutputPath) {
+  if (!CGOpts.DynamicDebugBitcode)
+    return;
+
+  auto Clone = llvm::CloneModule(*M);
+
+  SmallVector<char, 0> BitcodeBuffer;
+  raw_svector_ostream BitcodeOS(BitcodeBuffer);
+  WriteBitcodeToFile(*Clone, BitcodeOS);
+
+  ArrayRef<uint8_t> Input(reinterpret_cast<const uint8_t *>(BitcodeBuffer.data()),
+                          BitcodeBuffer.size());
+
+  // "DYDB" magic + u32 uncompressed size + zstd-compressed bitcode
+  SmallVector<uint8_t, 0> CompressedBuf;
+  if (llvm::compression::zstd::isAvailable()) {
+    llvm::compression::zstd::compress(Input, CompressedBuf);
+  } else {
+    CompressedBuf.assign(Input.begin(), Input.end());
+  }
+
+  uint32_t UncompressedSize = BitcodeBuffer.size();
+  bool IsCompressed = llvm::compression::zstd::isAvailable();
+
+  // Header: "DYDB" (4) + u32 uncompressed_size (4) + u8 is_compressed (1)
+  SmallVector<char, 0> Section;
+  Section.append({'D', 'Y', 'D', 'B'});
+  uint8_t SizeBuf[4];
+  support::endian::write32le(SizeBuf, UncompressedSize);
+  Section.append(reinterpret_cast<char *>(SizeBuf),
+                 reinterpret_cast<char *>(SizeBuf) + 4);
+  Section.push_back(IsCompressed ? 1 : 0);
+  Section.append(reinterpret_cast<const char *>(CompressedBuf.data()),
+                 reinterpret_cast<const char *>(CompressedBuf.data()) +
+                     CompressedBuf.size());
+
+  if (CGOpts.DynamicDebugBitcodeSidecar) {
+    SmallString<256> SidecarPath(OutputPath);
+    llvm::sys::path::replace_extension(SidecarPath, ".dyndbg.bc");
+
+    std::error_code EC;
+    raw_fd_ostream FileOS(SidecarPath, EC, sys::fs::OF_None);
+    if (!EC)
+      FileOS.write(Section.data(), Section.size());
+  } else {
+    auto Buf = llvm::MemoryBuffer::getMemBuffer(
+        StringRef(Section.data(), Section.size()), "dyndbg.bitcode",
+        /*RequiresNullTerminator=*/false);
+    llvm::embedBufferInModule(*M, Buf->getMemBufferRef(), ".dyndbg");
+  }
 }
 
 void clang::EmbedObject(llvm::Module *M, const CodeGenOptions &CGOpts,

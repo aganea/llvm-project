@@ -308,6 +308,8 @@ void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
   }
 
   EmbedBitcode(getModule(), CodeGenOpts, llvm::MemoryBufferRef());
+  EmbedDynamicDebugBitcode(getModule(), CodeGenOpts,
+                           CI.getFrontendOpts().OutputFile);
 
   emitBackendOutput(CI, CI.getCodeGenOpts(),
                     C.getTargetInfo().getDataLayoutString(), getModule(),
@@ -1138,6 +1140,8 @@ void CodeGenAction::ExecuteAction() {
   EmbedObject(TheModule.get(), CodeGenOpts, CI.getVirtualFileSystem(),
               Diagnostics);
   EmbedBitcode(TheModule.get(), CodeGenOpts, *MainFile);
+  EmbedDynamicDebugBitcode(TheModule.get(), CodeGenOpts,
+                           CI.getFrontendOpts().OutputFile);
 
   LLVMContext &Ctx = TheModule->getContext();
 

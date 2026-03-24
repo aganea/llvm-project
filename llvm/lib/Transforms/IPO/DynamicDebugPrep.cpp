@@ -17,14 +17,18 @@
 // DynamicDebugExternPass (recompile time):
 //   Renames internal-linkage functions and globals to their promoted
 //   ".dyndbg.<hash>" names, makes them external declarations, and drops
-//   their bodies/initializers.  The resulting -O0 .obj has only extern
+//   their bodies/initializers.  Removes or reroutes GlobalAliases that
+//   pointed at those locals (MSVC ??_E... thunks) so the verifier still
+//   sees "alias -> definition".  The resulting -O0 .obj has only extern
 //   relocations that the debugger resolves against the optimized binary's
 //   PDB -- no duplicate definitions, no wasted .bss.
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/DynamicDebugPrep.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -123,20 +127,88 @@ PreservedAnalyses DynamicDebugPrepPass::run(Module &M,
 
 // ── DynamicDebugExternPass (recompile time) ────────────────────────────────
 
+static const GlobalObject *resolveUltimateAliasee(const GlobalAlias &GA) {
+  const Constant *C = GA.getAliasee();
+  SmallPtrSet<const GlobalAlias *, 8> Visited;
+  for (;;) {
+    C = C->stripPointerCasts();
+    const auto *Inner = dyn_cast<GlobalAlias>(C);
+    if (!Inner)
+      return dyn_cast<GlobalObject>(C);
+    if (!Visited.insert(Inner).second)
+      return nullptr;
+    C = Inner->getAliasee();
+  }
+}
+
 PreservedAnalyses DynamicDebugExternPass::run(Module &M,
                                               ModuleAnalysisManager &) {
   std::string TUHash =
       ExternTUHash.empty() ? computeTUHash(M) : ExternTUHash.getValue();
   bool Changed = false;
 
+  auto shouldKeep = [](StringRef Name) {
+    for (const auto &Keep : ExternKeepFunctions)
+      if (Name.contains(Keep))
+        return true;
+    return false;
+  };
+
+  auto shouldExternalizeFunction = [&](const Function &F) -> bool {
+    if (F.isDeclaration() || !F.hasLocalLinkage() || F.isIntrinsic())
+      return false;
+    if (shouldKeep(F.getName()))
+      return false;
+    return true;
+  };
+
+  auto shouldExternalizeGV = [&](const GlobalVariable &GV) -> bool {
+    if (GV.isDeclaration() || !GV.hasLocalLinkage())
+      return false;
+    if (isSpecialGlobal(GV))
+      return false;
+    return true;
+  };
+
+  // MSVC / Itanium lowering often uses GlobalAlias (e.g. ??_E... vdtor
+  // thunks) pointing at internal-linkage functions.  After we
+  // deleteBody() those become declarations, but aliases must target a
+  // definition (Verifier).  Redirect every use of such an alias to the
+  // ultimate global, then erase the alias (including alias chains).
+  bool AliasProgress = true;
+  while (AliasProgress) {
+    AliasProgress = false;
+    for (GlobalAlias &GA : make_early_inc_range(M.aliases())) {
+      const GlobalObject *Ultimate = resolveUltimateAliasee(GA);
+      if (!Ultimate)
+        continue;
+      bool Drop = false;
+      if (const auto *F = dyn_cast<Function>(Ultimate))
+        Drop = shouldExternalizeFunction(*F);
+      else if (const auto *GV = dyn_cast<GlobalVariable>(Ultimate))
+        Drop = shouldExternalizeGV(*GV);
+      if (!Drop)
+        continue;
+
+      auto *Repl = cast<Constant>(const_cast<GlobalObject *>(Ultimate));
+      if (Repl->getType() != GA.getType())
+        Repl = ConstantExpr::getPointerBitCastOrAddrSpaceCast(Repl, GA.getType());
+      LLVM_DEBUG(dbgs() << "DynamicDebugExtern: removing alias " << GA.getName()
+                        << " (replacing uses with ultimate aliasee)\n");
+      GA.replaceAllUsesWith(Repl);
+      GA.eraseFromParent();
+      Changed = true;
+      AliasProgress = true;
+      break;
+    }
+  }
+
   // Externalize internal-linkage globals: rename to the promoted name,
   // drop the initializer, set external linkage.  The -O0 .obj will emit
   // an IMAGE_SYM_UNDEFINED COFF symbol that the debugger resolves
   // against the PDB at load time.
   for (GlobalVariable &GV : make_early_inc_range(M.globals())) {
-    if (GV.isDeclaration() || !GV.hasLocalLinkage())
-      continue;
-    if (isSpecialGlobal(GV))
+    if (!shouldExternalizeGV(GV))
       continue;
 
     std::string NewName = (GV.getName() + ".dyndbg." + TUHash).str();
@@ -149,14 +221,6 @@ PreservedAnalyses DynamicDebugExternPass::run(Module &M,
     GV.setDSOLocal(false);
     Changed = true;
   }
-
-  // Build a set of function names to keep (not externalize).
-  auto shouldKeep = [](StringRef Name) {
-    for (const auto &Keep : ExternKeepFunctions)
-      if (Name.contains(Keep))
-        return true;
-    return false;
-  };
 
   // Externalize internal-linkage functions: rename to the promoted name,
   // delete the body, set external linkage.  Calls from unoptimized code

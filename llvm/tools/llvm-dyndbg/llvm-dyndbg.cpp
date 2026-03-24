@@ -35,7 +35,10 @@
 #include "llvm/DebugInfo/PDB/Native/SymbolStream.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/DebugInfo/PDB/PDB.h"
+#include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compression.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
@@ -48,8 +51,7 @@ using namespace llvm;
 using namespace llvm::codeview;
 using namespace llvm::pdb;
 
-static cl::opt<std::string> PDBPath(cl::Positional, cl::desc("<pdb-file>"),
-                                    cl::Required);
+static cl::opt<std::string> PDBPath(cl::Positional, cl::desc("<pdb-file>"));
 
 static cl::opt<bool> GenRecompileCmd(
     "gen-recompile",
@@ -74,6 +76,16 @@ static cl::opt<bool> Execute(
 static cl::opt<std::string> OutputDir(
     "output-dir",
     cl::desc("Output directory for recompiled .obj files (default: temp)"),
+    cl::init(""));
+
+static cl::opt<std::string> ExtractBC(
+    "extract-bc",
+    cl::desc("Extract .dyndbg bitcode from a COFF .obj and write to this path"),
+    cl::init(""));
+
+static cl::opt<std::string> InputObj(
+    "input-obj",
+    cl::desc("Input .obj file for --extract-bc"),
     cl::init(""));
 
 static ExitOnError ExitOnErr;
@@ -172,6 +184,46 @@ static SmallVector<std::string, 64> parseCommandLine(StringRef CmdStr) {
   return Args;
 }
 
+/// Drop precompiled-header arguments from a deoptimization recompile.  PCH
+/// files are tied to the optimization level they were built with; replaying
+/// LF_BUILDINFO with `-O0` after an `-O2`/`-O3` build hits "OptimizationLevel
+/// differs in precompiled file".  Removing PCH forces a normal parse (slower
+/// but correct).  Also strips dependency-scanning flags not needed for .obj.
+static void stripPchArgsForDeoptRecompile(SmallVectorImpl<std::string> &Args) {
+  for (size_t I = 0; I < Args.size();) {
+    StringRef A = Args[I];
+    if (A == "-include-pch" && I + 1 < Args.size()) {
+      Args.erase(Args.begin() + I, Args.begin() + I + 2);
+      continue;
+    }
+    if (A.starts_with("-include-pch=")) {
+      Args.erase(Args.begin() + I);
+      continue;
+    }
+    if (A.starts_with("-pch-through-header=")) {
+      Args.erase(Args.begin() + I);
+      continue;
+    }
+    if (A == "-pch-through-header" && I + 1 < Args.size()) {
+      Args.erase(Args.begin() + I, Args.begin() + I + 2);
+      continue;
+    }
+    // Keep `-include .../cmake_pch.hxx`: without `-include-pch`, Clang parses it
+    // as a normal header so the TU still sees the same preamble (slow but valid).
+    // Driver-style: -Xclang -include-pch -Xclang <path>
+    if (A == "-Xclang" && I + 3 < Args.size() && Args[I + 1] == "-include-pch" &&
+        Args[I + 2] == "-Xclang") {
+      Args.erase(Args.begin() + I, Args.begin() + I + 4);
+      continue;
+    }
+    if (A == "--show-includes" || A == "-sys-header-deps") {
+      Args.erase(Args.begin() + I);
+      continue;
+    }
+    ++I;
+  }
+}
+
 /// Scan a module's symbol stream for S_GPROC32/S_LPROC32 records and
 /// return true if any procedure name contains \p Needle.
 static bool modulContainsFunction(const CVSymbolArray &Symbols,
@@ -246,6 +298,9 @@ static std::string buildRecompileCommand(const BuildInfo &BI,
   }
   if (!Replaced)
     Args.insert(Args.begin(), "-O0");
+
+  // PCH from the optimized build does not match -O0 (see Clang's pch validate).
+  stripPchArgsForDeoptRecompile(Args);
 
   // Remove -fdynamic-debug-prep.
   llvm::erase_if(Args,
@@ -362,15 +417,115 @@ static std::string extractOutputPath(StringRef FullCmd) {
   return "";
 }
 
+/// Read the .dyndbg section from a COFF object, decompress it, and write
+/// the resulting bitcode to \p OutputPath.
+static int extractBitcodeFromObj(StringRef ObjPath, StringRef OutputPath) {
+  auto BufOrErr = llvm::MemoryBuffer::getFile(ObjPath);
+  if (!BufOrErr) {
+    errs() << "error: cannot open " << ObjPath << ": "
+           << BufOrErr.getError().message() << "\n";
+    return 1;
+  }
+
+  auto ObjOrErr = llvm::object::ObjectFile::createObjectFile(
+      (*BufOrErr)->getMemBufferRef());
+  if (!ObjOrErr) {
+    errs() << "error: cannot parse object file: "
+           << toString(ObjOrErr.takeError()) << "\n";
+    return 1;
+  }
+
+  const auto &Obj = **ObjOrErr;
+  for (const auto &Sec : Obj.sections()) {
+    auto NameOrErr = Sec.getName();
+    if (!NameOrErr) {
+      consumeError(NameOrErr.takeError());
+      continue;
+    }
+    if (*NameOrErr != ".dyndbg")
+      continue;
+
+    auto ContentsOrErr = Sec.getContents();
+    if (!ContentsOrErr) {
+      errs() << "error: cannot read .dyndbg section: "
+             << toString(ContentsOrErr.takeError()) << "\n";
+      return 1;
+    }
+
+    StringRef Data = *ContentsOrErr;
+    // Header: "DYDB" (4) + u32 uncompressed_size (4) + u8 is_compressed (1)
+    if (Data.size() < 9 || Data.substr(0, 4) != "DYDB") {
+      errs() << "error: .dyndbg section has invalid header\n";
+      return 1;
+    }
+
+    uint32_t UncompressedSize =
+        support::endian::read32le(Data.data() + 4);
+    uint8_t IsCompressed = static_cast<uint8_t>(Data[8]);
+    ArrayRef<uint8_t> Payload(
+        reinterpret_cast<const uint8_t *>(Data.data() + 9),
+        Data.size() - 9);
+
+    SmallVector<uint8_t, 0> Decompressed;
+    if (IsCompressed) {
+      if (!llvm::compression::zstd::isAvailable()) {
+        errs() << "error: Zstd decompression not available\n";
+        return 1;
+      }
+      if (auto Err = llvm::compression::zstd::decompress(
+              Payload, Decompressed, UncompressedSize)) {
+        errs() << "error: decompression failed: " << toString(std::move(Err))
+               << "\n";
+        return 1;
+      }
+    } else {
+      Decompressed.assign(Payload.begin(), Payload.end());
+    }
+
+    std::error_code EC;
+    raw_fd_ostream OutFile(OutputPath, EC, sys::fs::OF_None);
+    if (EC) {
+      errs() << "error: cannot write " << OutputPath << ": " << EC.message()
+             << "\n";
+      return 1;
+    }
+    OutFile.write(reinterpret_cast<const char *>(Decompressed.data()),
+                  Decompressed.size());
+
+    outs() << "Extracted " << Decompressed.size() << " bytes of bitcode from "
+           << ObjPath << " to " << OutputPath << "\n";
+    outs() << "  Section size: " << Data.size() << " bytes"
+           << " (compressed: " << (IsCompressed ? "yes" : "no") << ")\n";
+    return 0;
+  }
+
+  errs() << "error: no .dyndbg section found in " << ObjPath << "\n";
+  return 1;
+}
+
 int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   ExitOnErr.setBanner("llvm-dyndbg: ");
 
   cl::ParseCommandLineOptions(argc, argv, "Dynamic debugging PoC tool\n");
 
+  // --extract-bc mode: read .dyndbg section, decompress, write .bc file.
+  if (!ExtractBC.empty()) {
+    if (InputObj.empty()) {
+      errs() << "error: --extract-bc requires --input-obj\n";
+      return 1;
+    }
+    return extractBitcodeFromObj(InputObj, ExtractBC);
+  }
+
   // --function implies --gen-recompile.
   if (!FunctionName.empty())
     GenRecompileCmd = true;
+
+  if (PDBPath.empty()) {
+    errs() << "error: a PDB file is required (unless using --extract-bc)\n";
+    return 1;
+  }
 
   std::unique_ptr<IPDBSession> Session;
   ExitOnErr(loadDataForPDB(PDB_ReaderType::Native, PDBPath, Session));
