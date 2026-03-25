@@ -12,7 +12,10 @@ todos:
     content: Add preserve-abi function attribute; disable function specialization, argument promotion, dead argument elimination for marked functions in GlobalOpt, FunctionSpecialization, etc.
     status: pending
   - id: global-ref-stubs
-    content: Adapt WindowsSecureHotPatching __ref_* mechanism (or equivalent relocation-based approach) so unoptimized injected code can access optimized globals
+    content: "Global access from unoptimized code: PoC uses Option C (thinBitcode externalizes all globals at IR level); Option A (__ref_* via WindowsSecureHotPatching) and Option B (relocation override) are alternatives for the LLDB loader"
+    status: in_progress
+  - id: pdb-bitcode-storage
+    content: "lld-link collects .dyndbg sections from input .obj files and writes them as PDB named streams (e.g. /dyndbg/<key>); llvm-dyndbg/LLDB reads bitcode from PDB instead of requiring .obj files at debug time"
     status: pending
   - id: lldb-deopt-plugin
     content: "Create LLDB plugin for on-demand deoptimization: read LF_BUILDINFO from PDB, re-invoke Clang -O0, load code into debuggee, resolve symbols against PDB, patch function entries"
@@ -116,7 +119,7 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 
 ### Not implemented (still per this doc)
 
-LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception, thread-safe patching, `preserve-abi` IPO guards, `__ref_*` globals path, AOT `.alt.obj` / lld dual-link, `/dynamicdeopt-storage:*`, parallel bitcode compression, in-LLDB per-function bitcode extraction with Module caching.
+LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception (breakpoint-based first, then investigate MSVC debug-info-guided register patching), thread-safe patching, `preserve-abi` IPO guards, **PDB bitcode storage** (lld-link collects `.dyndbg` sections into PDB named streams), AOT `.alt.obj` / lld dual-link, `/dynamicdeopt-storage:*`, parallel bitcode compression, in-LLDB per-function bitcode extraction with Module caching.
 
 
 ---
@@ -313,6 +316,30 @@ In the ahead-of-time approaches (MSVC, RFC), the unoptimized callee always exist
 
 This runtime mechanism is the ONLY cross-reference mechanism needed for Approach E. Since we resolve all relocations against the PDB at load time (Mechanism 1), the unoptimized code naturally calls optimized functions. The debugger intercepts step-into to swap to unoptimized versions. This works as long as all optimized symbols and globals are reachable in the PDB (not stripped).
 
+**Two implementation strategies for step-into interception:**
+
+**Strategy A -- Breakpoint-based (RFC approach, simpler):**
+
+1. User does "Step Into" from unoptimized code
+2. Debugger sets temporary breakpoint at the optimized callee's entry
+3. Breakpoint fires, debugger redirects PC to the unoptimized callee
+4. Remove temporary breakpoint
+
+Pro: No compiler changes needed, works with existing CodeView. Con: Breakpoint overhead (int3 patching + exception handling per step-into).
+
+**Strategy B -- Debug-info-guided register patching (MSVC approach):**
+
+MSVC appears to use CodeView annotations that tell the debugger which register or memory operand holds the call target address at each `CALL` instruction site. When the user steps into a call from deoptimized code:
+
+1. Debugger single-steps to the `CALL` instruction
+2. Reads the CodeView annotation: "at offset X, register RAX holds the call target"
+3. Patches the register value to point at the unoptimized version instead
+4. `CALL` executes, landing directly in unoptimized code
+
+This is more efficient (no breakpoint overhead) and works naturally with indirect calls (vtable dispatch, function pointers). The `.alt.pdb` likely contains these annotations. This may use extended `S_CALLSITEINFO` records or a new CodeView symbol record type.
+
+**Recommendation:** Start with Strategy A for the PoC. Investigate Strategy B by studying MSVC `.alt.pdb` output to determine the exact CodeView record format.
+
 ---
 
 ### Debug-Time: On-Demand Recompilation and Code Injection
@@ -392,7 +419,11 @@ The unoptimized `.obj` has relocations against functions and globals. These must
 - Pro: Cleanest `.obj` output -- no duplicate definitions to resolve
 - Con: Requires new Clang frontend work; suppressing definitions of globals declared in source is non-trivial (constructors, initializers, static locals all complicate this)
 
-**Recommendation**: Option B for Tier 1. It requires zero compiler changes for the on-demand recompilation step -- all the intelligence is in the debugger's `.obj` loader. The requirement is that all symbols (including promoted internal ones) are present in the PDB and not stripped. The `-fdynamic-debug-prep` build-time flag already ensures this via symbol promotion and hotpatch padding.
+**Recommendation**: Option B for Tier 1 (whole-TU recompilation from source). It requires zero compiler changes for the on-demand recompilation step -- all the intelligence is in the debugger's `.obj` loader. The requirement is that all symbols (including promoted internal ones) are present in the PDB and not stripped. The `-fdynamic-debug-prep` build-time flag already ensures this via symbol promotion and hotpatch padding.
+
+> **PoC status:** The `thinBitcode()` pipeline in `llvm-dyndbg` implements a **variant of Option C at the LLVM IR level**: it externalizes all functions and globals except the kept function, making them `extern` declarations with `.dyndbg.<TUHash>` suffixes for local-linkage symbols. This avoids the Clang frontend complexity of Option C (suppressing definitions in source) by operating on pre-existing bitcode. The resulting `.dyndbg.obj` has 1 defined symbol + N external references, resolved by the debugger loader against PDB symbol addresses. This is effectively Options B+C combined: Option C's clean extern-only output, achieved without compiler changes, loaded with Option B's PDB-based relocation resolution.
+>
+> **Relationship to `__ref_*` (Option A):** The `WindowsSecureHotPatching` pass in LLVM (`llvm/lib/CodeGen/WindowsSecureHotPatching.cpp`) creates `__ref_<name>` pointer globals in `.rdata` for each global variable accessed by a hot-patched function. The pass rewrites loads/stores to go through this indirection (`load ptr, ptr @__ref_g_count` then `load i32, ptr %ref`). The OS hot-patch loader fills in these pointers at load time. Our PoC avoids this indirection entirely -- since we externalize at the IR level, COFF relocations handle the binding directly. Option A would only be needed if we wanted to reuse the OS Secure Hotpatching loader infrastructure rather than our own LLDB-based loader.
 
 #### Step 5: Patch function entries
 
@@ -560,11 +591,61 @@ The only supplemental metadata is a small table of promoted symbol names (intern
 
 **Bitcode storage options:**
 
-- **Separate `.bc` files** (simplest, good for testing/dev): Clang writes `foo.obj` and `foo.dyndbg.bc` side by side. Add a `-fdynamic-debug-prep-bc=<path>` flag to control the output path. The PDB's `ObjFileName` per module derives the `.bc` path via naming convention. No linker changes needed.
-- **Linker-collected archive** (cleanest for distribution): lld-link reads `.llvmbc` sections from input `.obj` files and writes a single `.dyndbg.bca` (bitcode archive) with a per-module index. The PDB records the archive path. Needs linker work but produces a single artifact.
-- **Embedded in `.exe`** (self-contained): Preserve `.llvmbc` sections through linking (currently stripped by lld-link at [lld/COFF/InputFiles.cpp](lld/COFF/InputFiles.cpp) line 409). Increases `.exe` size but keeps everything in one file.
+- **Embedded in `.obj`** (PoC default, simplest): Clang writes zstd-compressed pre-opt bitcode in a `.dyndbg` COFF section inside each `.obj`. The section is marked `!exclude` (`IMAGE_SCN_LNK_REMOVE | IMAGE_SCN_MEM_DISCARDABLE`), so lld-link automatically strips it from the final PE. At debug time, the tool/debugger reads the `.obj` (path from PDB's `DbiModuleDescriptor::getObjFileName()`) and extracts the `.dyndbg` section. **This is what the PoC implements today.** Requires `.obj` files to be available at debug time.
+- **Sidecar `.bc` files** (simplest, good for testing/dev): Clang writes `foo.obj` and `foo.dyndbg.bc` side by side via `-fdynamic-debug-bitcode-sidecar`. The PDB's `ObjFileName` per module derives the `.bc` path via naming convention. No linker changes needed. **Implemented in PoC** as an alternative to embed.
+- **PDB named streams** (recommended for distribution): lld-link reads `.dyndbg` sections from input `.obj` files and writes each as a **named stream** in the PDB (e.g., `/dyndbg/<key>`). At debug time, the debugger reads bitcode directly from the PDB -- no `.obj` files needed. This uses the existing PDB named stream mechanism (`PDBFileBuilder::addNamedStream` in LLVM, `/pdbstream:name=file` in lld-link). See [PDB Bitcode Storage](#pdb-bitcode-storage-recommended-for-distribution) below.
+- **Linker-collected sidecar archive**: lld-link collects `.dyndbg` sections into a single `.dyndbg.bca` sidecar archive with a per-module index. Needs linker work but produces a single artifact alongside the PDB.
+- ~~**Embedded in `.exe`**~~: **Not recommended.** COFF PE images have a **2 GB hard limit** (`IMAGE_OPTIONAL_HEADER::SizeOfImage` is 32-bit). MSVC's `/dynamicdeopt` already fails for large game binaries (e.g., Unreal Engine) because the `.alt.exe` exceeds this limit. Embedding bitcode in the PE would exacerbate this. The `.dyndbg` section's `!exclude` flag already prevents this.
 
-Recommendation: Start with separate `.bc` files for development and testing. Add the linker-collected archive later for production workflows.
+Recommendation: Use `.obj`-embedded `.dyndbg` sections for development (PoC, already implemented). Add **PDB named streams** for production/distribution workflows so only `.exe` + `.pdb` need to be shipped.
+
+#### PDB Bitcode Storage (recommended for distribution)
+
+The PDB file format (MSF container) supports **arbitrary named streams**: string-keyed opaque byte blobs stored alongside the standard TPI/DBI/IPI streams. LLVM already has full support:
+
+- **Writer:** `PDBFileBuilder::addNamedStream(StringRef Name, StringRef Data)` in [llvm/lib/DebugInfo/PDB/Native/PDBFileBuilder.cpp](llvm/lib/DebugInfo/PDB/Native/PDBFileBuilder.cpp)
+- **Linker:** lld-link `/pdbstream:name=file` in [lld/COFF/Options.td](lld/COFF/Options.td), wired through `PDBLinker::addNamedStreams()` in [lld/COFF/PDB.cpp](lld/COFF/PDB.cpp)
+- **Reader:** `InfoStream::getNamedStreamIndex(StringRef)` in [llvm/lib/DebugInfo/PDB/Native/InfoStream.cpp](llvm/lib/DebugInfo/PDB/Native/InfoStream.cpp)
+
+Unknown named streams are **harmlessly ignored** by WinDbg, DIA, Visual Studio, and other PDB consumers. No compatibility risk.
+
+**Build-time flow:**
+
+```
+clang-cl /dynamicdeopt:hybrid /O2 /Z7 -c foo.cpp
+  -> foo.obj  (contains .dyndbg section with zstd-compressed bitcode, marked !exclude)
+
+lld-link /debug:full /dynamicdeopt foo.obj bar.obj /out:app.exe
+  -> app.exe  (no .dyndbg sections -- stripped by !exclude)
+  -> app.pdb  (standard PDB + named streams: /dyndbg/foo.obj, /dyndbg/bar.obj, ...)
+```
+
+**Debug-time lookup:**
+
+```
+function (by address/name)
+  -> PDB module/compiland (DBI stream, DbiModuleDescriptor)
+    -> stream key (derived from ObjFileName, ModName, or module index)
+      -> PDB named stream /dyndbg/<key>
+        -> decompress -> lazy load -> thin -> codegen
+```
+
+**Stream naming convention:** The key should be derived from whatever information the debugger naturally has when looking up a module. The DBI stream provides `DbiModuleDescriptor::getObjFileName()` and `getModuleName()` for each compiland. The most natural key is the ObjFileName (e.g., `/dyndbg/SemaExpr.cpp.obj` or `/dyndbg/path/to/SemaExpr.cpp.obj`). The exact convention depends on the debugger's lookup path and should avoid path sensitivity issues (e.g., normalize to forward slashes, strip drive letters).
+
+**Advantages over shipping `.obj` files:**
+
+- **Single distribution artifact:** `.exe` + `.pdb` (what teams already ship and symbol-serve)
+- **Symbol server compatible:** existing symbol server infrastructure (symstore, debuginfod) handles PDB distribution/caching
+- **No build tree dependency:** no need for the original `.obj` files at debug time
+- **Backwards compatible:** old PDB consumers silently ignore `/dyndbg/*` streams
+- **No 2 GB PE limit concern:** PDB uses MSF format with 32-bit block indices (theoretical max ~16 TB); PDBs for large projects are already multi-GB
+
+**Advantages over `.exe`-embedded:**
+
+- PE stays lean, well within the 2 GB limit
+- PDB can be stripped of `/dyndbg/*` streams for shipping (via post-link tool or linker flag)
+
+**Relationship to `.llvmbc`:** LLVM already has infrastructure for embedding bitcode in `.llvmbc` COFF sections (via `-fembed-bitcode` / `embedBitcodeInModule()`). However, `.llvmbc` was designed for LTO workflows, not debug-time extraction. Key differences: `.llvmbc` has no compression, no version header, and its handling in lld-link is contentious (see [llvm/llvm-project#150897](https://github.com/llvm/llvm-project/pull/150897#issuecomment-4124457584) -- the discard-by-name behavior is being reverted). Our `.dyndbg` section uses `embedBufferInModule()` with `!exclude` metadata, which is the cleaner approach: the section is stripped by the generic `IMAGE_SCN_LNK_REMOVE` flag rather than name-based hacks.
 
 - **Possible further optimization**: At build time, split the bitcode per logical source file within a unity TU (using `DICompileUnit` boundaries). This reduces the per-TU bitcode size and makes the initial lazy load faster at debug time. However this adds complexity and may not be needed if Module caching is effective.
 
