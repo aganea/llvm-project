@@ -14,8 +14,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/DebugInfo/CodeView/CVSymbolVisitor.h"
 #include "llvm/DebugInfo/CodeView/LazyRandomTypeCollection.h"
 #include "llvm/DebugInfo/CodeView/SymbolDeserializer.h"
@@ -35,6 +38,12 @@
 #include "llvm/DebugInfo/PDB/Native/SymbolStream.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/DebugInfo/PDB/PDB.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compression.h"
@@ -417,22 +426,24 @@ static std::string extractOutputPath(StringRef FullCmd) {
   return "";
 }
 
-/// Read the .dyndbg section from a COFF object, decompress it, and write
-/// the resulting bitcode to \p OutputPath.
-static int extractBitcodeFromObj(StringRef ObjPath, StringRef OutputPath) {
-  auto BufOrErr = llvm::MemoryBuffer::getFile(ObjPath);
+/// Read the .dyndbg section from a COFF object, decompress it, and return
+/// the raw bitcode as a MemoryBuffer.  Returns nullptr on error (with
+/// diagnostics printed to errs()).
+static std::unique_ptr<MemoryBuffer>
+extractBitcodeBuffer(StringRef ObjPath) {
+  auto BufOrErr = MemoryBuffer::getFile(ObjPath);
   if (!BufOrErr) {
     errs() << "error: cannot open " << ObjPath << ": "
            << BufOrErr.getError().message() << "\n";
-    return 1;
+    return nullptr;
   }
 
-  auto ObjOrErr = llvm::object::ObjectFile::createObjectFile(
+  auto ObjOrErr = object::ObjectFile::createObjectFile(
       (*BufOrErr)->getMemBufferRef());
   if (!ObjOrErr) {
     errs() << "error: cannot parse object file: "
            << toString(ObjOrErr.takeError()) << "\n";
-    return 1;
+    return nullptr;
   }
 
   const auto &Obj = **ObjOrErr;
@@ -449,14 +460,13 @@ static int extractBitcodeFromObj(StringRef ObjPath, StringRef OutputPath) {
     if (!ContentsOrErr) {
       errs() << "error: cannot read .dyndbg section: "
              << toString(ContentsOrErr.takeError()) << "\n";
-      return 1;
+      return nullptr;
     }
 
     StringRef Data = *ContentsOrErr;
-    // Header: "DYDB" (4) + u32 uncompressed_size (4) + u8 is_compressed (1)
     if (Data.size() < 9 || Data.substr(0, 4) != "DYDB") {
       errs() << "error: .dyndbg section has invalid header\n";
-      return 1;
+      return nullptr;
     }
 
     uint32_t UncompressedSize =
@@ -468,39 +478,331 @@ static int extractBitcodeFromObj(StringRef ObjPath, StringRef OutputPath) {
 
     SmallVector<uint8_t, 0> Decompressed;
     if (IsCompressed) {
-      if (!llvm::compression::zstd::isAvailable()) {
+      if (!compression::zstd::isAvailable()) {
         errs() << "error: Zstd decompression not available\n";
-        return 1;
+        return nullptr;
       }
-      if (auto Err = llvm::compression::zstd::decompress(
+      if (auto Err = compression::zstd::decompress(
               Payload, Decompressed, UncompressedSize)) {
         errs() << "error: decompression failed: " << toString(std::move(Err))
                << "\n";
-        return 1;
+        return nullptr;
       }
     } else {
       Decompressed.assign(Payload.begin(), Payload.end());
     }
 
-    std::error_code EC;
-    raw_fd_ostream OutFile(OutputPath, EC, sys::fs::OF_None);
-    if (EC) {
-      errs() << "error: cannot write " << OutputPath << ": " << EC.message()
-             << "\n";
-      return 1;
-    }
-    OutFile.write(reinterpret_cast<const char *>(Decompressed.data()),
-                  Decompressed.size());
-
-    outs() << "Extracted " << Decompressed.size() << " bytes of bitcode from "
-           << ObjPath << " to " << OutputPath << "\n";
-    outs() << "  Section size: " << Data.size() << " bytes"
-           << " (compressed: " << (IsCompressed ? "yes" : "no") << ")\n";
-    return 0;
+    return MemoryBuffer::getMemBufferCopy(
+        StringRef(reinterpret_cast<const char *>(Decompressed.data()),
+                  Decompressed.size()),
+        "dyndbg.bitcode");
   }
 
   errs() << "error: no .dyndbg section found in " << ObjPath << "\n";
-  return 1;
+  return nullptr;
+}
+
+/// Read the .dyndbg section from a COFF object, decompress it, and write
+/// the resulting bitcode to \p OutputPath.
+static int extractBitcodeFromObj(StringRef ObjPath, StringRef OutputPath) {
+  auto Buf = extractBitcodeBuffer(ObjPath);
+  if (!Buf)
+    return 1;
+
+  std::error_code EC;
+  raw_fd_ostream OutFile(OutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    errs() << "error: cannot write " << OutputPath << ": " << EC.message()
+           << "\n";
+    return 1;
+  }
+  OutFile.write(Buf->getBufferStart(), Buf->getBufferSize());
+
+  outs() << "Extracted " << Buf->getBufferSize() << " bytes of bitcode from "
+         << ObjPath << " to " << OutputPath << "\n";
+  return 0;
+}
+
+// ── Bitcode cache ──────────────────────────────────────────────────────────
+
+/// Return the decompressed bitcode for \p ObjPath, using a file-based cache
+/// keyed by \p TUHash.  On cache miss the .dyndbg section is extracted from
+/// the object file, decompressed, and written into the cache directory.
+/// \p CacheHit is set to indicate whether the cache was used.
+static std::unique_ptr<MemoryBuffer>
+getOrCacheBitcode(StringRef ObjPath, StringRef TUHash, StringRef OutDir,
+                  bool &CacheHit) {
+  CacheHit = false;
+
+  SmallString<256> CacheDir;
+  if (!OutDir.empty())
+    CacheDir = OutDir;
+  else
+    sys::path::system_temp_directory(/*ErasedOnReboot=*/true, CacheDir);
+  sys::path::append(CacheDir, ".dyndbg-cache");
+
+  SmallString<256> CachePath(CacheDir);
+  std::string CacheFilename;
+  if (TUHash.empty())
+    CacheFilename = (sys::path::stem(ObjPath) + ".bc").str();
+  else
+    CacheFilename = (sys::path::stem(ObjPath) + "." + TUHash + ".bc").str();
+  sys::path::append(CachePath, CacheFilename);
+
+  if (sys::fs::exists(CachePath)) {
+    auto BufOrErr = MemoryBuffer::getFile(CachePath);
+    if (BufOrErr && (*BufOrErr)->getBufferSize() > 0) {
+      CacheHit = true;
+      return std::move(*BufOrErr);
+    }
+  }
+
+  auto Buf = extractBitcodeBuffer(ObjPath);
+  if (!Buf)
+    return nullptr;
+
+  if (auto EC = sys::fs::create_directories(CacheDir)) {
+    errs() << "warning: cannot create cache dir " << CacheDir << ": "
+           << EC.message() << "\n";
+  } else {
+    std::error_code WEC;
+    raw_fd_ostream CacheFile(CachePath, WEC, sys::fs::OF_None);
+    if (!WEC)
+      CacheFile.write(Buf->getBufferStart(), Buf->getBufferSize());
+  }
+
+  return Buf;
+}
+
+// ── Bitcode thinning ───────────────────────────────────────────────────────
+
+static const GlobalObject *resolveUltimateAliasee(const GlobalAlias &GA) {
+  const Constant *C = GA.getAliasee();
+  SmallPtrSet<const GlobalAlias *, 8> Visited;
+  for (;;) {
+    C = C->stripPointerCasts();
+    const auto *Inner = dyn_cast<GlobalAlias>(C);
+    if (!Inner)
+      return dyn_cast<GlobalObject>(C);
+    if (!Visited.insert(Inner).second)
+      return nullptr;
+    C = Inner->getAliasee();
+  }
+}
+
+/// Lazy-load the bitcode in \p BCBuf, keep only the function matching
+/// \p KeepName (substring match), externalize everything else, prune
+/// unreferenced declarations, and write the thinned bitcode to \p OutputBC.
+/// Returns the number of pruned functions via \p PrunedFns / \p PrunedGVs,
+/// or -1 on error.
+static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
+                       StringRef TUHash, StringRef OutputBC,
+                       unsigned &PrunedFns, unsigned &PrunedGVs) {
+  PrunedFns = 0;
+  PrunedGVs = 0;
+
+  LLVMContext Ctx;
+  auto ModOrErr = parseBitcodeFile(BCBuf.getMemBufferRef(), Ctx);
+  if (!ModOrErr) {
+    errs() << "error: failed to load bitcode: "
+           << toString(ModOrErr.takeError()) << "\n";
+    return -1;
+  }
+  std::unique_ptr<Module> M = std::move(*ModOrErr);
+
+  // Find the target function by substring match.
+  Function *KeepFn = nullptr;
+  for (Function &F : *M) {
+    if (F.isDeclaration())
+      continue;
+    if (F.getName().contains(KeepName)) {
+      KeepFn = &F;
+      break;
+    }
+  }
+  if (!KeepFn) {
+    errs() << "error: function '" << KeepName
+           << "' not found in bitcode module\n";
+    return -1;
+  }
+
+  // Rename the kept function to avoid clashing with the optimized version.
+  KeepFn->setName((KeepFn->getName() + ".dyndbg.unopt").str());
+
+  auto IsSpecialGlobal = [](const GlobalVariable &GV) {
+    StringRef Name = GV.getName();
+    return Name.starts_with("llvm.") || Name.starts_with("__") ||
+           GV.getSection().starts_with(".llvm");
+  };
+
+  auto ShouldExternFn = [&](const Function &F) -> bool {
+    if (&F == KeepFn || F.isDeclaration() || F.isIntrinsic())
+      return false;
+    return true;
+  };
+
+  auto ShouldExternGV = [&](const GlobalVariable &GV) -> bool {
+    if (GV.isDeclaration())
+      return false;
+    if (IsSpecialGlobal(GV))
+      return false;
+    return true;
+  };
+
+  // Handle GlobalAliases that point to functions/globals we will externalize.
+  // Aliases must point to definitions; redirect uses to the ultimate aliasee
+  // then erase.
+  bool AliasProgress = true;
+  while (AliasProgress) {
+    AliasProgress = false;
+    for (GlobalAlias &GA : make_early_inc_range(M->aliases())) {
+      const GlobalObject *Ultimate = resolveUltimateAliasee(GA);
+      if (!Ultimate)
+        continue;
+      bool Drop = false;
+      if (const auto *F = dyn_cast<Function>(Ultimate))
+        Drop = ShouldExternFn(*F);
+      else if (const auto *GV = dyn_cast<GlobalVariable>(Ultimate))
+        Drop = ShouldExternGV(*GV);
+      if (!Drop)
+        continue;
+
+      auto *Repl = cast<Constant>(const_cast<GlobalObject *>(Ultimate));
+      if (Repl->getType() != GA.getType())
+        Repl = ConstantExpr::getPointerBitCastOrAddrSpaceCast(Repl,
+                                                               GA.getType());
+      GA.replaceAllUsesWith(Repl);
+      GA.eraseFromParent();
+      AliasProgress = true;
+      break;
+    }
+  }
+
+  // Externalize all globals except the kept function's direct references.
+  for (GlobalVariable &GV : make_early_inc_range(M->globals())) {
+    if (!ShouldExternGV(GV))
+      continue;
+
+    if (GV.hasLocalLinkage())
+      GV.setName((GV.getName() + ".dyndbg." + TUHash).str());
+
+    GV.setInitializer(nullptr);
+    GV.setLinkage(GlobalValue::ExternalLinkage);
+    GV.setVisibility(GlobalValue::DefaultVisibility);
+    GV.setDSOLocal(false);
+    if (GV.hasComdat())
+      GV.setComdat(nullptr);
+    ++PrunedGVs;
+  }
+
+  // Externalize all functions except the kept one.
+  for (Function &F : make_early_inc_range(*M)) {
+    if (!ShouldExternFn(F))
+      continue;
+
+    if (F.hasLocalLinkage())
+      F.setName((F.getName() + ".dyndbg." + TUHash).str());
+
+    F.deleteBody();
+    F.setLinkage(GlobalValue::ExternalLinkage);
+    F.setVisibility(GlobalValue::DefaultVisibility);
+    F.setDSOLocal(false);
+    if (F.hasComdat())
+      F.setComdat(nullptr);
+    ++PrunedFns;
+  }
+
+  // Prune unreferenced declarations (fixpoint loop).
+  bool Progress = true;
+  while (Progress) {
+    Progress = false;
+    for (Function &F : make_early_inc_range(*M)) {
+      if (F.isDeclaration() && F.use_empty() && &F != KeepFn) {
+        F.eraseFromParent();
+        Progress = true;
+      }
+    }
+    for (GlobalVariable &GV : make_early_inc_range(M->globals())) {
+      if (GV.isDeclaration() && GV.use_empty()) {
+        GV.eraseFromParent();
+        Progress = true;
+      }
+    }
+    for (GlobalAlias &GA : make_early_inc_range(M->aliases())) {
+      if (GA.use_empty()) {
+        GA.eraseFromParent();
+        Progress = true;
+      }
+    }
+  }
+
+  // Write the thinned module.
+  std::error_code EC;
+  raw_fd_ostream OutFile(OutputBC, EC, sys::fs::OF_None);
+  if (EC) {
+    errs() << "error: cannot write " << OutputBC << ": " << EC.message()
+           << "\n";
+    return -1;
+  }
+  WriteBitcodeToFile(*M, OutFile);
+
+  return 0;
+}
+
+// ── Bitcode-based recompile command ────────────────────────────────────────
+
+/// Build a minimal `clang -cc1 -x ir` command that only does codegen on the
+/// already-thinned bitcode file.  The triple is extracted from the original
+/// cc1 command stored in the PDB's LF_BUILDINFO.
+static std::string buildBitcodeRecompileCommand(const BuildInfo &BI,
+                                                StringRef ThinBCPath,
+                                                StringRef OutputObj) {
+  auto OrigArgs = parseCommandLine(BI.CommandLine);
+
+  // Extract the target triple from the original cc1 args.
+  std::string Triple;
+  for (size_t I = 0, E = OrigArgs.size(); I + 1 < E; ++I) {
+    if (OrigArgs[I] == "-triple") {
+      Triple = OrigArgs[I + 1];
+      break;
+    }
+  }
+
+  SmallVector<std::string, 32> Args;
+  Args.push_back("-cc1");
+  if (!Triple.empty()) {
+    Args.push_back("-triple");
+    Args.push_back(Triple);
+  }
+  Args.push_back("-emit-obj");
+  Args.push_back("-x");
+  Args.push_back("ir");
+  Args.push_back("-O0");
+  Args.push_back("-o");
+  Args.push_back(std::string(OutputObj));
+  Args.push_back(std::string(ThinBCPath));
+
+  std::string FullCmd;
+  raw_string_ostream OS(FullCmd);
+  OS << BI.CompilerPath;
+  for (const auto &Arg : Args) {
+    OS << " ";
+    bool NeedsQuote = Arg.find(' ') != std::string::npos ||
+                      Arg.find('\\') != std::string::npos;
+    if (NeedsQuote)
+      OS << "\"" << Arg << "\"";
+    else
+      OS << Arg;
+  }
+  return FullCmd;
+}
+
+// ── Timer helper ───────────────────────────────────────────────────────────
+
+using Clock = std::chrono::high_resolution_clock;
+
+static double elapsedMs(Clock::time_point Start, Clock::time_point End) {
+  return std::chrono::duration<double, std::milli>(End - Start).count();
 }
 
 int main(int argc, char **argv) {
@@ -602,7 +904,96 @@ int main(int argc, char **argv) {
     outs() << "  SourceFile: " << BI->SourceFile << "\n";
     outs() << "  CommandLine: " << BI->CommandLine << "\n";
 
-    if (GenRecompileCmd) {
+    if (!FunctionName.empty()) {
+      // ── Bitcode-based thin deoptimization pipeline ──
+      FunctionFound = true;
+
+      SmallString<256> OutObjDir;
+      if (!OutputDir.empty())
+        OutObjDir = OutputDir;
+      else
+        OutObjDir = BI->WorkingDir;
+      SmallString<256> OutputObjPath(OutObjDir);
+      sys::path::append(OutputObjPath,
+                        sys::path::stem(BI->SourceFile).str() + ".dyndbg.obj");
+
+      // Resolve the actual .obj path.  When the module lives inside a .lib,
+      // ObjName points to the archive; the individual .obj is at
+      // WorkingDir/ModName.
+      SmallString<256> ResolvedObjPath;
+      if (ObjName.ends_with(".lib") || ObjName.ends_with(".a")) {
+        ResolvedObjPath = BI->WorkingDir;
+        sys::path::append(ResolvedObjPath, ModName);
+      } else {
+        ResolvedObjPath = ObjName;
+      }
+      outs() << "  ResolvedObj: " << ResolvedObjPath << "\n";
+
+      // [1/4] Extract bitcode (with cache).
+      auto T1 = Clock::now();
+      bool CacheHit = false;
+      auto BCBuf = getOrCacheBitcode(ResolvedObjPath, DynDbgHash, OutputDir,
+                                     CacheHit);
+      auto T2 = Clock::now();
+      if (!BCBuf) {
+        errs() << "  ERROR: failed to extract bitcode from " << ResolvedObjPath
+               << "\n";
+        outs() << "\n";
+        continue;
+      }
+      outs() << "  [1/4] Extract bitcode: " << format("%.1f", elapsedMs(T1, T2))
+             << " ms (" << (CacheHit ? "from cache" : "from .obj") << ", "
+             << format("%.1f", BCBuf->getBufferSize() / 1024.0) << " KB)\n";
+
+      // [2/4] Lazy load + thin.
+      SmallString<256> ThinBCPath(OutObjDir);
+      sys::path::append(ThinBCPath,
+                        sys::path::stem(BI->SourceFile).str() + ".thin.bc");
+      auto T3 = Clock::now();
+      unsigned PrunedFns = 0, PrunedGVs = 0;
+      int ThinRC = thinBitcode(*BCBuf, FunctionName, DynDbgHash,
+                               ThinBCPath, PrunedFns, PrunedGVs);
+      auto T4 = Clock::now();
+      if (ThinRC != 0) {
+        errs() << "  ERROR: thinning failed\n";
+        outs() << "\n";
+        continue;
+      }
+      uint64_t ThinSize = 0;
+      sys::fs::file_size(ThinBCPath, ThinSize);
+      outs() << "  [2/4] Thin module:     " << format("%.1f", elapsedMs(T3, T4))
+             << " ms (pruned " << PrunedFns << " fn + " << PrunedGVs
+             << " gv, thinned bc: " << format("%.1f", ThinSize / 1024.0)
+             << " KB)\n";
+
+      // [3/4] Codegen via clang -cc1 -x ir.
+      std::string CodegenCmd =
+          buildBitcodeRecompileCommand(*BI, ThinBCPath, OutputObjPath);
+      outs() << "  CodegenCmd: " << CodegenCmd << "\n";
+
+      if (Execute) {
+        auto T5 = Clock::now();
+        std::string ErrMsg;
+        double CodegenMs = executeRecompile(CodegenCmd, ErrMsg);
+        auto T6 = Clock::now();
+
+        if (CodegenMs < 0) {
+          errs() << "  ERROR: codegen failed: " << ErrMsg << "\n";
+        } else {
+          outs() << "  [3/4] Codegen:         "
+                 << format("%.1f", elapsedMs(T5, T6)) << " ms\n";
+
+          double TotalMs = elapsedMs(T1, T6);
+          outs() << "  Total: " << format("%.1f", TotalMs) << " ms\n";
+
+          uint64_t ObjSize = 0;
+          if (!sys::fs::file_size(OutputObjPath, ObjSize))
+            outs() << "  Output: " << OutputObjPath << " ("
+                   << format("%.1f", ObjSize / 1024.0) << " KB)\n";
+        }
+      }
+    } else if (GenRecompileCmd) {
+      // ── Legacy source-based recompilation path ──
       std::string Cmd =
           buildRecompileCommand(*BI, OutputDir, FunctionName, DynDbgHash);
       outs() << "  RecompileCmd (-O0):\n    " << Cmd << "\n";
@@ -629,9 +1020,6 @@ int main(int argc, char **argv) {
           }
         }
       }
-
-      if (!FunctionName.empty())
-        FunctionFound = true;
     }
 
     outs() << "\n";
