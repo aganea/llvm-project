@@ -44,9 +44,12 @@ todos:
   - id: demo-binary
     content: "Create end-to-end demo: multi-TU C++ program with static functions, inline functions, and globals; build with -fdynamic-debug-prep; debug in LLDB showcasing on-demand deopt"
     status: completed
+  - id: tier2-thin-extract-tool
+    content: "(Tier 2) llvm-dyndbg --function: lazy bitcode load, materialize single fn, externalize rest, rename .dyndbg.unopt, file-based cache, codegen from thinned IR; per-step timing"
+    status: completed
   - id: tier2-bitcode-embed
-    content: (Tier 2) Implement per-function lazy extraction + -O0 codegen in LLDB using ExtractGVPass + FastISel; cache lazy-loaded Modules for sub-100ms repeat extractions from unity TUs
-    status: in_progress
+    content: (Tier 2) Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100ms repeat extractions from unity TUs
+    status: pending
   - id: aot-pipeline-fork
     content: "AOT mode: implement CloneModule after frontend CodeGen + background thread -O0 codegen (FastISel + trivial RegAlloc); produce .alt.obj alongside .obj"
     status: pending
@@ -74,13 +77,31 @@ isProject: false
 
 This section records what the **experimental PoC branch** implements today versus this document. Strikethrough (**~~done~~**) marks items that are **substantially** landed in code; partial work is called out explicitly.
 
-### `llvm-dyndbg --function` vs “only patch one function”
+### `llvm-dyndbg --function` -- thin single-function extraction
 
-**Today:** `--function NAME` only adds `-mllvm -dynamic-debug-extern-keep=NAME` for the `-O0` replay compile. That **preserves full IR bodies** for **internal-linkage** functions whose mangled/IR name **contains** `NAME`. The translation unit is still compiled **in full**: every **external/COMDAT** function in the TU still emits a **complete** `-O0` definition into `*.dyndbg.obj`. So you do **not** get “strip all symbols except `DiagnoseUseOfDecl`.”
+~~**Implemented.**~~ `--function NAME` now performs **Tier 2-style per-function extraction** entirely in `llvm-dyndbg`:
 
-**Target (per this document):** To load and patch **only one** function in memory, you need **Tier 2–style per-function extraction** (see [Two Tiers of Implementation](#two-tiers-of-implementation)): lazy bitcode, materialize one function, `GlobalDCE`, codegen — or **Option C**-style compiler support to emit **only** selected definitions with everything else `extern`. Neither is wired to `--function` yet.
+1. Reads the `.dyndbg` section from the TU's `.obj` (or `.dyndbg-cache/` on repeat runs)
+2. `getLazyBitcodeModule` -- parses only the module index, not function bodies
+3. `materialize()` -- deserializes **only** the kept function's body
+4. Renames the kept function with `.dyndbg.unopt` suffix (avoids clash with optimized symbol)
+5. Externalizes all other functions/globals (local-linkage ones get `.dyndbg.<TUHash>` names), handles `GlobalAlias` chains, prunes unreferenced declarations via `materialized_use_empty()`
+6. `WriteBitcodeToFile` -- tiny thinned `.bc`
+7. Runs `clang -cc1 -x ir -O0 -emit-obj` on the thinned bitcode (codegen only, no C++ parsing)
 
-**Option B** (recommended Tier 1 in the doc) explicitly allows a **fat** `-O0` object and relies on the **debugger loader** binding symbols to PDB addresses; it does **not** require a single-function object.
+**Result:** The output `.dyndbg.obj` contains exactly **1 defined symbol** (the `.dyndbg.unopt` function) plus **external references** for everything it calls/reads. The debugger patches the optimized entry with `jmp` to the `.dyndbg.unopt` symbol.
+
+**Measured on SemaExpr.cpp (~24 K functions, ~34 MB bitcode), DiagnoseUseOfDecl:**
+
+| Step | Time |
+|------|------|
+| Extract bitcode (cache hit) | 0.3 ms |
+| Lazy load + thin | 655 ms |
+| Codegen | 729 ms |
+| **Total** | **1382 ms** |
+| Output | 4888 KB, 1 def + 101 undef |
+
+The legacy source-based recompilation path (`--gen-recompile` without `--function`) is still available as a fallback.
 
 ### Implemented in PoC (high level)
 
@@ -90,12 +111,13 @@ This section records what the **experimental PoC branch** implements today versu
 | Recompile-time | ~~`-fdynamic-debug-extern`~~, `DynamicDebugExternPass` (externalize locals; ~~GlobalAlias fix~~; PCH strip in tool for `-O0` replay) |
 | Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + size + flag); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
 | Driver | ~~`/dynamicdeopt`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ warns; help lists modes |
-| Tooling | ~~`llvm-dyndbg`~~: PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~ |
+| Tooling (`llvm-dyndbg`) | PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~, ~~**thin single-function pipeline**~~ (lazy load, materialize one fn, externalize rest, rename `.dyndbg.unopt`, codegen from IR), ~~**file-based bitcode cache**~~ (`.dyndbg-cache/`), ~~**per-step timing**~~ |
 | Demo | ~~`demo/dynamic-debugging/`~~ CMake + sources (math_utils / static / inline) |
 
 ### Not implemented (still per this doc)
 
-LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception, thread-safe patching, `preserve-abi` IPO guards, `__ref_*` globals path, AOT `.alt.obj` / lld dual-link, per-function bitcode extract in the debugger, `/dynamicdeopt-storage:*`, parallel PCH-safe single-function compile flags.
+LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception, thread-safe patching, `preserve-abi` IPO guards, `__ref_*` globals path, AOT `.alt.obj` / lld dual-link, `/dynamicdeopt-storage:*`, parallel bitcode compression, in-LLDB per-function bitcode extraction with Module caching.
+
 
 ---
 
@@ -465,6 +487,8 @@ getLazyBitcodeModule(buffer, ctx, ShouldLazyLoadMetadata=true)
   -> emit .obj
 ```
 
+> **PoC status:** The pipeline above is **implemented** in `llvm-dyndbg --function` (`thinBitcode()`) with a slightly different approach: instead of `ExtractGVPass + GlobalDCE`, the tool directly externalizes all non-kept functions/globals in-place on the lazy Module, then prunes unreferenced declarations using `materialized_use_empty()`. The kept function is renamed with `.dyndbg.unopt` suffix to avoid symbol clashes. This pipeline is exercised via the `--function` + `--execute` flags. Porting to an in-LLDB plugin is the remaining step.
+
 We do NOT need recursive function extraction (walking callees) because all function calls in the extracted code resolve to the optimized binary via relocations (Mechanism 1). Only the target function needs a definition; everything else it calls becomes an extern declaration resolved against the PDB.
 
 **Estimated cost comparison for a unity TU with ~2000 functions:**
@@ -473,7 +497,14 @@ We do NOT need recursive function extraction (walking callees) because all funct
 - Per-function extraction: ~1-3s (dominated by initial bitcode index + metadata load; the actual function codegen is <50ms)
 - Per-function with cached Module: <100ms (if the lazy Module is kept in memory across extractions from the same TU)
 
-**Caching strategy**: The debugger should cache the lazy-loaded `Module` per TU. The first deoptimization from a TU pays the ~1-3s index load cost. Subsequent functions from the same TU (common when stepping through code in one file within a unity build) materialize + codegen in milliseconds.
+> **PoC measured (SemaExpr.cpp, ~24 K functions, ~34 MB bitcode, DiagnoseUseOfDecl):**
+> - First run (extract + decompress + lazy load + thin + codegen): ~3.5 s
+> - Cached run (cache hit + lazy load + thin + codegen): ~1.4 s
+> - Of which: lazy load + thin = 655 ms, codegen = 729 ms
+>
+> The file-based cache (`.dyndbg-cache/<ObjStem>.<TUHash>.bc`) eliminates the ~2 s extraction+decompression on repeat runs. In-process Module caching (for LLDB) would further reduce the lazy load time.
+
+**Caching strategy**: The debugger should cache the lazy-loaded `Module` per TU. The first deoptimization from a TU pays the ~1-3s index load cost. Subsequent functions from the same TU (common when stepping through code in one file within a unity build) materialize + codegen in milliseconds. The PoC uses a **file-based cache** (`getOrCacheBitcode()` in `llvm-dyndbg`) which persists across tool invocations; an in-LLDB daemon-style cache would hold the `Module` in memory.
 
 **Additional properties of Tier 2:**
 
@@ -872,8 +903,9 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 
 **Phase 4: Hybrid Tier 2** (bitcode-based on-demand, per-function extraction):
 
-1. ~~Build-time: serialize + compress unoptimized bitcode~~ — **PoC:** sequential clone + zstd + embed in `.dyndbg` or sidecar (`llvm-dyndbg --extract-bc`). *Not:* background thread / parallel compression.
-2. Debug-time: lazy bitcode loading, per-function extraction via `ExtractGVPass`, -O0 codegen via FastISel, Module caching — **not in PoC** (no LLDB path; `--function` does not trim codegen)
+1. ~~Build-time: serialize + compress unoptimized bitcode~~ -- **PoC done:** sequential clone + zstd + embed in `.dyndbg` or sidecar (`llvm-dyndbg --extract-bc`). *Not yet:* background thread / parallel compression.
+2. ~~`llvm-dyndbg --function` thin extraction pipeline~~ -- **PoC done:** lazy bitcode load (`getLazyBitcodeModule`), materialize single function, externalize/prune rest, rename `.dyndbg.unopt`, file-based cache (`.dyndbg-cache/`), codegen from thinned IR, per-step timing. Tested on SemaExpr.cpp (~24K functions): ~1.4 s total.
+3. Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100 ms repeat extractions from unity TUs -- **not yet started**
 
 **Phase 5: Alternative AOT storage** (embed, archive):
 
