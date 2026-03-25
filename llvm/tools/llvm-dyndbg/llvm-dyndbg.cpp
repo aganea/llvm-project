@@ -602,7 +602,7 @@ static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
   PrunedGVs = 0;
 
   LLVMContext Ctx;
-  auto ModOrErr = parseBitcodeFile(BCBuf.getMemBufferRef(), Ctx);
+  auto ModOrErr = getLazyBitcodeModule(BCBuf.getMemBufferRef(), Ctx);
   if (!ModOrErr) {
     errs() << "error: failed to load bitcode: "
            << toString(ModOrErr.takeError()) << "\n";
@@ -610,10 +610,11 @@ static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
   }
   std::unique_ptr<Module> M = std::move(*ModOrErr);
 
-  // Find the target function by substring match.
+  // Find the target function by substring match.  In lazy mode the function
+  // list and names are available without materializing bodies.
   Function *KeepFn = nullptr;
   for (Function &F : *M) {
-    if (F.isDeclaration())
+    if (F.isDeclaration() && !F.isMaterializable())
       continue;
     if (F.getName().contains(KeepName)) {
       KeepFn = &F;
@@ -623,6 +624,13 @@ static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
   if (!KeepFn) {
     errs() << "error: function '" << KeepName
            << "' not found in bitcode module\n";
+    return -1;
+  }
+
+  // Materialize only the kept function's body.
+  if (auto Err = KeepFn->materialize()) {
+    errs() << "error: failed to materialize " << KeepFn->getName() << ": "
+           << toString(std::move(Err)) << "\n";
     return -1;
   }
 
@@ -636,7 +644,9 @@ static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
   };
 
   auto ShouldExternFn = [&](const Function &F) -> bool {
-    if (&F == KeepFn || F.isDeclaration() || F.isIntrinsic())
+    if (&F == KeepFn || F.isIntrinsic())
+      return false;
+    if (F.isDeclaration() && !F.isMaterializable())
       return false;
     return true;
   };
@@ -712,28 +722,40 @@ static int thinBitcode(MemoryBuffer &BCBuf, StringRef KeepName,
     ++PrunedFns;
   }
 
-  // Prune unreferenced declarations (fixpoint loop).
+  // Prune unreferenced declarations (fixpoint loop).  Use the
+  // materialized_use_empty() variant because the module is not fully
+  // materialized -- only the kept function's body was deserialized.
   bool Progress = true;
   while (Progress) {
     Progress = false;
     for (Function &F : make_early_inc_range(*M)) {
-      if (F.isDeclaration() && F.use_empty() && &F != KeepFn) {
+      if (F.isDeclaration() && F.materialized_use_empty() && &F != KeepFn) {
         F.eraseFromParent();
         Progress = true;
       }
     }
     for (GlobalVariable &GV : make_early_inc_range(M->globals())) {
-      if (GV.isDeclaration() && GV.use_empty()) {
+      if (GV.isDeclaration() && GV.materialized_use_empty()) {
         GV.eraseFromParent();
         Progress = true;
       }
     }
     for (GlobalAlias &GA : make_early_inc_range(M->aliases())) {
-      if (GA.use_empty()) {
+      if (GA.materialized_use_empty()) {
         GA.eraseFromParent();
         Progress = true;
       }
     }
+  }
+
+  // Detach the lazy materializer.  All non-kept function bodies have been
+  // dropped via deleteBody() (which clears isMaterializable), so
+  // materializeModule() has nothing left to read -- this is effectively
+  // instant.  WriteBitcodeToFile requires isMaterialized()==true.
+  if (auto Err = M->materializeAll()) {
+    errs() << "error: materializeAll failed: " << toString(std::move(Err))
+           << "\n";
+    return -1;
   }
 
   // Write the thinned module.
