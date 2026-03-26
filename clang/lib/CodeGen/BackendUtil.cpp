@@ -96,6 +96,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Debugify.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1568,6 +1569,100 @@ void clang::EmbedDynamicDebugBitcode(llvm::Module *M,
         /*RequiresNullTerminator=*/false);
     llvm::embedBufferInModule(*M, Buf->getMemBufferRef(), ".dyndbg");
   }
+}
+
+static void runAOTCodegen(llvm::Module &M, const CompilerInstance &CI,
+                          StringRef AltObjPath) {
+  llvm::TimeTraceScope TimeScope("DynamicDebugAOTCodegen");
+
+  std::string Error;
+  const llvm::Target *TheTarget =
+      TargetRegistry::lookupTarget(M.getTargetTriple(), Error);
+  if (!TheTarget) {
+    errs() << "dyndbg-aot: cannot find target: " << Error << '\n';
+    return;
+  }
+
+  const auto &TOpts = CI.getTargetOpts();
+  std::string FeaturesStr =
+      llvm::join(TOpts.Features.begin(), TOpts.Features.end(), ",");
+
+  DiagnosticsEngine &Diags = CI.getDiagnostics();
+  llvm::TargetOptions Options;
+  if (!initTargetOptions(CI, Diags, Options))
+    return;
+
+  std::unique_ptr<TargetMachine> TM(TheTarget->createTargetMachine(
+      M.getTargetTriple(), TOpts.CPU, FeaturesStr, Options,
+      CI.getCodeGenOpts().RelocationModel,
+      getCodeModel(CI.getCodeGenOpts()),
+      CodeGenOptLevel::None));
+  if (!TM) {
+    errs() << "dyndbg-aot: cannot create target machine\n";
+    return;
+  }
+
+  M.setDataLayout(TM->createDataLayout());
+
+  std::error_code EC;
+  raw_fd_ostream OS(AltObjPath, EC, sys::fs::OF_None);
+  if (EC) {
+    errs() << "dyndbg-aot: cannot open " << AltObjPath << ": "
+           << EC.message() << '\n';
+    return;
+  }
+
+  legacy::PassManager PM;
+  if (TM->addPassesToEmitFile(PM, OS, nullptr, CodeGenFileType::ObjectFile)) {
+    errs() << "dyndbg-aot: target does not support object emission\n";
+    return;
+  }
+  PM.run(M);
+  OS.flush();
+}
+
+std::future<void>
+clang::EmitDynamicDebugAOT(llvm::Module *M, CompilerInstance &CI,
+                           const CodeGenOptions &CGOpts,
+                           StringRef OutputPath) {
+  if (!CGOpts.DynamicDebugAOT)
+    return {};
+
+  llvm::TimeTraceScope TimeScope("DynamicDebugAOT");
+
+  SmallString<256> AltPath(OutputPath);
+  sys::path::replace_extension(AltPath, ".alt.obj");
+  std::string AltPathStr = std::string(AltPath);
+
+  if (CGOpts.DynamicDebugAOTParallel) {
+    // Parallel: serialize bitcode on the main thread, then deserialize +
+    // codegen on a background thread with its own LLVMContext (LLVMContext
+    // is not thread-safe).
+    SmallVector<char, 0> BCBuffer;
+    raw_svector_ostream BCOS(BCBuffer);
+    WriteBitcodeToFile(*M, BCOS);
+
+    auto BCData = std::make_shared<SmallVector<char, 0>>(std::move(BCBuffer));
+    return std::async(std::launch::async,
+                      [&CI, AltPathStr, BCData]() {
+      LLVMContext Ctx;
+      auto BufRef = MemoryBufferRef(
+          StringRef(BCData->data(), BCData->size()), "dyndbg-aot");
+      Expected<std::unique_ptr<llvm::Module>> ModOrErr =
+          parseBitcodeFile(BufRef, Ctx);
+      if (!ModOrErr) {
+        errs() << "dyndbg-aot: failed to parse bitcode: "
+               << toString(ModOrErr.takeError()) << '\n';
+        return;
+      }
+      runAOTCodegen(**ModOrErr, CI, AltPathStr);
+    });
+  }
+
+  // Sequential: clone the module and codegen directly.
+  auto Clone = llvm::CloneModule(*M);
+  runAOTCodegen(*Clone, CI, AltPathStr);
+  return {};
 }
 
 void clang::EmbedObject(llvm::Module *M, const CodeGenOptions &CGOpts,

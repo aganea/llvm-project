@@ -11,6 +11,7 @@
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
+#include <future>
 #include <memory>
 
 namespace llvm {
@@ -50,6 +51,14 @@ void EmbedBitcode(llvm::Module *M, const CodeGenOptions &CGOpts,
 
 void EmbedDynamicDebugBitcode(llvm::Module *M, const CodeGenOptions &CGOpts,
                               StringRef OutputPath);
+
+/// AOT mode: clone the module and run -O0 codegen to produce a .alt.obj.
+/// Returns a future that must be waited on (valid only when parallel mode
+/// is enabled; otherwise the codegen runs synchronously and the returned
+/// future is empty).
+std::future<void> EmitDynamicDebugAOT(llvm::Module *M, CompilerInstance &CI,
+                                      const CodeGenOptions &CGOpts,
+                                      StringRef OutputPath);
 
 void EmbedObject(llvm::Module *M, const CodeGenOptions &CGOpts,
                  llvm::vfs::FileSystem &VFS, DiagnosticsEngine &Diags);

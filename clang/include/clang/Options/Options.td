@@ -4228,6 +4228,15 @@ def fdynamic_debug_bitcode_sidecar : Flag<["-"], "fdynamic-debug-bitcode-sidecar
   Visibility<[CC1Option]>,
   HelpText<"Write dynamic debug bitcode as a sidecar .bc file instead of embedding">,
   MarshallingInfoFlag<CodeGenOpts<"DynamicDebugBitcodeSidecar">>;
+def fdynamic_debug_aot : Flag<["-"], "fdynamic-debug-aot">, Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"AOT mode: generate unoptimized .alt.obj alongside the optimized object">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugAOT">>;
+def fdynamic_debug_aot_parallel : Flag<["-"], "fdynamic-debug-aot-parallel">,
+  Group<f_Group>,
+  Visibility<[CC1Option]>,
+  HelpText<"Run AOT unoptimized codegen on a background thread">,
+  MarshallingInfoFlag<CodeGenOpts<"DynamicDebugAOTParallel">>;
 
 // See llvm/lib/CodeGen/WindowsSecureHotPatching.cpp
 def fms_secure_hotpatch_functions_file

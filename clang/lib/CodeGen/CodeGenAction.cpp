@@ -311,9 +311,18 @@ void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
   EmbedDynamicDebugBitcode(getModule(), CodeGenOpts,
                            CI.getFrontendOpts().OutputFile);
 
+  // AOT: clone module and start -O0 codegen (before optimization mutates M).
+  // For parallel mode this returns a valid future; sequential returns empty.
+  auto AOTFuture = EmitDynamicDebugAOT(getModule(), CI, CodeGenOpts,
+                                       CI.getFrontendOpts().OutputFile);
+
   emitBackendOutput(CI, CI.getCodeGenOpts(),
                     C.getTargetInfo().getDataLayoutString(), getModule(),
                     Action, FS, std::move(AsmOutStream), this);
+
+  // Wait for background AOT codegen if running in parallel.
+  if (AOTFuture.valid())
+    AOTFuture.get();
 
   if (OptRecordFile)
     OptRecordFile->keep();

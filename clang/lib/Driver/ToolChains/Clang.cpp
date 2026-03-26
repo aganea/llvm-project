@@ -6896,10 +6896,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
         CmdArgs.push_back("-fms-hotpatch");
     } else if (Val == "aot") {
-      D.Diag(diag::warn_drv_unused_argument)
-          << "/dynamicdeopt:aot (not yet implemented; falling back to :hybrid)";
       CmdArgs.push_back("-fdynamic-debug-prep");
-      CmdArgs.push_back("-fdynamic-debug-bitcode");
+      CmdArgs.push_back("-fdynamic-debug-aot");
       if (!Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
         CmdArgs.push_back("-fms-hotpatch");
     } else {

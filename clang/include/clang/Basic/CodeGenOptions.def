@@ -171,6 +171,11 @@ CODEGENOPT(DynamicDebugBitcodeSidecar, 1, 0, Benign) ///< Write bitcode as a sid
                                                       ///< .bc file instead of embedding
                                                       ///< in the .obj.
 
+CODEGENOPT(DynamicDebugAOT, 1, 0, Benign) ///< AOT mode: generate unoptimized
+                                           ///< .alt.obj alongside the optimized .obj.
+CODEGENOPT(DynamicDebugAOTParallel, 1, 0, Benign) ///< Run AOT -O0 codegen on a
+                                                    ///< background thread.
+
 CODEGENOPT(TlsGuards , 1, 1, Benign) ///< Controls emission of tls guards via -fms-tls-guards
 CODEGENOPT(JMCInstrument, 1, 0, Benign) ///< Set when -fjmc is enabled.
 CODEGENOPT(InstrumentForProfiling , 1, 0, Benign) ///< Set when -pg is enabled.
