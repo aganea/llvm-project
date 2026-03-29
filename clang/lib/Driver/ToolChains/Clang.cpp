@@ -6877,14 +6877,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fms_hotpatch);
 
-  // /dynamicdeopt[:dynamic|:hybrid|:aot] enables dynamic debug preparation.
+  // /dyndbg[:dynamic|:hybrid|:aot] enables dynamic debug preparation.
   // :dynamic  -- symbol promotion + hotpatch only (recompile from source)
   // :hybrid   -- additionally stores pre-opt LLVM IR (default)
-  // :aot      -- full ahead-of-time deopt binary (not yet implemented)
-  if (auto *A = Args.getLastArg(options::OPT__SLASH_dynamicdeopt,
-                                options::OPT__SLASH_dynamicdeopt_mode)) {
+  // :aot      -- ahead-of-time unoptimized .alt.obj alongside optimized .obj
+  if (auto *A = Args.getLastArg(options::OPT__SLASH_dyndbg,
+                                options::OPT__SLASH_dyndbg_mode)) {
     StringRef Val;
-    if (A->getOption().getID() == options::OPT__SLASH_dynamicdeopt_mode)
+    if (A->getOption().getID() == options::OPT__SLASH_dyndbg_mode)
       Val = A->getValue();
     if (Val.empty() || Val == "hybrid") {
       CmdArgs.push_back("-fdynamic-debug-prep");

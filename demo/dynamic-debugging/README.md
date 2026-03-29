@@ -1,13 +1,13 @@
 # Dynamic Debugging Demo
 
-Test harness for `/dynamicdeopt` support in Clang/LLVM (COFF/CodeView).
-Compares MSVC's implementation with planned AOT and hybrid Clang modes.
+Test harness for `/dyndbg` support in Clang/LLVM (COFF/CodeView).
+Compares MSVC's `/dynamicdeopt` with Clang's `/dyndbg` AOT and hybrid modes.
 
 ## Structure
 
 ```
 demo/dynamic-debugging/
-  CMakeLists.txt       DYNDBG_MODE; CheckCXXCompilerFlag for /dynamicdeopt:aot|:hybrid
+  CMakeLists.txt       DYNDBG_MODE; CheckCXXCompilerFlag for /dyndbg:aot|:hybrid
   build.ps1            Runs CMake per configuration; skips Clang AOT/hybrid until implemented
   src/
     math_utils.h       Inline function (clamp), function declaration
@@ -16,30 +16,30 @@ demo/dynamic-debugging/
   build/               Output directory (created by build.ps1)
     msvc-baseline/     cl.exe /O2 /Z7 (reference, no dynamic debugging)
     msvc-dynamicdeopt/ cl.exe /O2 /Z7 /dynamicdeopt (MSVC reference)
-    clang-aot/         (optional) DYNDBG_MODE=aot — skipped by build.ps1 until LLVM implements it
-    clang-hybrid/      (optional) DYNDBG_MODE=hybrid — same
+    clang-aot/         (optional) DYNDBG_MODE=aot
+    clang-hybrid/      (optional) DYNDBG_MODE=hybrid
 ```
 
-### CMake modes (`-DDYNDBG_MODE=…`)
+### CMake modes (`-DDYNDBG_MODE=...`)
 
-| Mode     | Compiler | Compile flags              | Link        | Configure-time check        |
-|----------|----------|----------------------------|------------|-----------------------------|
-| `none`   | any      | (baseline)                 | `/DEBUG:FULL` | —                        |
-| `msvc`   | `cl.exe` | `/dynamicdeopt`            | `/DYNAMICDEOPT` | —                     |
-| `aot`    | clang-cl | `/dynamicdeopt:aot`        | `/DYNAMICDEOPT` | `CheckCXXCompilerFlag`  |
-| `hybrid` | clang-cl | `/dynamicdeopt:hybrid`     | `/DYNAMICDEOPT` | `CheckCXXCompilerFlag`  |
+| Mode     | Compiler | Compile flags          | Link            | Configure-time check       |
+|----------|----------|------------------------|-----------------|----------------------------|
+| `none`   | any      | (baseline)             | `/DEBUG:FULL`   | --                         |
+| `msvc`   | `cl.exe` | `/dynamicdeopt`        | `/DYNAMICDEOPT` | --                         |
+| `aot`    | clang-cl | `/dyndbg:aot`          | `/DEBUG:FULL`   | `CheckCXXCompilerFlag`     |
+| `hybrid` | clang-cl | `/dyndbg:hybrid`       | `/DEBUG:FULL`   | `CheckCXXCompilerFlag`     |
 
 If `aot`/`hybrid` flags are not accepted, **CMake configure fails** with a clear `FATAL_ERROR`.
 
 ### build.ps1
 
-Default **`all`** builds only **`msvc-baseline`** and **`msvc-dynamicdeopt`**.  
+Default **`all`** builds only **`msvc-baseline`** and **`msvc-dynamicdeopt`**.
 **`clang-aot`** / **`clang-hybrid`** are **skipped** with a warning until LLVM implements the flags. Toggle `$ClangDynamicDebuggingImplemented = $true` in `build.ps1` when ready.
 
 ## Quick start
 
 ```powershell
-# Default: both MSVC configs (no Clang — not implemented yet)
+# Default: both MSVC configs (no Clang -- not implemented yet)
 .\build.ps1
 
 # MSVC /dynamicdeopt only
@@ -51,14 +51,14 @@ Default **`all`** builds only **`msvc-baseline`** and **`msvc-dynamicdeopt`**.
 # Clean and rebuild
 .\build.ps1 -Clean
 
-# Manual CMake (will fail configure until Clang accepts /dynamicdeopt:aot)
+# Manual CMake
 cmake -S . -B build/manual-aot -G Ninja -DDYNDBG_MODE=aot -DCMAKE_CXX_COMPILER=clang-cl
 ```
 
 ## Tests (CTest)
 
-- **`demo-runs`** — runs `demo`; expects **`Final: 495`** in output.
-- **AOT / hybrid** — toolchain support for **`/dynamicdeopt:aot`** / **`/dynamicdeopt:hybrid`** is checked at **configure** time via **`CheckCXXCompilerFlag`** (not a separate CTest).
+- **`demo-runs`** -- runs `demo`; expects **`Final: 495`** in output.
+- **AOT / hybrid** -- toolchain support for **`/dyndbg:aot`** / **`/dyndbg:hybrid`** is checked at **configure** time via **`CheckCXXCompilerFlag`** (not a separate CTest).
 
 ## What the demo source exercises
 

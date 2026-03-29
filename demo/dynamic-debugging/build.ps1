@@ -7,7 +7,7 @@
     under build\. CMake handles compiler detection; you just point it at the
     right compiler via -ClangCl for Clang configs.
 
-    CMakeLists.txt defines DYNDBG_MODE=aot|hybrid with /dynamicdeopt:aot|:hybrid and
+    CMakeLists.txt defines DYNDBG_MODE=aot|hybrid with /dyndbg:aot|:hybrid and
     CheckCXXCompilerFlag; build.ps1 skips clang-aot|clang-hybrid until LLVM implements
     those flags (see $ClangDynamicDebuggingImplemented).
 
@@ -51,7 +51,7 @@ $BuildRoot = "$ScriptDir\build"
 # Default "all": MSVC-only. Use -Configs clang-aot,clang-hybrid to exercise skip / future LLVM.
 $AllConfigs = @("msvc-baseline", "msvc-dynamicdeopt")
 
-# Set $true after LLVM implements /dynamicdeopt:aot and /dynamicdeopt:hybrid (see demo CMakeLists.txt).
+# Set $true after LLVM implements /dyndbg:aot and /dyndbg:hybrid (see demo CMakeLists.txt).
 $ClangDynamicDebuggingImplemented = $false
 
 if ($Clean -and (Test-Path $BuildRoot)) {
@@ -105,7 +105,7 @@ $clangResolved = Resolve-ClangCl
 $selectedFiltered = [System.Collections.Generic.List[string]]::new()
 foreach ($c in $selected) {
     if ($c -in $clangConfigs -and -not $ClangDynamicDebuggingImplemented) {
-        Write-Warning "Skipping '${c}': LLVM /dynamicdeopt:aot and /dynamicdeopt:hybrid are not implemented yet. After Clang implements them, set `$ClangDynamicDebuggingImplemented = `$true` at the top of build.ps1 (CMakeLists.txt already uses CheckCXXCompilerFlag)."
+        Write-Warning "Skipping '${c}': LLVM /dyndbg:aot and /dyndbg:hybrid are not implemented yet. After Clang implements them, set `$ClangDynamicDebuggingImplemented = `$true` at the top of build.ps1 (CMakeLists.txt already uses CheckCXXCompilerFlag)."
         continue
     }
     if ($c -in $clangConfigs -and -not $clangResolved) {

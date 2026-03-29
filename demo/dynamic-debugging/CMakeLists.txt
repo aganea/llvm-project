@@ -19,8 +19,8 @@ target_include_directories(demo PRIVATE src)
 # DYNDBG_MODE controls which variant to build:
 #   "none"    - plain /O2 /Z7 baseline (no dynamic debugging)
 #   "msvc"    - MSVC cl.exe: /dynamicdeopt + link /DYNAMICDEOPT (.alt artifacts)
-#   "aot"     - clang-cl: /dynamicdeopt:aot + link /DYNAMICDEOPT (AOT; LLVM TBD)
-#   "hybrid"  - clang-cl: /dynamicdeopt:hybrid + link /DYNAMICDEOPT (on-demand; LLVM TBD)
+#   "aot"     - clang-cl: /dyndbg:aot (AOT; produces .alt.obj)
+#   "hybrid"  - clang-cl: /dyndbg:hybrid (on-demand; embedded bitcode)
 #
 # For "aot" and "hybrid", CheckCXXCompilerFlag verifies the driver accepts the flag
 # at configure time (fails fast if the toolchain does not implement it yet).
@@ -49,44 +49,42 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG:FULL")
 if(DYNDBG_MODE STREQUAL "none")
     message(STATUS "[dyndbg] Mode: none (baseline /O2 /Z7)")
 
-# ── Mode: msvc (MSVC /dynamicdeopt) ─────────────────────────────────────────
+# ── Mode: msvc (MSVC /dynamicdeopt -- MSVC's own flag name) ───────────────────
 elseif(DYNDBG_MODE STREQUAL "msvc")
     if(NOT IS_MSVC)
         message(FATAL_ERROR "[dyndbg] Mode 'msvc' requires the MSVC compiler (cl.exe), not ${CMAKE_CXX_COMPILER_ID}")
     endif()
-    message(STATUS "[dyndbg] Mode: msvc (/dynamicdeopt)")
+    message(STATUS "[dyndbg] Mode: msvc (cl.exe /dynamicdeopt)")
     target_compile_options(demo PRIVATE /dynamicdeopt)
     target_link_options(demo PRIVATE /DYNAMICDEOPT)
 
-# ── Mode: aot (clang-cl /dynamicdeopt:aot) ──────────────────────────────────
+# ── Mode: aot (clang-cl /dyndbg:aot) ──────────────────────────────────────────
 elseif(DYNDBG_MODE STREQUAL "aot")
     if(NOT IS_CLANG_CL)
         message(FATAL_ERROR "[dyndbg] Mode 'aot' requires clang-cl, not ${CMAKE_CXX_COMPILER_ID}")
     endif()
-    check_cxx_compiler_flag("/dynamicdeopt:aot" CXX_COMPILER_SUPPORTS_DYNDEOPT_AOT)
-    if(NOT CXX_COMPILER_SUPPORTS_DYNDEOPT_AOT)
+    check_cxx_compiler_flag("/dyndbg:aot" CXX_COMPILER_SUPPORTS_DYNDBG_AOT)
+    if(NOT CXX_COMPILER_SUPPORTS_DYNDBG_AOT)
         message(FATAL_ERROR
-            "[dyndbg] This C++ compiler does not accept /dynamicdeopt:aot. "
+            "[dyndbg] This C++ compiler does not accept /dyndbg:aot. "
             "LLVM dynamic-debugging (AOT) is not available in this toolchain yet.")
     endif()
-    message(STATUS "[dyndbg] Mode: aot (clang-cl /dynamicdeopt:aot + /DYNAMICDEOPT) — flag accepted by compiler")
-    target_compile_options(demo PRIVATE /dynamicdeopt:aot)
-    target_link_options(demo PRIVATE /DYNAMICDEOPT)
+    message(STATUS "[dyndbg] Mode: aot (clang-cl /dyndbg:aot)")
+    target_compile_options(demo PRIVATE /dyndbg:aot)
 
-# ── Mode: hybrid (clang-cl /dynamicdeopt:hybrid) ──────────────────────────────
+# ── Mode: hybrid (clang-cl /dyndbg:hybrid) ────────────────────────────────────
 elseif(DYNDBG_MODE STREQUAL "hybrid")
     if(NOT IS_CLANG_CL)
         message(FATAL_ERROR "[dyndbg] Mode 'hybrid' requires clang-cl, not ${CMAKE_CXX_COMPILER_ID}")
     endif()
-    check_cxx_compiler_flag("/dynamicdeopt:hybrid" CXX_COMPILER_SUPPORTS_DYNDEOPT_HYBRID)
-    if(NOT CXX_COMPILER_SUPPORTS_DYNDEOPT_HYBRID)
+    check_cxx_compiler_flag("/dyndbg:hybrid" CXX_COMPILER_SUPPORTS_DYNDBG_HYBRID)
+    if(NOT CXX_COMPILER_SUPPORTS_DYNDBG_HYBRID)
         message(FATAL_ERROR
-            "[dyndbg] This C++ compiler does not accept /dynamicdeopt:hybrid. "
+            "[dyndbg] This C++ compiler does not accept /dyndbg:hybrid. "
             "LLVM dynamic-debugging (hybrid) is not available in this toolchain yet.")
     endif()
-    message(STATUS "[dyndbg] Mode: hybrid (clang-cl /dynamicdeopt:hybrid + /DYNAMICDEOPT) — flag accepted by compiler")
-    target_compile_options(demo PRIVATE /dynamicdeopt:hybrid)
-    target_link_options(demo PRIVATE /DYNAMICDEOPT)
+    message(STATUS "[dyndbg] Mode: hybrid (clang-cl /dyndbg:hybrid)")
+    target_compile_options(demo PRIVATE /dyndbg:hybrid)
 
 else()
     message(FATAL_ERROR "[dyndbg] Unknown DYNDBG_MODE: ${DYNDBG_MODE}. Use: none, msvc, aot, hybrid")
@@ -103,7 +101,7 @@ add_custom_command(TARGET demo POST_BUILD
 # ── CTest ────────────────────────────────────────────────────────────────────
 #
 # - demo-runs: runs the executable; expects "Final: 495".
-# - For DYNDBG_MODE=aot|hybrid, /dynamicdeopt:* is already validated at configure time
+# - For DYNDBG_MODE=aot|hybrid, /dyndbg:* is already validated at configure time
 #   via CheckCXXCompilerFlag (configure fails if the driver rejects the flag).
 
 enable_testing()

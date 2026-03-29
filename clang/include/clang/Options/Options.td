@@ -9439,12 +9439,12 @@ def _SLASH_help : CLFlag<"help", [CLOption, DXCOption]>, Alias<help>,
 def _SLASH_HELP : CLFlag<"HELP">, Alias<help>;
 def _SLASH_hotpatch : CLFlag<"hotpatch">, Alias<fms_hotpatch>,
   HelpText<"Create hotpatchable image">;
-def _SLASH_dynamicdeopt_mode
-    : CLJoined<"dynamicdeopt:">,
-      HelpText<"Enable dynamic deoptimization (dynamic, hybrid, aot)">;
-def _SLASH_dynamicdeopt
-    : CLFlag<"dynamicdeopt">,
-      HelpText<"Enable dynamic deoptimization (same as /dynamicdeopt:hybrid)">;
+def _SLASH_dyndbg_mode
+    : CLJoined<"dyndbg:">,
+      HelpText<"Enable dynamic debugging (dynamic, hybrid, aot)">;
+def _SLASH_dyndbg
+    : CLFlag<"dyndbg">,
+      HelpText<"Enable dynamic debugging (same as /dyndbg:hybrid)">;
 def _SLASH_I : CLJoinedOrSeparate<"I", [CLOption, DXCOption]>,
   HelpText<"Add directory to include search path">, MetaVarName<"<dir>">,
   Alias<I>;

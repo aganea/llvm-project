@@ -167,11 +167,10 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");
 
-  // If we specify /hotpatch or /dynamicdeopt, let the linker add padding in
-  // front of each function, like MSVC does.
+  // If we specify /hotpatch or /dyndbg, let the linker add padding in front
+  // of each function, like MSVC does.
   if (Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch,
-                  options::OPT__SLASH_dynamicdeopt,
-                  options::OPT__SLASH_dynamicdeopt_mode))
+                  options::OPT__SLASH_dyndbg, options::OPT__SLASH_dyndbg_mode))
     CmdArgs.push_back("-functionpadmin");
 
   // Pass on /Brepro if it was passed to the compiler.

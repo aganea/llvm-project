@@ -1,6 +1,6 @@
 ---
 name: Dynamic Debugging COFF Analysis
-overview: Comprehensive analysis of approaches to debugging optimized C++ code on COFF/CodeView (Windows), comparing the LLVM RFC, Microsoft's /dynamicdeopt, Live++, and proposed alternatives. Defines a unified framework with /dynamicdeopt:{dynamic,hybrid,aot} (PoC) supporting ahead-of-time (MSVC-style), hybrid bitcode storage, and source-only prep; sharing common build-time preparation where implemented.
+overview: Comprehensive analysis of approaches to debugging optimized C++ code on COFF/CodeView (Windows), comparing the LLVM RFC, Microsoft's /dynamicdeopt, Live++, and proposed alternatives. Defines a unified framework with /dyndbg:{dynamic,hybrid,aot} (PoC) supporting ahead-of-time, hybrid bitcode storage, and source-only prep; sharing common build-time preparation where implemented. Clang uses /dyndbg (not /dynamicdeopt) to distinguish from MSVC's incompatible output format; see clang_vs_msvc_dynamicdeopt_comparison.md.
 todos:
   - id: add-dynamic-debug-prep-flag
     content: "Add -fdynamic-debug-prep Clang flag: enables hotpatch padding on all functions and prevents ABI-changing IPO"
@@ -54,23 +54,23 @@ todos:
     content: (Tier 2) Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100ms repeat extractions from unity TUs
     status: pending
   - id: aot-pipeline-fork
-    content: "AOT mode: implement CloneModule after frontend CodeGen + background thread -O0 codegen (FastISel + trivial RegAlloc); produce .alt.obj alongside .obj"
-    status: pending
+    content: "AOT mode: CloneModule after frontend CodeGen + -O0 codegen to .alt.obj (sequential and parallel via serialize/deserialize). Produces standard COFF .alt.obj with REL32 relocations."
+    status: completed
   - id: aot-alt-obj-output
-    content: "AOT default storage: emit .alt.obj / .alt.pdb files matching MSVC /dynamicdeopt naming convention for Visual Studio compatibility"
-    status: pending
+    content: "AOT .alt.obj output with standard COFF relocations. Note: NOT compatible with MSVC's /dynamicdeopt format (which uses movabs $0 + .pmd_* UUID fixup sections). VS compatibility deferred; see clang_vs_msvc_dynamicdeopt_comparison.md."
+    status: completed
   - id: aot-lld-link
-    content: "AOT linker support: extend lld-link to accept .alt.obj files, perform unoptimized link producing .alt.exe + .alt.pdb with relocations against optimized binary symbols"
+    content: "(Deferred) AOT linker support: lld-link dual-link producing .alt.exe + .alt.pdb. Deprioritized because LLDB can load .alt.obj directly (same loader as hybrid mode). MSVC-style non-runnable .alt.exe template would require .pmd_* sections + movabs codegen."
     status: pending
   - id: aot-storage-embed
-    content: "AOT storage option /dynamicdeopt-storage:embed: embed unoptimized code in .dyndbg COFF section within each .obj; linker collects into single .dyndbg output section"
+    content: "(Deferred) AOT storage option /dyndbg-storage:embed: embed unoptimized code in .dyndbg COFF section within each .obj; linker collects into single .dyndbg output section"
     status: pending
   - id: aot-storage-archive
-    content: "AOT storage option /dynamicdeopt-storage:archive: lld-link collects .alt.obj or .dyndbg sections into single .dyndbg.bca sidecar archive with per-module index"
+    content: "(Deferred) AOT storage option /dyndbg-storage:archive: lld-link collects .alt.obj or .dyndbg sections into single .dyndbg.bca sidecar archive with per-module index"
     status: pending
   - id: unified-flag-design
-    content: "PoC: clang-cl /dynamicdeopt:{dynamic,hybrid,aot}; cc1 -fdynamic-debug-bitcode*; GCC-style -fdynamic-deopt= and /dynamicdeopt-storage:* not done"
-    status: in_progress
+    content: "PoC: clang-cl /dyndbg:{dynamic,hybrid,aot} (renamed from /dynamicdeopt to avoid confusion with MSVC's incompatible format); cc1 flags unchanged (-fdynamic-debug-*)"
+    status: completed
 isProject: false
 ---
 
@@ -110,16 +110,18 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 
 | Area | What landed |
 |------|-------------|
-| Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dynamicdeopt*` (clang-cl); `MSVC.cpp` treats `/dynamicdeopt*` like hotpatch for `/functionpadmin` |
+| Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dyndbg*` (clang-cl); `MSVC.cpp` treats `/dyndbg*` like hotpatch for `/functionpadmin` |
 | Recompile-time | ~~`-fdynamic-debug-extern`~~, `DynamicDebugExternPass` (externalize locals; ~~GlobalAlias fix~~; PCH strip in tool for `-O0` replay) |
 | Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + size + flag); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
-| Driver | ~~`/dynamicdeopt`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ warns; help lists modes |
+| Driver | ~~`/dyndbg`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ produces `.alt.obj`; help lists modes. Renamed from `/dynamicdeopt` to avoid confusion with MSVC's incompatible format. |
+| AOT pipeline | ~~`-fdynamic-debug-aot`~~ (`/dyndbg:aot`): ~~CloneModule~~ + `-O0` codegen to `.alt.obj` (sequential + parallel via serialize/deserialize); standard COFF REL32 relocations |
 | Tooling (`llvm-dyndbg`) | PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~, ~~**thin single-function pipeline**~~ (lazy load, materialize one fn, externalize rest, rename `.dyndbg.unopt`, codegen from IR), ~~**file-based bitcode cache**~~ (`.dyndbg-cache/`), ~~**per-step timing**~~ |
 | Demo | ~~`demo/dynamic-debugging/`~~ CMake + sources (math_utils / static / inline) |
+| Analysis | ~~`clang_vs_msvc_dynamicdeopt_comparison.md`~~: full binary/PDB comparison with MSVC's `/dynamicdeopt` (movabs codegen, `.pmd_*` sections, PDB named streams, non-runnable `.alt.exe` template) |
 
 ### Not implemented (still per this doc)
 
-LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception (breakpoint-based first, then investigate MSVC debug-info-guided register patching), thread-safe patching, `preserve-abi` IPO guards, **PDB bitcode storage** (lld-link collects `.dyndbg` sections into PDB named streams), AOT `.alt.obj` / lld dual-link, `/dynamicdeopt-storage:*`, parallel bitcode compression, in-LLDB per-function bitcode extraction with Module caching.
+LLDB/DAP plugin, in-process load + COFF relocate + `jmp` patch, step-into interception (breakpoint-based first, then investigate MSVC debug-info-guided register patching), thread-safe patching, `preserve-abi` IPO guards, **PDB bitcode storage** (lld-link collects `.dyndbg` sections into PDB named streams), parallel bitcode compression, in-LLDB per-function bitcode extraction with Module caching. AOT lld-link dual-link and `/dyndbg-storage:*` deferred (MSVC VS compat requires `.pmd_*` sections not yet implemented; LLDB can load `.alt.obj` directly).
 
 
 ---
@@ -612,10 +614,10 @@ Unknown named streams are **harmlessly ignored** by WinDbg, DIA, Visual Studio, 
 **Build-time flow:**
 
 ```
-clang-cl /dynamicdeopt:hybrid /O2 /Z7 -c foo.cpp
+clang-cl /dyndbg:hybrid /O2 /Z7 -c foo.cpp
   -> foo.obj  (contains .dyndbg section with zstd-compressed bitcode, marked !exclude)
 
-lld-link /debug:full /dynamicdeopt foo.obj bar.obj /out:app.exe
+lld-link /debug:full foo.obj bar.obj /out:app.exe
   -> app.exe  (no .dyndbg sections -- stripped by !exclude)
   -> app.pdb  (standard PDB + named streams: /dyndbg/foo.obj, /dyndbg/bar.obj, ...)
 ```
@@ -651,7 +653,7 @@ function (by address/name)
 
 ---
 
-### AOT Mode: Ahead-of-Time Unoptimized Code Generation (`/dynamicdeopt:aot`)
+### AOT Mode: Ahead-of-Time Unoptimized Code Generation (`/dyndbg:aot`)
 
 The hybrid on-demand approach (Tiers 1 and 2) optimizes for minimal build-time cost at the expense of some debug-time latency. The AOT mode instead pre-generates unoptimized machine code at build time -- the same fundamental strategy as MSVC's `/dynamicdeopt` and the Sony RFC's nested ELF -- but implemented within the same unified framework, sharing all build-time preparation and debug-time infrastructure.
 
@@ -715,7 +717,7 @@ The background thread receives the cloned Module and runs a minimal -O0 pipeline
 
 The cloned Module retains all debug metadata (`DISubprogram`, `DILocalVariable`, etc.) from the frontend. Since no optimization runs, debug info is trivially accurate -- every source variable has a stack slot, every source line has a corresponding instruction, no inlining has occurred.
 
-**Memory overhead**: `CloneModule` temporarily doubles the IR memory usage. For large unity TUs this can be significant (hundreds of MB). The clone is freed as soon as -O0 codegen completes. If memory is a concern, a flag `/dynamicdeopt:aot:lowmem` could serialize the Module to bitcode first (like Tier 2), then re-read it in the background thread, trading CPU for memory.
+**Memory overhead**: `CloneModule` temporarily doubles the IR memory usage. For large unity TUs this can be significant (hundreds of MB). The clone is freed as soon as -O0 codegen completes. If memory is a concern, a flag `/dyndbg:aot:lowmem` could serialize the Module to bitcode first (like Tier 2), then re-read it in the background thread, trading CPU for memory.
 
 #### AOT Storage: Three Options
 
@@ -725,12 +727,11 @@ This matches MSVC's output model. For each TU, Clang produces both `foo.obj` (op
 
 ```bash
 # Build:
-clang-cl /O2 /Z7 /dynamicdeopt:aot -c math_utils.cpp
+clang-cl /O2 /Z7 /dyndbg:aot -c math_utils.cpp
 # Produces: math_utils.obj + math_utils.alt.obj
 
-lld-link /debug:full /functionpadmin /dynamicdeopt \
-    main.obj math_utils.obj /out:demo.exe
-# Produces: demo.exe + demo.pdb + demo.alt.exe + demo.alt.pdb
+lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
+# Note: .alt.obj loaded directly by LLDB at debug time (no lld dual-link needed)
 ```
 
 This is the recommended default because:
@@ -746,12 +747,12 @@ The linker's role in this mode:
 - The unoptimized link resolves all function calls and global references to the **optimized** binary's addresses (same as the Sony RFC -- the unoptimized code calls optimized code)
 - Alternatively, the debugger handles relocation at load time (as in the hybrid approach), and the `.alt.obj` files are simply collected into an archive without a full link step
 
-**Option 2 -- Embedded COFF section (`/dynamicdeopt:aot /dynamicdeopt-storage:embed`):**
+**Option 2 -- Embedded COFF section (`/dyndbg:aot /dyndbg-storage:embed`):**
 
 The unoptimized machine code is embedded in a `.dyndbg` COFF section in each `.obj` file. The linker collects these sections into a single `.dyndbg` section in the output executable, analogous to the Sony RFC's `.debug_llvm_dyndbg` ELF section.
 
 ```bash
-clang-cl /O2 /Z7 /dynamicdeopt:aot /dynamicdeopt-storage:embed -c math_utils.cpp
+clang-cl /O2 /Z7 /dyndbg:aot /dyndbg-storage:embed -c math_utils.cpp
 # Produces: math_utils.obj (contains .dyndbg section with unoptimized code)
 
 lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
@@ -770,15 +771,15 @@ Cons:
 - Larger `.obj` and `.exe` files during development.
 - Requires LLDB-side work to extract and load the embedded section.
 
-**Option 3 -- Linker-collected archive (`/dynamicdeopt:aot /dynamicdeopt-storage:archive`):**
+**Option 3 -- Linker-collected archive (`/dyndbg:aot /dyndbg-storage:archive`):**
 
 lld-link reads `.dyndbg` sections from input `.obj` files (or reads `.alt.obj` files) and collects them into a single `.dyndbg.bca` sidecar archive alongside the PDB. The PDB records the archive path.
 
 ```bash
-clang-cl /O2 /Z7 /dynamicdeopt:aot -c math_utils.cpp
+clang-cl /O2 /Z7 /dyndbg:aot -c math_utils.cpp
 # Produces: math_utils.obj + math_utils.alt.obj
 
-lld-link /debug:full /functionpadmin /dynamicdeopt /dynamicdeopt-storage:archive \
+lld-link /debug:full /functionpadmin /dyndbg-storage:archive \
     main.obj math_utils.obj /out:demo.exe
 # Produces: demo.exe + demo.pdb + demo.dyndbg.bca
 ```
@@ -827,7 +828,7 @@ A team might even use different modes for different parts of their project: AOT 
 ## Pros and Cons Summary
 
 
-| Criterion                      | MSVC /dynamicdeopt       | LLVM RFC (Nested ELF) | Live++ Hot-Deoptimize           | Unified AOT (`/dynamicdeopt:aot`)                                            | Unified Hybrid (`/dynamicdeopt:hybrid`)                               |
+| Criterion                      | MSVC /dynamicdeopt       | LLVM RFC (Nested ELF) | Live++ Hot-Deoptimize           | Unified AOT (`/dyndbg:aot`)                                                  | Unified Hybrid (`/dyndbg:hybrid`)                               |
 | ------------------------------ | ------------------------ | --------------------- | ------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | **Build time overhead**        | +5-15% (up to 1.8x iter) | +15% (up to +40%)     | None                            | CloneModule ~0.5-1s + BG -O0 codegen (hidden behind -O3; no double frontend) | ~0.5-2s/TU (bitcode serialize; zstd hides behind -O3)                 |
 | **Build output size**          | +2.4x                    | +2.9x                 | None                            | +2-2.5x (similar to MSVC; .alt.obj + .alt.pdb or embedded .dyndbg section)   | + zstd-compressed bitcode/TU (smaller than unopt machine code)        |
@@ -950,52 +951,66 @@ Our on-demand approach avoids this entirely by not generating unoptimized machin
 
 ### Unified Flag Design
 
+> **Renamed from `/dynamicdeopt` to `/dyndbg`** (March 2026). MSVC's `/dynamicdeopt` produces a fundamentally different output format: proprietary `.pmd_*` metadata sections, `movabs $0` indirect codegen, and PDB named streams (`/UniqueID`, `/UniqueIDRef`, `<DynamicDeoptimizeData>`) that only the MSVC linker and Visual Studio debugger understand. Clang's implementation uses standard COFF relocations and a different debug-time architecture. Using a distinct flag name avoids false expectations of interoperability. See `clang_vs_msvc_dynamicdeopt_comparison.md` for the full analysis.
+
 Expose the feature under a single flag with mode selection:
 
-- `**/dynamicdeopt:aot`** -- Ahead-of-time: CloneModule + background -O0 codegen at build time. Default storage: separate `.alt.obj` / `.alt.pdb` (MSVC-compatible, works with Visual Studio debugger). Alternative storage selectable via `/dynamicdeopt-storage:{embed,archive}`. **PoC:** accepted with warning; falls back to hybrid behavior.
-- `**/dynamicdeopt:hybrid`** -- On-demand: store compressed pre-opt bitcode in `.dyndbg` (PoC) at build time; codegen at debug time from source or (future) from extracted bitcode.
-- `**/dynamicdeopt:dynamic`** -- **PoC:** prep + hotpatch only; no embedded bitcode (Tier 1 storage: LF_BUILDINFO only).
-- `**/dynamicdeopt`** (no mode) -- Alias for `/dynamicdeopt:hybrid` (PoC).
+- **`/dyndbg:aot`** -- Ahead-of-time: CloneModule + `-O0` codegen at build time; produces `.alt.obj` with standard COFF REL32 relocations. **PoC:** implemented (sequential + parallel). Note: output is NOT VS-compatible (see comparison doc).
+- **`/dyndbg:hybrid`** -- On-demand: store compressed pre-opt bitcode in `.dyndbg` at build time; codegen at debug time from extracted bitcode. **PoC:** implemented.
+- **`/dyndbg:dynamic`** -- Prep + hotpatch only; no embedded bitcode (Tier 1: source recompile from LF_BUILDINFO at debug time). **PoC:** implemented.
+- **`/dyndbg`** (no mode) -- Alias for `/dyndbg:hybrid`.
 
-For Clang's GCC-style flags: `-fdynamic-deopt={aot,hybrid}`, `-fdynamic-deopt-storage={separate,embed,archive}` — **not** in PoC; cc1 uses `-fdynamic-debug-prep`, `-fdynamic-debug-bitcode`, etc.
+The `-cc1` flags (`-fdynamic-debug-prep`, `-fdynamic-debug-bitcode`, `-fdynamic-debug-aot`, etc.) are unchanged.
 
 All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion, ABI stability, hotpatch padding). This is the **common groundwork** that benefits the entire LLVM project regardless of which deoptimization strategy a user or platform prefers.
 
 ### Implementation Order
 
+> **Updated March 2026** after MSVC `/dynamicdeopt` binary analysis. The original plan assumed VS compatibility for AOT mode. Analysis of MSVC's output revealed a proprietary format (`.pmd_*` sections, `movabs $0` codegen, non-runnable `.alt.exe` template, custom PDB streams) that is fundamentally different from our standard-COFF approach. VS compatibility is deferred; the LLDB plugin (shared by all modes) is now the critical path.
+
 **Phase 1: Common groundwork** (all modes depend on this):
 
-1. ~~Symbol promotion and alias creation for internal-linkage functions~~ — **PoC:** `DynamicDebugPrepPass` (aliases + `@llvm.used`). *Still missing:* full “keep out-of-line if inlined everywhere” story.
-2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) — **not in PoC**
-3. ~~Auto-enabling hotpatch padding when `/dynamicdeopt` is specified~~ — **PoC:** driver + `MSVC.cpp` `/functionpadmin` coupling for `/dynamicdeopt*`
+1. ~~Symbol promotion and alias creation for internal-linkage functions~~ -- **PoC:** `DynamicDebugPrepPass` (aliases + `@llvm.used`). *Still missing:* full "keep out-of-line if inlined everywhere" story.
+2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) -- **not in PoC**
+3. ~~Auto-enabling hotpatch padding when `/dyndbg` is specified~~ -- **PoC:** driver + `MSVC.cpp` `/functionpadmin` coupling
+4. ~~Flag rename: `/dynamicdeopt` to `/dyndbg`~~ -- **Done.** Avoids confusion with MSVC's incompatible format.
 
-**Phase 2: AOT mode** (fastest path to a testable end-to-end demo, VS-compatible):
+**Phase 2: LLDB plugin** (critical path -- shared by all modes):
 
-1. Implement the pipeline fork: `CloneModule` after frontend CodeGen, spawn background -O0 codegen
-2. Produce `.alt.obj` files alongside optimized `.obj` files
-3. Extend lld-link to perform the unoptimized link (producing `.alt.exe` + `.alt.pdb`)
-4. Test with Visual Studio's existing `/dynamicdeopt` debugger support -- if the output format matches MSVC's, VS should be able to consume Clang-built AOT binaries with zero debugger changes
+1. LLDB plugin: load `.obj`/`.alt.obj` into debuggee (`VirtualAllocEx`), apply COFF relocations against PDB symbols, patch function entries with `jmp rel32`
+2. DAP protocol extension for deoptimize/reoptimize requests in lldb-dap
+3. Step-into interception (Mechanism 2, breakpoint-based first)
 
-**Phase 3: Hybrid Tier 1** (source-based on-demand, LLDB plugin):
+This is the single most impactful milestone: it unblocks end-to-end demos for all three modes (dynamic, hybrid, aot). The loader logic is identical regardless of where the `.obj` came from.
 
-1. LLDB plugin: read `LF_BUILDINFO` from PDB, re-invoke Clang at `-O0`, load `.obj` into debuggee, resolve COFF relocations against PDB, patch function entries
-2. DAP protocol extension for deoptimize/reoptimize requests
-3. Step-into interception (Mechanism 2)
+**Phase 3: Hybrid Tier 2 in LLDB** (bitcode-based on-demand):
 
-**Phase 4: Hybrid Tier 2** (bitcode-based on-demand, per-function extraction):
-
-1. ~~Build-time: serialize + compress unoptimized bitcode~~ -- **PoC done:** sequential clone + zstd + embed in `.dyndbg` or sidecar (`llvm-dyndbg --extract-bc`). *Not yet:* background thread / parallel compression.
-2. ~~`llvm-dyndbg --function` thin extraction pipeline~~ -- **PoC done:** lazy bitcode load (`getLazyBitcodeModule`), materialize single function, externalize/prune rest, rename `.dyndbg.unopt`, file-based cache (`.dyndbg-cache/`), codegen from thinned IR, per-step timing. Tested on SemaExpr.cpp (~24K functions): ~1.4 s total.
+1. ~~Build-time: serialize + compress unoptimized bitcode~~ -- **PoC done:** sequential clone + zstd + embed in `.dyndbg` or sidecar.
+2. ~~`llvm-dyndbg --function` thin extraction pipeline~~ -- **PoC done.** Tested on SemaExpr.cpp (~24K functions): ~1.4 s total.
 3. Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100 ms repeat extractions from unity TUs -- **not yet started**
 
-**Phase 5: Alternative AOT storage** (embed, archive):
+**Phase 4: PDB bitcode storage** (distribution):
 
-1. Embedded `.dyndbg` COFF section (single-file output)
-2. Linker-collected `.dyndbg.bca` archive (sidecar artifact)
+1. lld-link collects `.dyndbg` sections from input `.obj` files and writes them as PDB named streams (`/dyndbg/<key>`)
+2. llvm-dyndbg/LLDB reads bitcode from PDB instead of requiring `.obj` files at debug time
+3. Single distribution artifact: `.exe` + `.pdb` (validated by MSVC analysis -- MSVC also stores all deopt data in PDB named streams)
 
-The debug-time infrastructure (patching, step-into, symbol resolution) is shared across all phases. Phase 2 delivers a VS-compatible end-to-end demo early, validating the common groundwork. Phases 3-4 add the on-demand modes incrementally.
+**Phase 5: AOT build pipeline** (already partially done):
 
-The design is forward-compatible across all modes because the build-time preparation (symbol preservation, ABI stability) is identical. The only variable is where unoptimized code comes from at debug time -- and that's a debugger-side concern isolated to a single abstraction point.
+1. ~~CloneModule + `-O0` codegen to `.alt.obj`~~ -- **PoC done** (sequential + parallel via serialize/deserialize)
+2. (Deferred) lld-link dual-link producing `.alt.exe` + `.alt.pdb` -- deprioritized because LLDB can load `.alt.obj` directly
+3. (Deferred) Alternative AOT storage: embed in `.dyndbg` section, or linker-collected `.dyndbg.bca` archive
+
+**Phase 6: MSVC format compatibility** (if VS interop becomes a goal):
+
+1. Emit `.pmd_uniqueid` sections with per-function 128-bit UUIDs in both `.obj` and `.alt.obj`
+2. `movabs $0` + `call *%rax` codegen mode for `.alt.obj`
+3. Emit `.pmd_optdep` (inlining dependency graph) and `.pmd_uniqueidref` (callsite fixup table)
+4. Write `/UniqueID`, `/UniqueIDRef`, `/OptDep`, `<DynamicDeoptimizeData>` PDB named streams
+5. Emit `S_ALTOBJNAME` CodeView records linking alt modules to optimized `.obj` paths
+6. Teach lld-link `/DYNAMICDEOPT` to produce non-runnable `.alt.exe` template
+
+The debug-time infrastructure (loading, relocation, patching) is shared across all phases. Phase 2 (LLDB plugin) is the critical path. Phases 3-4 build incrementally on that foundation. Phase 5 (AOT codegen) is already done; its linker integration is deferred. Phase 6 (MSVC compat) is a long-term goal only pursued if VS interop is needed.
 
 ---
 
@@ -1058,9 +1073,9 @@ int main() {
 ### Build Steps
 
 ```bash
-# 1. Build with /dynamicdeopt:hybrid (prep + hotpatch + embedded hybrid bitcode) or :dynamic (prep only)
-clang-cl /O2 /Z7 /dynamicdeopt:hybrid -c math_utils.cpp -o math_utils.obj
-clang-cl /O2 /Z7 /dynamicdeopt:hybrid -c main.cpp -o main.obj
+# 1. Build with /dyndbg:hybrid (prep + hotpatch + embedded hybrid bitcode) or :dynamic (prep only)
+clang-cl /O2 /Z7 /dyndbg:hybrid -c math_utils.cpp -o math_utils.obj
+clang-cl /O2 /Z7 /dyndbg:hybrid -c main.cpp -o main.obj
 
 # Produces:
 #   math_utils.obj          -- optimized object; .dyndbg section with compressed pre-opt bitcode
