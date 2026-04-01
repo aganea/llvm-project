@@ -4,6 +4,7 @@ add_lldb_library(lldbPluginStructuredDataDynDbg PLUGIN
 
   LINK_LIBS
     lldbCore
+    lldbExpression
     lldbHost
     lldbInterpreter
     lldbSymbol

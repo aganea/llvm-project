@@ -46,6 +46,7 @@ struct DynDbgPatchInfo {
   size_t AllocatedTextSize = 0;
   lldb::addr_t AllocatedDataAddr = 0;
   size_t AllocatedDataSize = 0;
+  lldb::ModuleSP JITModule;
 };
 
 class DynDbgDeoptimizer {
@@ -114,6 +115,14 @@ private:
 
   /// Extract the TU hash from PDB public symbols (looks for .dyndbg.<hash>).
   std::string ExtractTUHash(llvm::StringRef pdb_path);
+
+  /// Create a synthetic JIT Module with a symbol named
+  /// "[Deoptimized] <function>" covering the loaded .text range, and register
+  /// it with the target so that disassembly / backtraces show the label.
+  void RegisterJITModule(DynDbgPatchInfo &patch_info);
+
+  /// Remove a previously registered JIT Module from the target images.
+  void UnregisterJITModule(DynDbgPatchInfo &patch_info);
 
   explicit DynDbgDeoptimizer(Target &target) : m_target(target) {}
 

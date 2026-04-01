@@ -11,13 +11,17 @@
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleList.h"
+#include "lldb/Core/Section.h"
+#include "lldb/Expression/ObjectFileJIT.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Symbol/Function.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/Symbol.h"
 #include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Symbol/SymbolFile.h"
+#include "lldb/Symbol/Symtab.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/LLDBLog.h"
@@ -1226,6 +1230,113 @@ DynDbgDeoptimizer::UnpatchFunctionEntry(const DynDbgPatchInfo &patch_info) {
   return Status();
 }
 
+// ── Synthetic JIT module for [Deoptimized] symbols ──────────────────────────
+
+namespace {
+
+/// Delegate that provides a single code section and one symbol to
+/// ObjectFileJIT so that deoptimized JIT ranges are visible in disassembly,
+/// backtraces, and symbol lookups with a "[Deoptimized]" prefix.
+class DynDbgJITDelegate
+    : public ObjectFileJITDelegate,
+      public std::enable_shared_from_this<DynDbgJITDelegate> {
+public:
+  DynDbgJITDelegate(llvm::StringRef function_name, addr_t text_addr,
+                    size_t text_size, const ArchSpec &arch)
+      : m_function_name(("[Deoptimized] " + function_name).str()),
+        m_text_addr(text_addr), m_text_size(text_size), m_arch(arch) {}
+
+  ByteOrder GetByteOrder() const override {
+    return m_arch.GetByteOrder();
+  }
+
+  uint32_t GetAddressByteSize() const override {
+    return m_arch.GetAddressByteSize();
+  }
+
+  void PopulateSymtab(ObjectFile *obj_file, Symtab &symtab) override {
+    SectionList *sl = obj_file->GetSectionList();
+    if (!sl || sl->GetSize() == 0)
+      return;
+    SectionSP text_sp = sl->GetSectionAtIndex(0);
+    if (!text_sp)
+      return;
+
+    Symbol sym(/*symID=*/0, m_function_name, eSymbolTypeCode,
+               /*external=*/true,
+               /*is_debug=*/false,
+               /*is_trampoline=*/false,
+               /*is_artificial=*/true,
+               text_sp, /*value=*/0, m_text_size,
+               /*size_is_valid=*/true,
+               /*contains_linker_annotations=*/false, /*flags=*/0);
+    symtab.AddSymbol(sym);
+  }
+
+  void PopulateSectionList(ObjectFile *obj_file,
+                           SectionList &section_list) override {
+    ModuleSP mod = obj_file->GetModule();
+    SectionSP text_sp = std::make_shared<Section>(
+        mod, obj_file,
+        /*sect_id=*/1, ConstString(".text"),
+        eSectionTypeCode, m_text_addr, m_text_size,
+        /*file_offset=*/0, /*file_size=*/0,
+        /*log2align=*/0, /*flags=*/0);
+    text_sp->SetPermissions(ePermissionsReadable | ePermissionsExecutable);
+    section_list.AddSection(text_sp);
+  }
+
+  ArchSpec GetArchitecture() override { return m_arch; }
+
+private:
+  std::string m_function_name;
+  addr_t m_text_addr;
+  size_t m_text_size;
+  ArchSpec m_arch;
+};
+
+} // anonymous namespace
+
+void DynDbgDeoptimizer::RegisterJITModule(DynDbgPatchInfo &patch_info) {
+  if (patch_info.AllocatedTextAddr == 0 || patch_info.AllocatedTextSize == 0)
+    return;
+
+  auto delegate_sp = std::make_shared<DynDbgJITDelegate>(
+      patch_info.FunctionName, patch_info.AllocatedTextAddr,
+      patch_info.AllocatedTextSize, m_target.GetArchitecture());
+
+  ModuleSP jit_module_sp =
+      Module::CreateModuleFromObjectFile<ObjectFileJIT>(delegate_sp);
+  if (!jit_module_sp)
+    return;
+
+  FileSpec jit_file;
+  jit_file.SetFilename(
+      ConstString(("dyndbg(" + patch_info.FunctionName + ")").c_str()));
+  jit_module_sp->SetFileSpecAndObjectName(jit_file, ConstString());
+
+  // Register the .text section's load address directly. We cannot use
+  // SetLoadAddress() because ObjectFileJIT skips sections with file_size==0
+  // (and we intentionally set file_size=0 to prevent ReadSectionData from
+  // treating file_offset as a host pointer — the data lives in the debuggee).
+  SectionList *sl = jit_module_sp->GetSectionList();
+  if (sl && sl->GetSize() > 0) {
+    SectionSP text_sp = sl->GetSectionAtIndex(0);
+    if (text_sp)
+      m_target.SetSectionLoadAddress(text_sp, patch_info.AllocatedTextAddr);
+  }
+
+  m_target.GetImages().Append(jit_module_sp);
+  patch_info.JITModule = std::move(jit_module_sp);
+}
+
+void DynDbgDeoptimizer::UnregisterJITModule(DynDbgPatchInfo &patch_info) {
+  if (!patch_info.JITModule)
+    return;
+  m_target.GetImages().Remove(patch_info.JITModule);
+  patch_info.JITModule.reset();
+}
+
 // ── TU hash extraction ──────────────────────────────────────────────────────
 
 std::string DynDbgDeoptimizer::ExtractTUHash(llvm::StringRef pdb_path) {
@@ -1490,6 +1601,9 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
   status = PatchFunctionEntry(function_addr, unopt_addr, patch_info);
   if (status.Fail())
     return status;
+
+  RegisterJITModule(patch_info);
+
   auto t10 = Clock::now();
   stream.Printf("  [5/5] Load + patch: %.1f ms\n", elapsedMs(t9, t10));
 
@@ -1515,6 +1629,8 @@ Status DynDbgDeoptimizer::Reoptimize(llvm::StringRef function_name,
   Status status = UnpatchFunctionEntry(it->second);
   if (status.Fail())
     return status;
+
+  UnregisterJITModule(it->second);
 
   stream.Printf("Restored optimized entry for '%s' at 0x%llx\n",
                 function_name.str().c_str(),
@@ -1553,8 +1669,10 @@ void DynDbgDeoptimizer::PrintStatus(Stream &stream) const {
   stream.Printf("Deoptimized functions:\n");
   for (const auto &kv : m_patches) {
     const DynDbgPatchInfo &pi = kv.second;
-    stream.Printf("  %s: 0x%llx -> 0x%llx\n", kv.first().str().c_str(),
+    stream.Printf("  %s: 0x%llx -> [Deoptimized] %s: 0x%llx\n",
+                  kv.first().str().c_str(),
                   (unsigned long long)pi.OriginalAddr,
+                  kv.first().str().c_str(),
                   (unsigned long long)pi.UnoptimizedAddr);
   }
 }
