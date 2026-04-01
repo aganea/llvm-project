@@ -1,0 +1,5 @@
+# Build outputs (see build.bat)
+*.exe
+*.obj
+*.pdb
+*.ilk
