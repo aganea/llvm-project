@@ -65,6 +65,17 @@ add_optional_dependency(LLDB_ENABLE_PYTHON "Enable Python scripting support in L
 add_optional_dependency(LLDB_ENABLE_LIBXML2 "Enable Libxml 2 support in LLDB" LibXml2 LIBXML2_FOUND VERSION ${LLDB_LIBXML2_VERSION})
 add_optional_dependency(LLDB_ENABLE_TREESITTER "Enable Tree-sitter syntax highlighting" TreeSitter TREESITTER_FOUND)
 
+if(WIN32)
+  option(LLDB_LINK_STATIC_LIBXML2
+    "Define LIBXML_STATIC for all LLDB targets (required when linking static libxml2, e.g. libxml2s.lib, on MSVC)"
+    ON)
+endif()
+if(LLDB_ENABLE_LIBXML2 AND WIN32 AND LLDB_LINK_STATIC_LIBXML2)
+  # Without this, libxml headers use __declspec(dllimport) and the compiler
+  # emits references to __imp_xml*; static .lib provides undecorated symbols.
+  add_compile_definitions(LIBXML_STATIC)
+endif()
+
 option(LLDB_USE_ENTITLEMENTS "When codesigning, use entitlements if available" ON)
 option(LLDB_BUILD_FRAMEWORK "Build LLDB.framework (Darwin only)" OFF)
 option(LLDB_ENABLE_PROTOCOL_SERVERS "Enable protocol servers (e.g. MCP) in LLDB" ON)

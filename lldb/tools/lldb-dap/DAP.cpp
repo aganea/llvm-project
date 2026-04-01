@@ -1062,6 +1062,16 @@ llvm::Error DAP::Loop() {
     lldb::SBDebugger::Destroy(debugger);
   });
 
+  // Join the transport thread before `cleanup` runs (scope_exit order: this
+  // destructor runs first because it was registered after `cleanup`).
+  llvm::scope_exit join_transport([&]() {
+    if (thread.joinable()) {
+      (void)m_loop.AddPendingCallback(
+          [](MainLoopBase &loop) { loop.RequestTermination(); });
+      thread.join();
+    }
+  });
+
   while (true) {
     std::unique_lock<std::mutex> lock(m_queue_mutex);
     m_queue_cv.wait(lock, [&] { return m_disconnecting || !m_queue.empty(); });
@@ -1079,12 +1089,6 @@ llvm::Error DAP::Loop() {
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "unhandled packet");
   }
-
-  // Don't wait to join the mainloop thread if our callback wasn't added
-  // successfully, or we'll wait forever.
-  if (m_loop.AddPendingCallback(
-          [](MainLoopBase &loop) { loop.RequestTermination(); }))
-    thread.join();
 
   if (m_error_occurred)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -1555,6 +1559,11 @@ void DAP::RegisterRequests() {
   RegisterRequest<CompileUnitsRequestHandler>();
   RegisterRequest<ModulesRequestHandler>();
   RegisterRequest<ModuleSymbolsRequestHandler>();
+
+  // Dynamic debugging (dyndbg) custom requests
+  RegisterRequest<DynDbgDeoptimizeRequestHandler>();
+  RegisterRequest<DynDbgReoptimizeRequestHandler>();
+  RegisterRequest<DynDbgStatusRequestHandler>();
 
   // Testing requests
   RegisterRequest<TestGetTargetBreakpointsRequestHandler>();

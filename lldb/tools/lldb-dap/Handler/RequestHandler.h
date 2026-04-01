@@ -667,6 +667,40 @@ public:
   llvm::Error Run(const protocol::UnknownArguments &args) const override;
 };
 
+// ---------------------------------------------------------------------------
+// Dynamic debugging (dyndbg) custom request handlers
+// ---------------------------------------------------------------------------
+
+class DynDbgDeoptimizeRequestHandler final
+    : public RequestHandler<protocol::DynDbgDeoptimizeArguments,
+                            llvm::Expected<protocol::DynDbgDeoptimizeResponseBody>> {
+public:
+  using RequestHandler::RequestHandler;
+  static llvm::StringLiteral GetCommand() { return "__lldb_dyndbgDeoptimize"; }
+  llvm::Expected<protocol::DynDbgDeoptimizeResponseBody>
+  Run(const protocol::DynDbgDeoptimizeArguments &args) const override;
+};
+
+class DynDbgReoptimizeRequestHandler final
+    : public RequestHandler<protocol::DynDbgReoptimizeArguments,
+                            llvm::Expected<protocol::DynDbgReoptimizeResponseBody>> {
+public:
+  using RequestHandler::RequestHandler;
+  static llvm::StringLiteral GetCommand() { return "__lldb_dyndbgReoptimize"; }
+  llvm::Expected<protocol::DynDbgReoptimizeResponseBody>
+  Run(const protocol::DynDbgReoptimizeArguments &args) const override;
+};
+
+class DynDbgStatusRequestHandler final
+    : public RequestHandler<protocol::DynDbgStatusArguments,
+                            llvm::Expected<protocol::DynDbgStatusResponseBody>> {
+public:
+  using RequestHandler::RequestHandler;
+  static llvm::StringLiteral GetCommand() { return "__lldb_dyndbgStatus"; }
+  llvm::Expected<protocol::DynDbgStatusResponseBody>
+  Run(const protocol::DynDbgStatusArguments &) const override;
+};
+
 } // namespace lldb_dap
 
 #endif

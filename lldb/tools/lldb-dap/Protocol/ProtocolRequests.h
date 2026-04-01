@@ -1317,6 +1317,49 @@ using UnknownArguments = EmptyArguments;
 /// Response to unknowns request.
 using UnknownResponseBody = VoidResponse;
 
+// ---------------------------------------------------------------------------
+// Dynamic debugging (dyndbg) custom requests
+// ---------------------------------------------------------------------------
+
+/// Arguments for `__lldb_dyndbgDeoptimize` request.
+struct DynDbgDeoptimizeArguments {
+  /// The name of the function to deoptimize.
+  String functionName;
+};
+bool fromJSON(const llvm::json::Value &, DynDbgDeoptimizeArguments &,
+              llvm::json::Path);
+
+/// Response to `__lldb_dyndbgDeoptimize` request.
+struct DynDbgDeoptimizeResponseBody {
+  bool success = false;
+  String message;
+};
+llvm::json::Value toJSON(const DynDbgDeoptimizeResponseBody &);
+
+/// Arguments for `__lldb_dyndbgReoptimize` request.
+struct DynDbgReoptimizeArguments {
+  /// The name of the function to reoptimize, or empty for all.
+  String functionName;
+};
+bool fromJSON(const llvm::json::Value &, DynDbgReoptimizeArguments &,
+              llvm::json::Path);
+
+/// Response to `__lldb_dyndbgReoptimize` request.
+struct DynDbgReoptimizeResponseBody {
+  bool success = false;
+  String message;
+};
+llvm::json::Value toJSON(const DynDbgReoptimizeResponseBody &);
+
+/// Arguments for `__lldb_dyndbgStatus` request.
+using DynDbgStatusArguments = EmptyArguments;
+
+/// Response to `__lldb_dyndbgStatus` request.
+struct DynDbgStatusResponseBody {
+  String status;
+};
+llvm::json::Value toJSON(const DynDbgStatusResponseBody &);
+
 } // namespace lldb_dap::protocol
 
 #endif

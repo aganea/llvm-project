@@ -830,4 +830,32 @@ llvm::json::Value toJSON(const StackTraceResponseBody &Body) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic debugging (dyndbg) custom requests
+// ---------------------------------------------------------------------------
+
+bool fromJSON(const llvm::json::Value &Params, DynDbgDeoptimizeArguments &Args,
+              llvm::json::Path Path) {
+  json::ObjectMapper O(Params, Path);
+  return O && O.map("functionName", Args.functionName);
+}
+
+llvm::json::Value toJSON(const DynDbgDeoptimizeResponseBody &Body) {
+  return json::Object{{"success", Body.success}, {"message", Body.message}};
+}
+
+bool fromJSON(const llvm::json::Value &Params,
+              DynDbgReoptimizeArguments &Args, llvm::json::Path Path) {
+  json::ObjectMapper O(Params, Path);
+  return O && O.mapOptional("functionName", Args.functionName);
+}
+
+llvm::json::Value toJSON(const DynDbgReoptimizeResponseBody &Body) {
+  return json::Object{{"success", Body.success}, {"message", Body.message}};
+}
+
+llvm::json::Value toJSON(const DynDbgStatusResponseBody &Body) {
+  return json::Object{{"status", Body.status}};
+}
+
 } // namespace lldb_dap::protocol

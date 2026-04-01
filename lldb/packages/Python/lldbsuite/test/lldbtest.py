@@ -2109,6 +2109,24 @@ class TestBase(Base, metaclass=LLDBTestCaseFactory):
     See llvm.org/pr149498.
     """
 
+    def run(self, result=None):
+        # unittest.TestCase.run() consults __unittest_skip__ before result.startTest().
+        # LLDBTestResult.startTest() used to set that flag for skip_categories, which is
+        # too late, so debug-info variants (e.g. dsym on Windows) still ran and failed in
+        # self.build(). Apply the same skip decision here, before the framework skip check.
+        test_result = getattr(configuration, "test_result", None)
+        if test_result is not None:
+            test_method = getattr(self, self._testMethodName)
+            func = getattr(test_method, "__func__", test_method)
+            if configuration.shouldSkipBecauseOfCategories(
+                test_result.getCategoriesForTest(self)
+            ):
+                func.__unittest_skip__ = True
+                func.__unittest_skip_why__ = (
+                    "test case does not fall in any category of interest for this run"
+                )
+        return super().run(result)
+
     def generateSource(self, source):
         template = source + ".template"
         temp = os.path.join(self.getSourceDir(), template)

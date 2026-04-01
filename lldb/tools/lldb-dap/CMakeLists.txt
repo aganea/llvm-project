@@ -32,6 +32,7 @@ add_lldb_library(lldbDAP
   Handler/BreakpointLocationsRequestHandler.cpp
   Handler/CancelRequestHandler.cpp
   Handler/CompileUnitsRequestHandler.cpp
+  Handler/DynDbgRequestHandler.cpp
   Handler/CompletionsRequestHandler.cpp
   Handler/ConfigurationDoneRequestHandler.cpp
   Handler/ContinueRequestHandler.cpp

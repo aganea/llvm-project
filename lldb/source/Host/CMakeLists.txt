@@ -156,9 +156,6 @@ set(EXTRA_LIBS)
 if (CMAKE_SYSTEM_NAME MATCHES "NetBSD")
   list(APPEND EXTRA_LIBS kvm)
 endif()
-if (LLDB_ENABLE_LIBXML2)
-  list(APPEND EXTRA_LIBS LibXml2::LibXml2)
-endif()
 if (HAVE_LIBDL)
   list(APPEND EXTRA_LIBS ${CMAKE_DL_LIBS})
 endif()
@@ -193,4 +190,10 @@ add_lldb_library(lldbHost NO_PLUGIN_DEPENDENCIES
     ${LLDBObjCLibs}
     ${LLDB_LIBEDIT_LIBS}
   )
+
+if (LLDB_ENABLE_LIBXML2)
+  # XML.cpp references libxml2; static lldbHost archives do not satisfy those
+  # symbols at link time, so propagate LibXml2 to all lldbHost consumers.
+  target_link_libraries(lldbHost PUBLIC LibXml2::LibXml2)
+endif()
 
