@@ -9,6 +9,7 @@
 #include "StructuredDataDynDbg.h"
 #include "DynDbgDeoptimizer.h"
 
+#include "lldb/Breakpoint/Breakpoint.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
@@ -129,6 +130,62 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
+// Command: dyndbg break <function-name>
+// ---------------------------------------------------------------------------
+class CommandObjectDynDbgBreak : public CommandObjectParsed {
+public:
+  CommandObjectDynDbgBreak(CommandInterpreter &interpreter)
+      : CommandObjectParsed(
+            interpreter, "dyndbg break",
+            "Deoptimize a function (if needed) and set a breakpoint on it.",
+            "dyndbg break <function-name>") {
+    AddSimpleArgumentList(eArgTypeFunctionName);
+  }
+
+  ~CommandObjectDynDbgBreak() override = default;
+
+protected:
+  void DoExecute(Args &args, CommandReturnObject &result) override {
+    if (args.GetArgumentCount() != 1) {
+      result.AppendError("Usage: dyndbg break <function-name>");
+      return;
+    }
+
+    Target &target = GetTarget();
+    llvm::StringRef func_name = args[0].ref();
+
+    DynDbgDeoptimizer &deopt = DynDbgDeoptimizer::GetForTarget(target);
+    if (!deopt.IsDeoptimized(func_name)) {
+      Status status = deopt.Deoptimize(func_name, result.GetOutputStream());
+      if (status.Fail()) {
+        result.AppendWarningWithFormat(
+            "Deoptimization failed: %s\nSetting breakpoint on optimized "
+            "function.\n",
+            status.AsCString());
+      }
+    }
+
+    BreakpointSP bp_sp = target.CreateBreakpoint(
+        /*containingModules=*/nullptr, /*containingSourceFiles=*/nullptr,
+        func_name.str().c_str(),
+        eFunctionNameTypeAuto, eLanguageTypeUnknown,
+        /*offset=*/0, /*offset_is_insn_count=*/false,
+        /*skip_prologue=*/eLazyBoolCalculate,
+        /*internal=*/false, /*request_hardware=*/false);
+
+    if (bp_sp) {
+      result.GetOutputStream().Printf(
+          "Breakpoint %u: %s\n", bp_sp->GetID(),
+          func_name.str().c_str());
+      result.SetStatus(eReturnStatusSuccessFinishResult);
+    } else {
+      result.AppendErrorWithFormat("Failed to set breakpoint on '%s'.\n",
+                                  func_name.str().c_str());
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Multiword command: dyndbg
 // ---------------------------------------------------------------------------
 class CommandObjectDynDbg : public CommandObjectMultiword {
@@ -141,6 +198,9 @@ public:
             "extracts a single function, codegens at -O0, loads into "
             "the debuggee, and patches the optimized entry with JMP.",
             "dyndbg <subcommand> [<args>]") {
+    LoadSubCommand(
+        "break",
+        CommandObjectSP(new CommandObjectDynDbgBreak(interpreter)));
     LoadSubCommand(
         "deoptimize",
         CommandObjectSP(new CommandObjectDynDbgDeoptimize(interpreter)));

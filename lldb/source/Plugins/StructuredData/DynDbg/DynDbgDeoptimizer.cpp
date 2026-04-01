@@ -342,6 +342,7 @@ Status DynDbgDeoptimizer::ThinBitcode(llvm::MemoryBuffer &bc_buf,
                                       llvm::StringRef keep_name,
                                       llvm::StringRef tu_hash,
                                       llvm::StringRef output_path,
+                                      std::string &unopt_symbol_name,
                                       Stream &stream) {
   llvm::LLVMContext ctx;
   auto mod_or_err = llvm::getLazyBitcodeModule(bc_buf.getMemBufferRef(), ctx);
@@ -369,6 +370,7 @@ Status DynDbgDeoptimizer::ThinBitcode(llvm::MemoryBuffer &bc_buf,
                   llvm::toString(std::move(err)));
 
   keep_fn->setName((keep_fn->getName() + ".dyndbg.unopt").str());
+  unopt_symbol_name = keep_fn->getName().str();
 
   auto is_special_gv = [](const llvm::GlobalVariable &GV) {
     llvm::StringRef name = GV.getName();
@@ -1563,7 +1565,9 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
       thin_bc_path,
       llvm::sys::path::stem(build_info.SourceFile).str() + ".thin.bc");
 
-  status = ThinBitcode(*bc_buf, function_name, tu_hash, thin_bc_path, stream);
+  std::string unopt_name;
+  status = ThinBitcode(*bc_buf, function_name, tu_hash, thin_bc_path,
+                       unopt_name, stream);
   if (status.Fail())
     return status;
   auto t6 = Clock::now();
@@ -1587,8 +1591,6 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
 
   // Step 5: Load .obj into debuggee and patch function entry.
   auto t9 = Clock::now();
-  std::string unopt_name =
-      (function_name + ".dyndbg.unopt").str();
   addr_t unopt_addr = LLDB_INVALID_ADDRESS;
   DynDbgPatchInfo patch_info;
   patch_info.FunctionName = function_name.str();

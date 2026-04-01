@@ -82,10 +82,13 @@ private:
 
   /// Lazy-load bitcode, materialize only the target function, externalize
   /// the rest, write thinned bitcode to output_path.
+  /// \param[out] unopt_symbol_name  The mangled symbol name of the kept
+  ///   function after renaming (e.g. "?MyFunc@@YAHXZ.dyndbg.unopt").
   static Status ThinBitcode(llvm::MemoryBuffer &bc_buf,
                             llvm::StringRef keep_function_name,
                             llvm::StringRef tu_hash,
                             llvm::StringRef output_path,
+                            std::string &unopt_symbol_name,
                             Stream &result_stream);
 
   /// Invoke clang/llc to codegen the thinned bitcode at -O0.
