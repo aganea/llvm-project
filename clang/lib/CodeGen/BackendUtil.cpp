@@ -1535,7 +1535,7 @@ void clang::EmbedDynamicDebugBitcode(llvm::Module *M,
   // "DYDB" magic + u32 uncompressed size + zstd-compressed bitcode
   SmallVector<uint8_t, 0> CompressedBuf;
   if (llvm::compression::zstd::isAvailable()) {
-    llvm::compression::zstd::compress(Input, CompressedBuf);
+    llvm::compression::zstd::compress(Input, CompressedBuf, /*Level=*/18);
   } else {
     CompressedBuf.assign(Input.begin(), Input.end());
   }
