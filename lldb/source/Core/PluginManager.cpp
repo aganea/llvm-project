@@ -24,6 +24,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -496,9 +497,10 @@ public:
   ~PluginInstances() {
 #ifndef NDEBUG
     for (const auto &instance : m_instances)
-      llvm::errs() << llvm::formatv("Use `image lookup -va {0:x}` to find out "
-                                    "which callback was not removed\n",
-                                    instance.create_callback);
+      llvm::errs() << llvm::formatv(
+          "Use `image lookup -va {0:x}` to find out "
+          "which callback was not removed\n",
+          reinterpret_cast<uintptr_t>(instance.create_callback));
 #endif
     assert(m_instances.empty() && "forgot to unregister plugin?");
   }

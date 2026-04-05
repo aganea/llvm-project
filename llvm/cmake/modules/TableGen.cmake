@@ -185,7 +185,10 @@ macro(add_tablegen target project)
   set(${target}_OLD_LLVM_LINK_COMPONENTS ${LLVM_LINK_COMPONENTS})
   set(LLVM_LINK_COMPONENTS ${LLVM_LINK_COMPONENTS} TableGen)
 
-  add_llvm_executable(${target} DISABLE_LLVM_LINK_LLVM_DYLIB
+  # TableGen tools define LLVM_BUILD_STATIC (and clang-tblgen also pulls in
+  # CLANG_BUILD_STATIC). Reusing LLVMSupport's PCH yields a macro mismatch
+  # with clang-cl (-Wclang-cl-pch).
+  add_llvm_executable(${target} DISABLE_LLVM_LINK_LLVM_DYLIB DISABLE_PCH_REUSE
     ${ADD_TABLEGEN_UNPARSED_ARGUMENTS})
   set(LLVM_LINK_COMPONENTS ${${target}_OLD_LLVM_LINK_COMPONENTS})
 

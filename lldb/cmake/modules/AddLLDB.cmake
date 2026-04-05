@@ -86,7 +86,16 @@ function(add_lldb_library name)
     set(pass_NO_INSTALL_RPATH NO_INSTALL_RPATH)
   endif()
 
+  # clang-cl MSVC-style PCH (-Wclang-cl-pch) requires the TU's macros to match
+  # the PCH. LLDB libraries pull CLANG_BUILD_STATIC (static Clang on Windows),
+  # LLDB_IN_LIBLLDB, LLDB_PYTHON_*, etc., which never match LLVMSupport's PCH.
+  set(_lldb_pch_args)
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    list(APPEND _lldb_pch_args DISABLE_PCH_REUSE)
+  endif()
+
   llvm_add_library(${name} ${libkind}
+    ${_lldb_pch_args}
     ${PARAM_UNPARSED_ARGUMENTS}
     LINK_LIBS ${PARAM_LINK_LIBS}
     ${pass_NO_INSTALL_RPATH}
@@ -161,7 +170,12 @@ function(add_lldb_executable name)
   endif()
 
   list(APPEND LLVM_LINK_COMPONENTS ${ARG_LINK_COMPONENTS})
+  set(_lldb_exe_pch_args)
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    list(APPEND _lldb_exe_pch_args DISABLE_PCH_REUSE)
+  endif()
   add_llvm_executable(${name}
+    ${_lldb_exe_pch_args}
     ${pass_NO_INSTALL_RPATH}
     ${ARG_UNPARSED_ARGUMENTS}
   )

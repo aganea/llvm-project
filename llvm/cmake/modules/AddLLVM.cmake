@@ -51,6 +51,7 @@ endif()
 
 function(llvm_update_compile_flags name)
   set(LLVM_COMPILE_CXXFLAGS "")
+  set(_llvm_target_defs)
 
   # LLVM_REQUIRES_EH is an internal flag that individual targets can use to
   # force EH
@@ -62,7 +63,7 @@ function(llvm_update_compile_flags name)
     list(APPEND LLVM_COMPILE_CXXFLAGS ${LLVM_CXXFLAGS_EH_ENABLE})
   else()
     if(MSVC)
-      list(APPEND LLVM_COMPILE_DEFINITIONS _HAS_EXCEPTIONS=0)
+      list(APPEND _llvm_target_defs _HAS_EXCEPTIONS=0)
     endif()
     list(APPEND LLVM_COMPILE_CXXFLAGS ${LLVM_CXXFLAGS_EH_DISABLE})
   endif()
@@ -75,11 +76,29 @@ function(llvm_update_compile_flags name)
     list(APPEND LLVM_COMPILE_CXXFLAGS ${LLVM_CXXFLAGS_RTTI_ENABLE})
   endif()
 
+  # Match add_llvm_executable / DISABLE_LLVM_LINK_LLVM_DYLIB static tools so PCH
+  # built for LLVMSupport matches consumers (clang-cl -Wclang-cl-pch).
+  if(NOT LLVM_LINK_LLVM_DYLIB)
+    list(APPEND _llvm_target_defs LLVM_BUILD_STATIC)
+  endif()
+
+  # lldb/add_definitions applies this under lldb/; LLVM targets reuse lldb tool
+  # PCH state when LLDB is enabled in the same build.
+  if(WIN32 AND DEFINED LLVM_ENABLE_PROJECTS AND "lldb" IN_LIST LLVM_ENABLE_PROJECTS)
+    list(APPEND _llvm_target_defs _ENABLE_EXTENDED_ALIGNED_STORAGE)
+  endif()
+
   target_compile_options(${name} PRIVATE ${LLVM_COMPILE_FLAGS} $<$<COMPILE_LANGUAGE:CXX>:${LLVM_COMPILE_CXXFLAGS}>)
-  target_compile_definitions(${name} PRIVATE ${LLVM_COMPILE_DEFINITIONS})
+  if(_llvm_target_defs)
+    target_compile_definitions(${name} PRIVATE ${_llvm_target_defs})
+  endif()
 endfunction()
 
 function(llvm_update_pch name)
+  get_target_property(lib_disable_self ${name} DISABLE_PRECOMPILE_HEADERS)
+  if(lib_disable_self)
+    return()
+  endif()
   if(LLVM_REQUIRES_RTTI OR LLVM_REQUIRES_EH)
     # Non-default RTTI/EH results in incompatible flags, precluding PCH reuse.
     set(ARG_DISABLE_PCH_REUSE ON)
@@ -629,6 +648,12 @@ function(llvm_add_library name)
     add_library(${obj_name} OBJECT EXCLUDE_FROM_ALL
       ${ALL_FILES}
       )
+    # When linking against libLLVM, LLVMSupport is built without LLVM_BUILD_STATIC
+    # but this obj defines it (below), which breaks clang-cl PCH (-Wclang-cl-pch).
+    # DISABLE_PCH_REUSE is handled the same way (AddClang passes it for static libs).
+    if((ARG_DISABLE_LLVM_LINK_LLVM_DYLIB AND LLVM_LINK_LLVM_DYLIB) OR ARG_DISABLE_PCH_REUSE)
+      set_target_properties(${obj_name} PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+    endif()
     llvm_update_compile_flags(${obj_name})
     llvm_update_pch(${obj_name})
     if(CMAKE_GENERATOR STREQUAL "Xcode")
@@ -764,6 +789,9 @@ function(llvm_add_library name)
   set_output_directory(${name} BINARY_DIR ${LLVM_RUNTIME_OUTPUT_INTDIR} LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
   # $<TARGET_OBJECTS> doesn't require compile flags.
   if(NOT obj_name)
+    if(ARG_DISABLE_PCH_REUSE)
+      set_target_properties(${name} PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+    endif()
     llvm_update_compile_flags(${name})
     llvm_update_pch(${name})
   else()
@@ -1075,7 +1103,7 @@ macro(add_llvm_library name)
 endmacro(add_llvm_library name)
 
 macro(generate_llvm_objects name)
-  cmake_parse_arguments(ARG "GENERATE_DRIVER" "" "DEPENDS" ${ARGN})
+  cmake_parse_arguments(ARG "GENERATE_DRIVER;DISABLE_PCH_REUSE" "" "DEPENDS" ${ARGN})
 
   llvm_process_sources( ALL_FILES ${ARG_UNPARSED_ARGUMENTS} )
 
@@ -1088,6 +1116,9 @@ macro(generate_llvm_objects name)
     add_library(${obj_name} OBJECT EXCLUDE_FROM_ALL
       ${ALL_FILES}
       )
+    if(ARG_DISABLE_PCH_REUSE)
+      set_target_properties(${obj_name} PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+    endif()
     llvm_update_compile_flags(${obj_name})
     llvm_update_pch(${obj_name})
     set(ALL_FILES "$<TARGET_OBJECTS:${obj_name}>")
@@ -1142,7 +1173,11 @@ macro(add_llvm_executable name)
     "ENTITLEMENTS;BUNDLE_PATH"
     ""
     ${ARGN})
-  generate_llvm_objects(${name} ${ARG_UNPARSED_ARGUMENTS})
+  set(llvm_generate_obj_args)
+  if(ARG_DISABLE_PCH_REUSE)
+    list(APPEND llvm_generate_obj_args DISABLE_PCH_REUSE)
+  endif()
+  generate_llvm_objects(${name} ${llvm_generate_obj_args} ${ARG_UNPARSED_ARGUMENTS})
   add_windows_version_resource_file(ALL_FILES ${ALL_FILES})
 
   if(XCODE)
@@ -1187,6 +1222,9 @@ macro(add_llvm_executable name)
 
   # $<TARGET_OBJECTS> doesn't require compile flags.
   if(NOT LLVM_ENABLE_OBJLIB)
+    if(ARG_DISABLE_PCH_REUSE)
+      set_target_properties(${name} PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+    endif()
     llvm_update_compile_flags(${name})
     llvm_update_pch(${name})
   elseif(NOT ARG_DISABLE_PCH_REUSE)

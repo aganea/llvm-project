@@ -106,7 +106,13 @@ macro(add_clang_library name)
     endif()
     set_property(GLOBAL APPEND PROPERTY CLANG_STATIC_LIBS ${name})
   endif()
-  llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs})
+  # CLANG_BUILD_STATIC is applied after llvm_add_library; avoid reusing LLVM PCH
+  # without that macro (clang-cl -Wclang-cl-pch).
+  if((WIN32 AND NOT MINGW) AND NOT CLANG_LINK_CLANG_DYLIB)
+    llvm_add_library(${name} DISABLE_PCH_REUSE ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs})
+  else()
+    llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs})
+  endif()
 
   if((WIN32 AND NOT MINGW) AND NOT CLANG_LINK_CLANG_DYLIB)
     # Make sure all consumers also turn off visibility macros so they're not
@@ -157,7 +163,13 @@ macro(add_clang_library name)
 endmacro(add_clang_library)
 
 macro(add_clang_executable name)
-  add_llvm_executable( ${name} ${ARGN} )
+  # Static Clang on Windows sets CLANG_BUILD_STATIC on the TU; LLVMSupport's
+  # PCH does not (-Wclang-cl-pch).
+  if((WIN32 AND NOT MINGW) AND NOT CLANG_LINK_CLANG_DYLIB)
+    add_llvm_executable(${name} DISABLE_PCH_REUSE ${ARGN})
+  else()
+    add_llvm_executable(${name} ${ARGN})
+  endif()
   set_clang_windows_version_resource_properties(${name})
   set_target_properties(${name} PROPERTIES XCODE_GENERATE_SCHEME ON)
 endmacro(add_clang_executable)
