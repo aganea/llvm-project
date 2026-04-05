@@ -548,6 +548,12 @@ static void appendFilteredCc1ArgsForIRCodegen(
     if (a == "-emit-obj" || a == "-emit-llvm" || a == "-S" || a == "-E")
       continue;
 
+    // Source file paths that leaked through flattenClangCommandLine() when
+    // built with absolute paths (MainFileName only matches the basename).
+    if (a.ends_with(".cpp") || a.ends_with(".cxx") || a.ends_with(".cc") ||
+        a.ends_with(".c") || a.ends_with(".mm") || a.ends_with(".m"))
+      continue;
+
     // Working dirs from the original compile; not meaningful for thin IR.
     if (a.starts_with("-fdebug-compilation-dir=") ||
         a.starts_with("-fcoverage-compilation-dir="))
@@ -576,16 +582,6 @@ static void appendFilteredCc1ArgsForIRCodegen(
     }
 
     out.push_back(std::string(a));
-  }
-
-  while (!out.empty()) {
-    llvm::StringRef last = out.back();
-    if (last.ends_with(".cpp") || last.ends_with(".cxx") ||
-        last.ends_with(".cc") || last.ends_with(".c") ||
-        last.ends_with(".mm") || last.ends_with(".m"))
-      out.pop_back();
-    else
-      break;
   }
 }
 
@@ -1097,8 +1093,18 @@ Status DynDbgDeoptimizer::LoadObjIntoDebuggee(
     }
   }
 
-  // Find the deoptimized function's address.
+  // Find the deoptimized function's address.  Try exact match first, then
+  // substring (handles C++ mangled names: user passes "MyFunc", COFF has
+  // "?MyFunc@@YAHXZ").
   auto fn_it = symbol_addrs.find(unopt_function_name);
+  if (fn_it == symbol_addrs.end()) {
+    for (auto &kv : symbol_addrs) {
+      if (kv.first().contains(unopt_function_name)) {
+        fn_it = symbol_addrs.find(kv.first());
+        break;
+      }
+    }
+  }
   if (fn_it == symbol_addrs.end())
     return Status("deoptimized function '" + unopt_function_name.str() +
                   "' not found in loaded symbols");
@@ -1419,6 +1425,18 @@ Status DynDbgDeoptimizer::GetBuildInfoForFunction(
   if (function_addr == LLDB_INVALID_ADDRESS)
     return Status("invalid load address for '" + function_name.str() + "'");
 
+  // Capture the mangled (COFF-decorated) name for symbol lookups in .obj files.
+  if (sc.symbol) {
+    ConstString mangled = sc.symbol->GetMangled().GetMangledName();
+    if (mangled)
+      build_info.MangledName = mangled.GetStringRef().str();
+  }
+  if (build_info.MangledName.empty() && sc.function) {
+    ConstString mangled = sc.function->GetMangled().GetMangledName();
+    if (mangled)
+      build_info.MangledName = mangled.GetStringRef().str();
+  }
+
   // Get the PDB path from the module.
   ModuleSP module_sp = sc.module_sp;
   // FindFunctions can return a SymbolContext with a valid address but no
@@ -1513,7 +1531,138 @@ Status DynDbgDeoptimizer::GetBuildInfoForFunction(
                 function_name.str() + "'");
 }
 
+// ── Source recompile (dynamic mode) ──────────────────────────────────────────
+
+/// Build a modified cc1 command for -O0 source recompile with
+/// -fdynamic-debug-extern to externalize all symbols except the kept function.
+static void
+buildSourceRecompileArgs(llvm::SmallVectorImpl<std::string> &out,
+                         const llvm::SmallVectorImpl<std::string> &orig,
+                         llvm::StringRef keep_function,
+                         llvm::StringRef tu_hash) {
+  for (size_t i = 0; i < orig.size(); ++i) {
+    llvm::StringRef a = orig[i];
+
+    if (a == "-cc1")
+      continue;
+
+    // Strip build-time /dyndbg flags (not needed for deopt recompile).
+    if (a == "-fdynamic-debug-prep" || a == "-fdynamic-debug-bitcode")
+      continue;
+
+    // Strip original optimization flags.
+    if (a.starts_with("-O") && a != "-Objective-C" && a != "-Objective-C++")
+      continue;
+
+    // Strip -o and its argument (we supply our own).
+    if (a == "-o") {
+      if (i + 1 < orig.size())
+        ++i;
+      continue;
+    }
+
+    // Strip -x and its argument (we compile from source with known language).
+    if (a == "-x") {
+      if (i + 1 < orig.size())
+        ++i;
+      continue;
+    }
+
+    // Strip source file paths that leaked through flattenClangCommandLine()
+    // when built with absolute paths; RunSourceRecompile adds it explicitly.
+    if (a.ends_with(".cpp") || a.ends_with(".cxx") || a.ends_with(".cc") ||
+        a.ends_with(".c") || a.ends_with(".mm") || a.ends_with(".m"))
+      continue;
+
+    out.push_back(std::string(a));
+  }
+}
+
+Status DynDbgDeoptimizer::RunSourceRecompile(const DynDbgBuildInfo &build_info,
+                                             llvm::StringRef function_name,
+                                             llvm::StringRef tu_hash,
+                                             llvm::StringRef output_obj_path,
+                                             std::string &unopt_symbol_name,
+                                             Stream &result_stream) {
+  auto orig_args = parseCommandLine(build_info.CommandLine);
+
+  llvm::SmallVector<std::string, 64> args;
+  args.push_back(build_info.CompilerPath);
+  args.push_back("-cc1");
+  buildSourceRecompileArgs(args, orig_args, function_name, tu_hash);
+
+  // Force -O0 and add -fdynamic-debug-extern to externalize non-kept symbols.
+  args.push_back("-O0");
+  args.push_back("-fdynamic-debug-extern");
+
+  if (!function_name.empty()) {
+    args.push_back("-mllvm");
+    args.push_back(("-dynamic-debug-extern-keep=" + function_name).str());
+  }
+  if (!tu_hash.empty()) {
+    args.push_back("-mllvm");
+    args.push_back(("-dynamic-debug-extern-hash=" + tu_hash).str());
+  }
+
+  // Working directory from LF_BUILDINFO.
+  if (!build_info.WorkingDir.empty()) {
+    args.push_back("-working-directory");
+    args.push_back(build_info.WorkingDir);
+  }
+
+  args.push_back("-o");
+  args.push_back(output_obj_path.str());
+
+  // Explicitly set language and source file (stripped from original args
+  // by buildSourceRecompileArgs to avoid duplication).
+  args.push_back("-x");
+  args.push_back("c++");
+  args.push_back(build_info.SourceFile);
+
+  // The function keeps its original name in the -fdynamic-debug-extern output.
+  unopt_symbol_name = function_name.str();
+
+  llvm::SmallVector<llvm::StringRef, 128> argv;
+  for (const auto &a : args)
+    argv.push_back(a);
+
+  result_stream.Printf("  Source recompile: %s -cc1 ... -O0 "
+                       "-fdynamic-debug-extern %s\n",
+                       build_info.CompilerPath.c_str(),
+                       build_info.SourceFile.c_str());
+
+  std::string err_msg;
+  bool exec_failed = false;
+  auto start = Clock::now();
+  int rc = llvm::sys::ExecuteAndWait(argv[0], argv, /*Env=*/std::nullopt,
+                                     /*Redirects=*/{}, /*SecondsToWait=*/0,
+                                     /*MemoryLimit=*/0, &err_msg, &exec_failed);
+  auto end = Clock::now();
+
+  if (exec_failed || rc != 0) {
+    if (err_msg.empty())
+      err_msg = "compiler returned exit code " + std::to_string(rc);
+    return Status("source recompile failed: " + err_msg);
+  }
+
+  result_stream.Printf("  Source recompile completed in %.1f ms\n",
+                       elapsedMs(start, end));
+  return Status();
+}
+
 // ── Main deoptimize/reoptimize entry points ─────────────────────────────────
+
+namespace {
+enum class DynDbgMode { AOT, Hybrid, Dynamic };
+} // anonymous namespace
+
+static std::string findAltObjPath(llvm::StringRef obj_path) {
+  llvm::SmallString<256> alt_path(obj_path);
+  llvm::sys::path::replace_extension(alt_path, ".alt.obj");
+  if (llvm::sys::fs::exists(alt_path))
+    return std::string(alt_path);
+  return "";
+}
 
 Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
                                      Stream &stream) {
@@ -1530,23 +1679,13 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
     return status;
   auto t2 = Clock::now();
 
-  stream.Printf("  [1/5] PDB lookup: %.1f ms\n", elapsedMs(t1, t2));
+  stream.Printf("  [1] PDB lookup: %.1f ms\n", elapsedMs(t1, t2));
   stream.Printf("    Source: %s\n", build_info.SourceFile.c_str());
   stream.Printf("    ObjFile: %s\n", build_info.ObjFilePath.c_str());
   stream.Printf("    Function addr: 0x%llx\n",
                 (unsigned long long)function_addr);
 
-  // Step 2: Extract bitcode from .obj.
-  auto t3 = Clock::now();
-  std::string bc_error;
-  auto bc_buf = ExtractBitcodeFromObj(build_info.ObjFilePath, bc_error);
-  if (!bc_buf)
-    return Status(bc_error);
-  auto t4 = Clock::now();
-  stream.Printf("  [2/5] Bitcode extraction: %.1f ms (%.1f KB)\n",
-                elapsedMs(t3, t4), bc_buf->getBufferSize() / 1024.0);
-
-  // Extract TU hash for symbol name mangling (same PDB path rules as PDB lookup).
+  // Extract TU hash for symbol name mangling.
   std::string tu_hash;
   ModuleSP pdb_module;
   {
@@ -1557,40 +1696,108 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
   if (FileSpec pdb_spec = GetNativePDBSpec(pdb_module); pdb_spec)
     tu_hash = ExtractTUHash(pdb_spec.GetPath());
 
-  // Step 3: Thin bitcode to single function.
+  // Step 2: Determine mode by probing available artifacts.
+  //   AOT:     .alt.obj exists alongside the .obj
+  //   Hybrid:  .dyndbg section present in the .obj (embedded bitcode)
+  //   Dynamic: neither -- fall back to source recompile
+  auto t3 = Clock::now();
+  std::string alt_obj_path = findAltObjPath(build_info.ObjFilePath);
+
+  DynDbgMode mode;
+  std::unique_ptr<llvm::MemoryBuffer> bc_buf;
+
+  if (!alt_obj_path.empty()) {
+    mode = DynDbgMode::AOT;
+    stream.Printf("  [2] Mode: AOT (.alt.obj found)\n");
+    stream.Printf("    %s\n", alt_obj_path.c_str());
+  } else {
+    std::string bc_error;
+    bc_buf = ExtractBitcodeFromObj(build_info.ObjFilePath, bc_error);
+    if (bc_buf) {
+      mode = DynDbgMode::Hybrid;
+      stream.Printf("  [2] Mode: hybrid (%.1f KB bitcode from .dyndbg)\n",
+                    bc_buf->getBufferSize() / 1024.0);
+    } else {
+      mode = DynDbgMode::Dynamic;
+      stream.Printf("  [2] Mode: dynamic (source recompile)\n");
+    }
+  }
+  auto t4 = Clock::now();
+  stream.Printf("  [2] Mode detection: %.1f ms\n", elapsedMs(t3, t4));
+
+  // Step 3: Obtain unoptimized .obj (mode-specific).
   auto t5 = Clock::now();
-  llvm::SmallString<256> thin_bc_path;
-  llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true, thin_bc_path);
-  llvm::sys::path::append(
-      thin_bc_path,
-      llvm::sys::path::stem(build_info.SourceFile).str() + ".thin.bc");
-
   std::string unopt_name;
-  status = ThinBitcode(*bc_buf, function_name, tu_hash, thin_bc_path,
-                       unopt_name, stream);
-  if (status.Fail())
-    return status;
-  auto t6 = Clock::now();
-  stream.Printf("  [3/5] Bitcode thinning: %.1f ms\n", elapsedMs(t5, t6));
-
-  // Step 4: Codegen at -O0.
-  auto t7 = Clock::now();
   llvm::SmallString<256> output_obj_path;
-  llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
-                                         output_obj_path);
-  llvm::sys::path::append(
-      output_obj_path,
-      llvm::sys::path::stem(build_info.SourceFile).str() + ".dyndbg.obj");
 
-  status =
-      RunCodegen(build_info, thin_bc_path, output_obj_path, stream);
-  if (status.Fail())
-    return status;
-  auto t8 = Clock::now();
-  stream.Printf("  [4/5] Codegen: %.1f ms\n", elapsedMs(t7, t8));
+  switch (mode) {
+  case DynDbgMode::AOT: {
+    // The .alt.obj is ready to load; look up via the COFF-mangled symbol name.
+    output_obj_path = llvm::StringRef(alt_obj_path);
+    unopt_name = build_info.MangledName.empty() ? function_name.str()
+                                                : build_info.MangledName;
+    stream.Printf("  [3] Using prebuilt .alt.obj (symbol: %s) (0 ms)\n",
+                  unopt_name.c_str());
+    break;
+  }
 
-  // Step 5: Load .obj into debuggee and patch function entry.
-  auto t9 = Clock::now();
+  case DynDbgMode::Hybrid: {
+    // Thin bitcode to single function, then codegen.
+    llvm::SmallString<256> thin_bc_path;
+    llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
+                                           thin_bc_path);
+    llvm::sys::path::append(thin_bc_path,
+                            llvm::sys::path::stem(build_info.SourceFile).str() +
+                                ".thin.bc");
+
+    status = ThinBitcode(*bc_buf, function_name, tu_hash, thin_bc_path,
+                         unopt_name, stream);
+    if (status.Fail())
+      return status;
+
+    auto t_thin = Clock::now();
+    stream.Printf("  [3a] Bitcode thinning: %.1f ms\n", elapsedMs(t5, t_thin));
+
+    llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
+                                           output_obj_path);
+    llvm::sys::path::append(output_obj_path,
+                            llvm::sys::path::stem(build_info.SourceFile).str() +
+                                ".dyndbg.obj");
+
+    status = RunCodegen(build_info, thin_bc_path, output_obj_path, stream);
+    if (status.Fail())
+      return status;
+
+    auto t_codegen = Clock::now();
+    stream.Printf("  [3b] Codegen: %.1f ms\n", elapsedMs(t_thin, t_codegen));
+    break;
+  }
+
+  case DynDbgMode::Dynamic: {
+    // Source recompile at -O0 with -fdynamic-debug-extern.
+    llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
+                                           output_obj_path);
+    llvm::sys::path::append(output_obj_path,
+                            llvm::sys::path::stem(build_info.SourceFile).str() +
+                                ".dyndbg.obj");
+
+    // -dynamic-debug-extern-keep= expects the mangled name (IR-level).
+    llvm::StringRef keep_name = build_info.MangledName.empty()
+                                    ? function_name
+                                    : llvm::StringRef(build_info.MangledName);
+    status = RunSourceRecompile(build_info, keep_name, tu_hash, output_obj_path,
+                                unopt_name, stream);
+    if (status.Fail())
+      return status;
+    break;
+  }
+  }
+
+  auto t6 = Clock::now();
+  stream.Printf("  [3] Unoptimized code ready: %.1f ms\n", elapsedMs(t5, t6));
+
+  // Step 4: Load .obj into debuggee and patch function entry.
+  auto t7 = Clock::now();
   addr_t unopt_addr = LLDB_INVALID_ADDRESS;
   DynDbgPatchInfo patch_info;
   patch_info.FunctionName = function_name.str();
@@ -1606,16 +1813,17 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
 
   RegisterJITModule(patch_info);
 
-  auto t10 = Clock::now();
-  stream.Printf("  [5/5] Load + patch: %.1f ms\n", elapsedMs(t9, t10));
+  auto t8 = Clock::now();
+  stream.Printf("  [4] Load + patch: %.1f ms\n", elapsedMs(t7, t8));
 
   m_patches[function_name] = std::move(patch_info);
 
-  double total_ms = elapsedMs(t1, t10);
-  stream.Printf("  DONE: '%s' deoptimized in %.1f ms "
+  static const char *mode_names[] = {"aot", "hybrid", "dynamic"};
+  double total_ms = elapsedMs(t1, t8);
+  stream.Printf("  DONE [%s]: '%s' deoptimized in %.1f ms "
                 "(0x%llx -> 0x%llx)\n",
-                function_name.str().c_str(), total_ms,
-                (unsigned long long)function_addr,
+                mode_names[static_cast<int>(mode)], function_name.str().c_str(),
+                total_ms, (unsigned long long)function_addr,
                 (unsigned long long)unopt_addr);
 
   return Status();

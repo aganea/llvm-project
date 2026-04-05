@@ -6,11 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// On-demand deoptimization engine: given a function name and a target, this
-// class extracts pre-optimization bitcode, thins it to a single function,
-// codegens at -O0, loads the resulting COFF .obj into the debuggee process,
-// resolves relocations against the PDB symbol table, and patches the optimized
-// function entry with a JMP to the unoptimized version.
+// On-demand deoptimization engine supporting three modes:
+//   - hybrid:  extract pre-opt bitcode from .dyndbg, thin, codegen at -O0
+//   - aot:     load prebuilt .alt.obj (ahead-of-time -O0 codegen)
+//   - dynamic: recompile from source at -O0 using LF_BUILDINFO metadata
+//
+// All modes share the same COFF loader and JMP-patch infrastructure.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,6 +36,7 @@ struct DynDbgBuildInfo {
   std::string TypeServerPDB;
   std::string CommandLine;
   std::string ObjFilePath;
+  std::string MangledName; // COFF-mangled symbol name (e.g. "?MyFunc@@YAHXZ")
 };
 
 struct DynDbgPatchInfo {
@@ -96,6 +98,17 @@ private:
                     llvm::StringRef thin_bc_path,
                     llvm::StringRef output_obj_path,
                     Stream &result_stream);
+
+  /// Dynamic mode: recompile the source TU at -O0 using the cc1 command line
+  /// stored in LF_BUILDINFO.  Uses -fdynamic-debug-extern to externalize all
+  /// symbols except the kept function so that the resulting .obj has exactly
+  /// one definition + external references (same shape as the hybrid thin .obj).
+  Status RunSourceRecompile(const DynDbgBuildInfo &build_info,
+                            llvm::StringRef function_name,
+                            llvm::StringRef tu_hash,
+                            llvm::StringRef output_obj_path,
+                            std::string &unopt_symbol_name,
+                            Stream &result_stream);
 
   /// Load a COFF .obj into the debuggee: allocate memory, copy sections,
   /// resolve relocations against the target's symbol table, return the

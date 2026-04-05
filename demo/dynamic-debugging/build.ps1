@@ -51,8 +51,8 @@ $BuildRoot = "$ScriptDir\build"
 # Default "all": MSVC-only. Use -Configs clang-aot,clang-hybrid to exercise skip / future LLVM.
 $AllConfigs = @("msvc-baseline", "msvc-dynamicdeopt")
 
-# Set $true after LLVM implements /dyndbg:aot and /dyndbg:hybrid (see demo CMakeLists.txt).
-$ClangDynamicDebuggingImplemented = $false
+# LLVM implements /dyndbg:dynamic, /dyndbg:hybrid, and /dyndbg:aot.
+$ClangDynamicDebuggingImplemented = $true
 
 if ($Clean -and (Test-Path $BuildRoot)) {
     Write-Host "Cleaning $BuildRoot..." -ForegroundColor Yellow
@@ -99,8 +99,8 @@ function Invoke-CMakeBuild {
     }
 }
 
-# Skip clang-aot / clang-hybrid until LLVM implements the flags (CMakeLists.txt uses CheckCXXCompilerFlag).
-$clangConfigs = @("clang-aot", "clang-hybrid")
+# Skip clang configs unless LLVM implements the flags (CMakeLists.txt uses CheckCXXCompilerFlag).
+$clangConfigs = @("clang-aot", "clang-hybrid", "clang-dynamic")
 $clangResolved = Resolve-ClangCl
 $selectedFiltered = [System.Collections.Generic.List[string]]::new()
 foreach ($c in $selected) {
@@ -205,8 +205,9 @@ foreach ($cfg in $selected) {
     switch ($cfg) {
         "msvc-baseline"      { Invoke-Build $cfg "none"   "msvc"  }
         "msvc-dynamicdeopt"  { Invoke-Build $cfg "msvc"   "msvc"  }
-        "clang-aot"          { Invoke-Build $cfg "aot"    "clang" }
-        "clang-hybrid"       { Invoke-Build $cfg "hybrid" "clang" }
+        "clang-aot"          { Invoke-Build $cfg "aot"     "clang" }
+        "clang-hybrid"       { Invoke-Build $cfg "hybrid"  "clang" }
+        "clang-dynamic"      { Invoke-Build $cfg "dynamic" "clang" }
         default              { Write-Warning "Unknown config: $cfg" }
     }
 }

@@ -27,8 +27,8 @@ target_include_directories(demo PRIVATE src)
 #
 # Set via: cmake -DDYNDBG_MODE=msvc ...
 
-set(DYNDBG_MODE "none" CACHE STRING "Dynamic debugging mode: none, msvc, aot, hybrid")
-set_property(CACHE DYNDBG_MODE PROPERTY STRINGS none msvc aot hybrid)
+set(DYNDBG_MODE "none" CACHE STRING "Dynamic debugging mode: none, msvc, aot, hybrid, dynamic")
+set_property(CACHE DYNDBG_MODE PROPERTY STRINGS none msvc aot hybrid dynamic)
 
 # Detect compiler identity
 set(IS_MSVC FALSE)
@@ -86,8 +86,22 @@ elseif(DYNDBG_MODE STREQUAL "hybrid")
     message(STATUS "[dyndbg] Mode: hybrid (clang-cl /dyndbg:hybrid)")
     target_compile_options(demo PRIVATE /dyndbg:hybrid)
 
+# ── Mode: dynamic (clang-cl /dyndbg:dynamic) ──────────────────────────────────
+elseif(DYNDBG_MODE STREQUAL "dynamic")
+    if(NOT IS_CLANG_CL)
+        message(FATAL_ERROR "[dyndbg] Mode 'dynamic' requires clang-cl, not ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+    check_cxx_compiler_flag("/dyndbg:dynamic" CXX_COMPILER_SUPPORTS_DYNDBG_DYNAMIC)
+    if(NOT CXX_COMPILER_SUPPORTS_DYNDBG_DYNAMIC)
+        message(FATAL_ERROR
+            "[dyndbg] This C++ compiler does not accept /dyndbg:dynamic. "
+            "LLVM dynamic-debugging (dynamic) is not available in this toolchain yet.")
+    endif()
+    message(STATUS "[dyndbg] Mode: dynamic (clang-cl /dyndbg:dynamic)")
+    target_compile_options(demo PRIVATE /dyndbg:dynamic)
+
 else()
-    message(FATAL_ERROR "[dyndbg] Unknown DYNDBG_MODE: ${DYNDBG_MODE}. Use: none, msvc, aot, hybrid")
+    message(FATAL_ERROR "[dyndbg] Unknown DYNDBG_MODE: ${DYNDBG_MODE}. Use: none, msvc, aot, hybrid, dynamic")
 endif()
 
 # ── Post-build: report artifacts ─────────────────────────────────────────────

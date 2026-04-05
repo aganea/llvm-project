@@ -1,5 +1,9 @@
-# Build outputs (see build.bat)
+# Build outputs (see build.bat / test_dyndbg.ps1)
 *.exe
 *.obj
 *.pdb
 *.ilk
+*.bc
+*.thin.bc
+*.dyndbg.obj
+.dyndbg-cache/
