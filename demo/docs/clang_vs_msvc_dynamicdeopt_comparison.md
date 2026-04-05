@@ -1,4 +1,4 @@
-# Clang vs MSVC `/dynamicdeopt` -- Object File Comparison and Design Analysis
+# Clang (`/dyndbg`) vs MSVC (`/dynamicdeopt`) — Object File Comparison and Design Analysis
 
 **Date:** March 2026
 **Status:** Living document -- updated as implementation progresses
@@ -21,7 +21,7 @@ int compute(int x, int y) {
 
 Compiled with:
 - **MSVC:** `cl /O2 /Z7 /dynamicdeopt /c math_utils.cpp`
-- **Clang:** `clang-cl /O2 /Z7 /dynamicdeopt:aot /c math_utils.cpp`
+- **Clang:** `clang-cl /O2 /Z7 /dyndbg:aot /c math_utils.cpp`
 
 Both produce a pair: `math_utils.obj` (optimized) + `math_utils.alt.obj` (unoptimized).
 
@@ -37,7 +37,7 @@ Both produce a pair: `math_utils.obj` (optimized) + `math_utils.alt.obj` (unopti
 | Unoptimized `.alt.obj` | 7,151 B | 4,981 B |
 
 Clang's files are ~30% larger, mainly due to a larger `.debug$T` type stream
-(0xDB0 vs 0x508) and additional `.xdata`/`.pdata` entries in the `.alt.obj`.
+(3,504 vs 1,288 bytes) and additional `.xdata`/`.pdata` entries in the `.alt.obj`.
 
 ### 1.2 Section Layout
 
@@ -48,12 +48,12 @@ Clang's files are ~30% larger, mainly due to a larger `.debug$T` type stream
 | `.text$mn` / `.text` | 3 COMDAT sections | 2 COMDAT sections | MSVC uses `$mn` suffix (COMDAT group naming convention) |
 | `.bss` | `?g_call_count@@3HA` | `g_call_count.dyndbg.<hash>` | Different naming for statics (see Section 3) |
 | `.debug$S` | Present | Present | |
-| `.debug$T` | 0x508 bytes | 0xDB0 bytes | Clang emits more verbose type info |
-| `.pmd_optdep` | **Yes** (0x91 B) | **No** | MSVC-specific: optimization dependency graph |
-| `.pmd_uniqueid` | **Yes** (0x50 B) | **No** | MSVC-specific: 128-bit unique IDs per symbol |
-| `.chks64` | **Yes** (0x68 B) | **No** | MSVC-specific: checksums |
+| `.debug$T` | 1,288 bytes | 3,504 bytes | Clang emits more verbose type info |
+| `.pmd_optdep` | **Yes** (145 bytes) | **No** | MSVC-specific: optimization dependency graph |
+| `.pmd_uniqueid` | **Yes** (80 bytes) | **No** | MSVC-specific: 128-bit unique IDs per symbol |
+| `.chks64` | **Yes** (104 bytes) | **No** | MSVC-specific: checksums |
 | `.llvm_addrsig` | **No** | **Yes** | LLVM-specific: address-significance table |
-| `.drectve` | 0x2F bytes | 0x96 bytes | Clang emits more linker directives |
+| `.drectve` | 47 bytes | 150 bytes | Clang emits more linker directives |
 
 **Unoptimized `.alt.obj`:**
 
@@ -62,9 +62,9 @@ Clang's files are ~30% larger, mainly due to a larger `.debug$T` type stream
 | `.text$mn` / `.text` | 3 sections | 3 sections | Same function count |
 | `.xdata` | 1 entry (compute only) | 3 entries (all functions) | See Section 2.3 |
 | `.pdata` | 1 entry | 3 entries | |
-| `.pmd_uniqueidref` | **Yes** (0xB4 B) | **No** | MSVC-specific: cross-reference fixup table |
-| `.pmd_uniqueid` | **Yes** (0x50 B) | **No** | Same content as in `.obj` |
-| `.chks64` | **Yes** (0x78 B) | **No** | |
+| `.pmd_uniqueidref` | **Yes** (180 bytes) | **No** | MSVC-specific: cross-reference fixup table |
+| `.pmd_uniqueid` | **Yes** (80 bytes) | **No** | Same content as in `.obj` |
+| `.chks64` | **Yes** (120 bytes) | **No** | |
 
 ---
 
@@ -230,6 +230,9 @@ incremental build validation.
 
 ### 5.2 Clang Approach (Current PoC)
 
+Build this path with **`/dyndbg`** and its sub-modes (e.g. `/dyndbg:aot` for
+pre-built `.alt.obj`); see Section 6.
+
 **Pros:**
 - **Standard COFF output**: The `.alt.obj` is a normal object file with
   standard relocations. Any COFF-aware linker (lld-link, MSVC link.exe, even
@@ -265,7 +268,7 @@ incremental build validation.
 
 ### 5.3 Summary Matrix
 
-| Dimension | MSVC | Clang (PoC) |
+| Dimension | MSVC | Clang (`/dyndbg`, PoC) |
 |---|---|---|
 | Linker compatibility | MSVC only (`/DYNAMICDEOPT`) | Any COFF linker |
 | Debugger compatibility | Visual Studio only | LLDB (planned), potentially others |
@@ -279,22 +282,20 @@ incremental build validation.
 
 ---
 
-## 6. Should Clang Use a Different Flag Name?
+## 6. Flag naming: `/dyndbg` (Clang) vs `/dynamicdeopt` (MSVC)
 
-### The Problem
+### Why two names?
 
 MSVC's `/dynamicdeopt` produces a specific, well-defined output format:
 proprietary `.pmd_*` metadata sections, `movabs`-based indirect calls, and a
-requirement for the MSVC linker's `/DYNAMICDEOPT` flag. Clang's implementation
-uses the same flag name but produces fundamentally different object files. A
-user who builds with `clang-cl /dynamicdeopt` and then tries to link with MSVC's
-`link.exe /DYNAMICDEOPT` will get unexpected results (missing `.pmd_*` sections,
-wrong relocation style), and vice versa.
+requirement for the MSVC linker's `/DYNAMICDEOPT` flag. **Clang uses `/dyndbg`**
+(short for "dynamic debugging") for its incompatible implementation, so users
+do not assume MSVC linker or debugger interoperability. A build that uses
+`clang-cl /dyndbg` with `link.exe /DYNAMICDEOPT` will still not get MSVC-style
+`.pmd_*` sections or `movabs` alt codegen—use `lld-link` and LLDB-oriented
+tooling for Clang's path.
 
-### Recommendation: Rename to `/dyndbg`
-
-Rename the Clang flag to **`/dyndbg`** (short for "dynamic debugging") with
-three sub-modes:
+### Clang `/dyndbg` sub-modes
 
 ```
 clang-cl /dyndbg:dynamic ...   # Minimal: preserve symbols, recompile from source at debug time
@@ -302,47 +303,10 @@ clang-cl /dyndbg:hybrid  ...   # Store LLVM bitcode in .obj, extract + compile p
 clang-cl /dyndbg:aot     ...   # Pre-build unoptimized .alt.obj at compile time
 ```
 
-Rationale:
+The internal architecture (`dynamic`, `hybrid`, `aot`) maps to the `-cc1` flags
+(`-fdynamic-debug-prep`, `-fdynamic-debug-bitcode`, `-fdynamic-debug-aot`).
 
-1. **Avoids user confusion**: `/dynamicdeopt` has an established meaning in
-   the MSVC ecosystem. Using the same name for a different (incompatible)
-   implementation creates a false expectation of interoperability.
-
-2. **Signals a different design philosophy**: MSVC's approach is "full AOT
-   dual-binary." Clang's approach spans a spectrum from lightweight (dynamic)
-   to full AOT, with hybrid bitcode as the recommended default. A distinct
-   flag name communicates that this is a different feature, not a clone.
-
-3. **Keeps the door open for compatibility**: If we ever add a true
-   MSVC-compatible mode (emitting `.pmd_*` sections, `movabs` codegen,
-   `/DYNAMICDEOPT` linker support), we could offer it as
-   `/dynamicdeopt` or `/dyndbg:msvc-compat`, making it clear which behavior
-   the user gets.
-
-4. **Precedent**: Clang already diverges from MSVC on flags where the
-   underlying mechanism differs (e.g., `/Zi` vs `/Z7` behavior, sanitizer
-   flags). Using a distinct name for a distinct feature is normal.
-
-5. **Three modes remain**: The rename is cosmetic; the internal architecture
-   (`dynamic`, `hybrid`, `aot`) is unchanged. The `-cc1` flags
-   (`-fdynamic-debug-prep`, `-fdynamic-debug-bitcode`, `-fdynamic-debug-aot`)
-   also remain unchanged.
-
-### Alternative: Keep `/dynamicdeopt` with a Warning
-
-If renaming is too disruptive, an alternative is to keep `/dynamicdeopt` but
-emit a remark:
-
-```
-remark: Clang's /dynamicdeopt produces output incompatible with MSVC's
-        /DYNAMICDEOPT linker flag. Use lld-link or Clang's llvm-dyndbg
-        for debugging support. [-Rclang-dynamicdeopt]
-```
-
-This is less clean but preserves flag-name familiarity for users migrating
-build systems.
-
-### Migration Path
+### Future MSVC-compatible mode
 
 If the eventual goal is MSVC compatibility, the work would involve:
 
@@ -352,8 +316,8 @@ If the eventual goal is MSVC compatibility, the work would involve:
 4. Emitting `.pmd_uniqueidref` (callsite fixup table) in the `.alt.obj`
 5. Teaching lld-link to process `/DYNAMICDEOPT` (match UUIDs, resolve fixups)
 
-This could be offered as `/dyndbg:msvc-compat` or, once fully compatible,
-as a re-introduction of the `/dynamicdeopt` name.
+A compatible mode could be offered as `/dyndbg:msvc-compat` (or similar) once
+emitting `.pmd_*`, `movabs` alt codegen, and lld `/DYNAMICDEOPT` support land.
 
 ---
 
@@ -509,36 +473,36 @@ Final: 495
 
 **`demo.exe` (optimized) -- 7 sections:**
 
-| Section | VSize | Flags | Notes |
+| Section | Virtual size | Flags | Notes |
 |---|---|---|---|
-| `.text` | 0x6C810 | Execute/Read | Optimized code |
-| `.rdata` | 0x12C7C | Read | Read-only data |
-| `.data` | 0x2598 | Read/Write | Mutable data (g_call_count) |
-| `.pdata` | 0x498C | Read | Exception unwind info |
-| `.pmd_uni` | 0x118 | Read | UniqueID table (zeroed at load) |
-| `.fptable` | 0x100 | **Read/Write** | Function pointer table (zeroed) |
-| `.reloc` | 0x834 | Read/Discardable | Base relocations |
+| `.text` | 444,432 bytes | Execute/Read | Optimized code |
+| `.rdata` | 76,924 bytes | Read | Read-only data |
+| `.data` | 9,624 bytes | Read/Write | Mutable data (g_call_count) |
+| `.pdata` | 18,828 bytes | Read | Exception unwind info |
+| `.pmd_uni` | 280 bytes | Read | UniqueID table (zeroed at load) |
+| `.fptable` | 256 bytes | **Read/Write** | Function pointer table (zeroed) |
+| `.reloc` | 2,100 bytes | Read/Discardable | Base relocations |
 
 **`demo.alt.exe` (unoptimized) -- 8 sections:**
 
-| Section | VSize | Flags | Notes |
+| Section | Virtual size | Flags | Notes |
 |---|---|---|---|
-| `.text` | 0x6C810 | Execute/Read | Unoptimized code (with zero-filled movabs) |
-| `.rdata` | 0x12C7C | Read | |
-| `.data` | 0x2598 | Read/Write | |
-| `.pdata` | 0x498C | Read | |
-| `.pmd_uni` (1) | 0x118 | Read | UniqueID table |
-| `.pmd_uni` (2) | 0x21C | Read | UniqueIDRef table (callsite fixup data) |
-| `.fptable` | 0x100 | **Read/Write** | Function pointer table |
-| `.reloc` | 0x834 | Read/Discardable | |
+| `.text` | 444,432 bytes | Execute/Read | Unoptimized code (with zero-filled movabs) |
+| `.rdata` | 76,924 bytes | Read | |
+| `.data` | 9,624 bytes | Read/Write | |
+| `.pdata` | 18,828 bytes | Read | |
+| `.pmd_uni` (1) | 280 bytes | Read | UniqueID table |
+| `.pmd_uni` (2) | 540 bytes | Read | UniqueIDRef table (callsite fixup data) |
+| `.fptable` | 256 bytes | **Read/Write** | Function pointer table |
+| `.reloc` | 2,100 bytes | Read/Discardable | |
 
 Key observations:
-- Both exes have identical `.text` size (0x6C810 = 444,432 bytes), even
-  though the alt.exe has the CRT code optimized identically. Only the
-  user functions differ.
-- `.pmd_uni` in the alt.exe has **two** instances (0x118 + 0x21C = 0x334
-  bytes total) vs one in the optimized exe (0x118). The second one holds
-  the `UniqueIDRef` fixup table.
+- Both exes have identical `.text` size (444,432 bytes), even though the
+  alt.exe has the CRT code optimized identically. Only the user functions
+  differ.
+- `.pmd_uni` in the alt.exe has **two** instances (280 + 540 = 820 bytes
+  total) vs one in the optimized exe (280 bytes). The second one holds the
+  `UniqueIDRef` fixup table.
 - `.fptable` is Read/Write in both, and **all zeros**. The debugger likely
   writes function pointers here at runtime that the `movabs $0` sites can
   redirect to.
