@@ -85,6 +85,17 @@ PreservedAnalyses DynamicDebugPrepPass::run(Module &M,
   SmallVector<GlobalValue *, 16> NewGlobals;
   bool Changed = false;
 
+  // Mark all defined functions with "preserve-abi" so that IPO passes
+  // (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) do not
+  // change their signatures or calling conventions.  Unoptimized code
+  // compiled later must be able to call into the optimized binary using
+  // the original ABI.
+  for (Function &F : M) {
+    if (F.isDeclaration() || F.isIntrinsic())
+      continue;
+    F.addFnAttr("preserve-abi");
+  }
+
   for (Function &F : M) {
     if (F.isDeclaration() || !F.hasLocalLinkage() || F.isIntrinsic())
       continue;

@@ -810,6 +810,9 @@ static Function *promoteArguments(Function *F, FunctionAnalysisManager &FAM,
   if (F->hasFnAttribute(Attribute::Naked))
     return nullptr;
 
+  if (F->hasFnAttribute("preserve-abi"))
+    return nullptr;
+
   // Make sure that it is local to this module.
   if (!F->hasLocalLinkage())
     return nullptr;

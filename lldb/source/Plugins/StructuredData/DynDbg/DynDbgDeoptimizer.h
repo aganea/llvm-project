@@ -129,8 +129,11 @@ private:
   /// Restore original bytes at a patched function entry.
   Status UnpatchFunctionEntry(const DynDbgPatchInfo &patch_info);
 
-  /// Extract the TU hash from PDB public symbols (looks for .dyndbg.<hash>).
-  std::string ExtractTUHash(llvm::StringRef pdb_path);
+  /// Extract the TU hash from a COFF obj file's symbol table (looks for
+  /// a symbol containing ".dyndbg.<hash>").  Using the per-TU obj file
+  /// avoids the bug where scanning all PDB publics returns the wrong TU's
+  /// hash in multi-TU binaries.
+  static std::string ExtractTUHashFromObj(llvm::StringRef obj_path);
 
   /// Create a synthetic JIT Module with a symbol named
   /// "[Deoptimized] <function>" covering the loaded .text range, and register

@@ -8,6 +8,7 @@ include(CheckCXXCompilerFlag)
 
 set(SOURCES
     src/math_utils.cpp
+    src/ipo_stress.cpp
     src/main.cpp
 )
 
@@ -124,5 +125,5 @@ add_test(NAME demo-runs
     COMMAND demo
 )
 set_tests_properties(demo-runs PROPERTIES
-    PASS_REGULAR_EXPRESSION "Final: 495"
+    PASS_REGULAR_EXPRESSION "Final: 495.*IPO stress tests:"
 )

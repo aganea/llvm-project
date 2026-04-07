@@ -131,9 +131,11 @@ bool DeadArgumentEliminationPass::deleteDeadVarargs(Function &F) {
   // Don't touch naked functions. The assembly might be using an argument, or
   // otherwise rely on the frame layout in a way that this analysis will not
   // see.
-  if (F.hasFnAttribute(Attribute::Naked)) {
+  if (F.hasFnAttribute(Attribute::Naked))
     return false;
-  }
+
+  if (F.hasFnAttribute("preserve-abi"))
+    return false;
 
   // Okay, we know we can transform this function if safe.  Scan its body
   // looking for calls marked musttail or calls to llvm.vastart.
@@ -280,6 +282,9 @@ bool DeadArgumentEliminationPass::removeDeadArgumentsFromCallers(Function &F) {
   // otherwise rely on the frame layout in a way that this analysis will not
   // see.
   if (F.hasFnAttribute(Attribute::Naked))
+    return false;
+
+  if (F.hasFnAttribute("preserve-abi"))
     return false;
 
   if (F.use_empty())
@@ -496,6 +501,11 @@ void DeadArgumentEliminationPass::surveyFunction(const Function &F) {
   // otherwise rely on the frame layout in a way that this analysis will not
   // see.
   if (F.hasFnAttribute(Attribute::Naked)) {
+    markFrozen(F);
+    return;
+  }
+
+  if (F.hasFnAttribute("preserve-abi")) {
     markFrozen(F);
     return;
   }

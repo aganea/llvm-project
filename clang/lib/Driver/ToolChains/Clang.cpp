@@ -6904,10 +6904,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       D.Diag(diag::err_drv_unsupported_option_argument)
           << A->getSpelling() << Val;
     }
-    // Embed /FUNCTIONPADMIN in the .obj's .drectve section so that
+    // Embed /FUNCTIONPADMIN:14 in the .obj's .drectve section so that
     // lld-link auto-enables function entry padding without an explicit
-    // linker flag -- analogous to how -flto embeds LTO bitcode.
-    CmdArgs.push_back("--linker-option=/FUNCTIONPADMIN");
+    // linker flag.  The deoptimizer needs 12 bytes before each function
+    // for a movabs+jmp indirect trampoline when VirtualAllocEx returns
+    // memory >2 GB away; 14 gives 2 bytes of headroom.
+    CmdArgs.push_back("--linker-option=/FUNCTIONPADMIN:14");
   }
 
   if (Args.hasArg(options::OPT_fms_secure_hotpatch_functions_file))

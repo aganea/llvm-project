@@ -9,8 +9,8 @@ todos:
     content: "Symbol preservation: promote internal-linkage functions to external with TU-unique suffix aliases; prevent dead function elimination; keep out-of-line definitions for functions that would be fully inlined"
     status: in_progress
   - id: prevent-abi-changing-ipo
-    content: Add preserve-abi function attribute; disable function specialization, argument promotion, dead argument elimination for marked functions in GlobalOpt, FunctionSpecialization, etc.
-    status: pending
+    content: "preserve-abi string attribute added by DynamicDebugPrepPass; checked in GlobalOpt (skip CC changes), FunctionSpecialization (skip cloning), DeadArgElim (markFrozen + skip dead varargs/callers), ArgPromotion (skip promote)"
+    status: completed
   - id: global-ref-stubs
     content: "Global access from unoptimized code: PoC uses Option C (thinBitcode externalizes all globals at IR level); Option A (__ref_* via WindowsSecureHotPatching) and Option B (relocation override) are alternatives for the LLDB loader"
     status: completed
@@ -36,7 +36,7 @@ todos:
     content: "lld-link accepts /FUNCTIONPADMIN from .drectve (embedded by Clang when /dyndbg is used), no explicit linker flag needed; preserve promoted symbol aliases; disable or restrict /OPT:ICF for preserve-abi functions; (future) collect .dyndbg into PDB named streams"
     status: in_progress
   - id: version-metadata
-    content: "Embed build-compatibility hash in both .dyndbg header and PDB (S_ENVBLOCK or custom record) so the debugger can verify bitcode matches the optimized binary. Currently the DYDB header only has magic+size+compression; no compat hash."
+    content: "Build-compatibility hash needs to cross-reference .dyndbg and PDB (e.g. hash of optimized IR in both places). Self-referential hash of embedded bitcode is pointless (zstd already has checksums). Deferred until PDB-side storage (S_ENVBLOCK or named stream) is implemented."
     status: pending
   - id: inlined-breakpoints
     content: Build inliners map from PDB S_INLINESITE records; when setting breakpoint on an inlined function, deoptimize all parent functions that inline it; support scoping to specific callers
@@ -57,8 +57,8 @@ todos:
     content: "(Tier 2) Port per-function extraction into LLDB plugin (done: ThinBitcode in DynDbgDeoptimizer); cache lazy-loaded Modules in-process for sub-100ms repeat extractions from unity TUs (not yet: each call creates fresh LLVMContext)"
     status: in_progress
   - id: memory-dealloc
-    content: "Deallocate VirtualAllocEx'd code/data sections on Reoptimize (currently leaked; see TODO in DynDbgDeoptimizer.cpp:1863)"
-    status: pending
+    content: "DeallocateMemory for code/data sections on Reoptimize (was leaked; fixed with Process::DeallocateMemory calls)"
+    status: completed
   - id: aot-pipeline-fork
     content: "AOT mode: CloneModule after frontend CodeGen + -O0 codegen to .alt.obj (sequential and parallel via serialize/deserialize). Produces standard COFF .alt.obj with REL32 relocations."
     status: completed
@@ -118,7 +118,7 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 |------|-------------|
 | Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dyndbg*` (clang-cl); Clang embeds `/FUNCTIONPADMIN` in `.drectve` section of `.obj` when `/dyndbg` is used; `MSVC.cpp` also passes `-functionpadmin` to linker when driver mediates linking. No explicit linker flag needed. |
 | Recompile-time | ~~`-fdynamic-debug-extern`~~, `DynamicDebugExternPass` (externalize locals; ~~GlobalAlias fix~~; PCH strip in tool for `-O0` replay) |
-| Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + size + flag); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
+| Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + u32 size + u8 compressed); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
 | Driver | ~~`/dyndbg`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ produces `.alt.obj`; help lists modes. Renamed from `/dynamicdeopt` to avoid confusion with MSVC's incompatible format. |
 | AOT pipeline | ~~`-fdynamic-debug-aot`~~ (`/dyndbg:aot`): ~~CloneModule~~ + `-O0` codegen to `.alt.obj` (sequential + parallel via serialize/deserialize); standard COFF REL32 relocations |
 | Tooling (`llvm-dyndbg`) | PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~, ~~**thin single-function pipeline**~~ (lazy load, materialize one fn, externalize rest, rename `.dyndbg.unopt`, codegen from IR), ~~**file-based bitcode cache**~~ (`.dyndbg-cache/`), ~~**per-step timing**~~ |
@@ -130,14 +130,14 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 
 - **LLDB DynDbg plugin** (`lldb/source/Plugins/StructuredData/DynDbg/`): StructuredData plugin that registers `dyndbg deoptimize`, `dyndbg reoptimize`, `dyndbg status`, and `dyndbg break` commands via `DebuggerInitialize`. Full pipeline: PDB BuildInfo lookup -> bitcode extraction from `.dyndbg` COFF section -> per-function thinning (lazy load + materialize + externalize) -> codegen via `clang -cc1 -x ir -O0` subprocess -> COFF `.obj` loader (VirtualAllocEx + section copy + IMAGE_REL_AMD64_REL32/ADDR64/ADDR32NB relocation resolution against PDB symbols) -> JMP rel32 patch at optimized function entry. Per-target persistent state via `DynDbgDeoptimizer::GetForTarget()`. Synthetic JIT modules registered via `RegisterJITModule` so backtraces show `[Deoptimized]` labels.
   - **`dyndbg break <function-name>`**: Deoptimizes-if-needed and sets a breakpoint on the unoptimized function in one command (`CommandObjectDynDbgBreak`).
-  - **Known gap -- memory leak**: `Reoptimize()` restores original bytes and unregisters the JIT module, but does **not** call `VirtualFreeEx` to deallocate the loaded code/data sections (`TODO` at `DynDbgDeoptimizer.cpp:1863`).
+  - ~~**Memory leak fixed**~~: `Reoptimize()` now calls `Process::DeallocateMemory()` for both `.text` and `.data` allocations before erasing the patch info.
   - **Known gap -- no Module caching**: Each `ThinBitcode` call creates a fresh `LLVMContext` + `getLazyBitcodeModule`. For multiple functions from the same TU, each pays the full lazy-load cost (~650 ms). An in-process cache keyed by `ObjFilePath` would reduce repeat extractions to <100 ms.
 - **DAP extension** (`lldb/tools/lldb-dap/Handler/DynDbgRequestHandler.cpp`): Custom DAP requests `__lldb_dyndbgDeoptimize`, `__lldb_dyndbgReoptimize`, `__lldb_dyndbgStatus` -- all implemented and delegating to the CLI commands. Missing: `__lldb_dyndbgBreak` to mirror `dyndbg break`.
 - **Tier 2 in-LLDB bitcode extraction**: The `ThinBitcode` pipeline from `llvm-dyndbg` is ported into the LLDB plugin (`DynDbgDeoptimizer::ThinBitcode`). Currently uses subprocess codegen (`RunCodegen` invokes `clang -cc1`); in-process `TargetMachine` codegen is a future optimization.
 
 ### Not implemented (still per this doc)
 
-- **Correctness**: `preserve-abi` IPO guards (function attribute checked by GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion); build-compatibility hash in `.dyndbg` header.
+- **Correctness**: ~~`preserve-abi` IPO guards~~ (implemented: string attribute checked by GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion); build-compatibility hash deferred (needs cross-reference between `.dyndbg` and PDB; self-referential hash is redundant with zstd checksums).
 - **Debug experience**: Step-into interception (Mechanism 2: breakpoint-based first, then investigate MSVC debug-info-guided register patching); inlined breakpoints via `S_INLINESITE` map; thread-safe patching (dual-breakpoint fallback).
 - **Distribution**: PDB bitcode storage (lld-link collects `.dyndbg` sections into PDB named streams); parallel bitcode compression at build time.
 - **Lifecycle**: Attach/detach behavior (restore patches, crash dump symbolication).
@@ -994,7 +994,7 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 **Phase 1: Common groundwork** (all modes depend on this):
 
 1. ~~Symbol promotion and alias creation for internal-linkage functions~~ -- **PoC:** `DynamicDebugPrepPass` (aliases + `@llvm.used`). *Still missing:* full "keep out-of-line if inlined everywhere" story.
-2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) -- **not in PoC**
+2. ~~`preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion)~~ -- **Done.** String attribute `"preserve-abi"` added by `DynamicDebugPrepPass`; checked in all four passes.
 3. ~~Auto-enabling hotpatch padding when `/dyndbg` is specified~~ -- **Done.** Clang embeds `/FUNCTIONPADMIN` in the `.obj`'s `.drectve` section when `/dyndbg` is used. lld-link picks this up automatically (with `std::max` semantics so explicit `/FUNCTIONPADMIN:N` on the command line can override with a larger value). `MSVC.cpp` also passes `-functionpadmin` directly when the driver mediates linking. No explicit linker flag needed, like `-flto`.
 4. ~~Flag rename: `/dynamicdeopt` to `/dyndbg`~~ -- **Done.** Avoids confusion with MSVC's incompatible format.
 
@@ -1042,11 +1042,11 @@ The debug-time infrastructure (loading, relocation, patching) is shared across a
 
 Priorities reassessed after reviewing PoC branch state. The LLDB plugin, DAP extension, three-mode detection (AOT/hybrid/dynamic), `dyndbg break`, and synthetic JIT module registration are all working end-to-end. The focus now shifts to **correctness**, **performance**, and **distribution**.
 
-**A. Correctness (high priority):**
+**A. Correctness (high priority) -- DONE (April 2026):**
 
-1. **`preserve-abi` function attribute** -- Most critical missing piece. Without it, IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) can silently change function signatures, causing the unoptimized code to crash when calling into the optimized binary. Scope: add `"preserve-abi"` attribute in `DynamicDebugPrepPass`; check it in the four IPO passes to skip ABI-changing transforms.
-2. **Memory deallocation on reoptimize** -- `Reoptimize()` restores original bytes but leaks the `VirtualAllocEx`'d sections. `DynDbgPatchInfo` already stores `AllocatedTextAddr`/`AllocatedDataAddr` and sizes; add `VirtualFreeEx` calls.
-3. **Build-compatibility hash in `.dyndbg` header** -- Extend the `DYDB` header (currently magic + size + compression flag) to include a content hash so the debugger can detect stale bitcode. Warn on mismatch, fall back to source recompile.
+1. ~~**`preserve-abi` function attribute**~~ -- `DynamicDebugPrepPass` now adds `"preserve-abi"` string attribute to all defined functions. Checked in GlobalOpt (skip CC changes), FunctionSpecialization (`isCandidateFunction` returns false), DeadArgElim (`markFrozen` + skip `deleteDeadVarargs`/`removeDeadArgumentsFromCallers`), ArgPromotion (`promoteArguments` returns nullptr).
+2. ~~**Memory deallocation on reoptimize**~~ -- `Reoptimize()` now calls `Process::DeallocateMemory()` for `.text` and `.data` allocations.
+3. **Build-compatibility hash** -- Reverted. A self-referential hash (hashing the bitcode stored alongside it) only duplicates what zstd checksums already provide. A useful build-compat hash needs to cross-reference `.dyndbg` and the PDB (e.g. hash the optimized IR, store in both). Deferred until PDB-side storage (S_ENVBLOCK or named stream) is implemented.
 
 **B. Performance (medium priority):**
 

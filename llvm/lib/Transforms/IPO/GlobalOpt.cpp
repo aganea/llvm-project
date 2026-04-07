@@ -1953,6 +1953,11 @@ OptimizeFunctions(Module &M,
     if (F.hasFnAttribute(Attribute::Naked))
       continue;
 
+    // Don't change calling conventions or signatures of functions marked
+    // preserve-abi (used by -fdynamic-debug-prep for on-demand deopt).
+    if (F.hasFnAttribute("preserve-abi"))
+      continue;
+
     // Functions without names cannot be referenced outside this module.
     if (!F.hasName() && !F.isDeclaration() && !F.hasLocalLinkage())
       F.setLinkage(GlobalValue::InternalLinkage);

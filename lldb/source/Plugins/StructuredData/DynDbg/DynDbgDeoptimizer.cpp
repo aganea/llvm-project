@@ -383,6 +383,11 @@ Status DynDbgDeoptimizer::ThinBitcode(llvm::MemoryBuffer &bc_buf,
       return false;
     if (F.isDeclaration() && !F.isMaterializable())
       return false;
+    // Only externalize local-linkage functions (matching DynamicDebugExternPass).
+    // Non-local functions (linkonce_odr, weak_odr, etc.) may not have
+    // standalone symbols in the process image (inlined/ICF'd), so keep them.
+    if (!F.hasLocalLinkage())
+      return false;
     return true;
   };
 
@@ -437,7 +442,7 @@ Status DynDbgDeoptimizer::ThinBitcode(llvm::MemoryBuffer &bc_buf,
       GV.setComdat(nullptr);
   }
 
-  // Externalize functions.
+  // Externalize local-linkage functions; keep non-local ones.
   for (llvm::Function &F : llvm::make_early_inc_range(*M)) {
     if (!should_extern_fn(F))
       continue;
@@ -449,6 +454,18 @@ Status DynDbgDeoptimizer::ThinBitcode(llvm::MemoryBuffer &bc_buf,
     F.setDSOLocal(false);
     if (F.hasComdat())
       F.setComdat(nullptr);
+  }
+
+  // Materialize non-local functions we kept (e.g. linkonce_odr inline fns).
+  for (llvm::Function &F : *M) {
+    if (&F == keep_fn || F.isDeclaration() || F.isIntrinsic())
+      continue;
+    if (F.isMaterializable()) {
+      if (auto err = F.materialize())
+        return Status("failed to materialize kept function " +
+                      F.getName().str() + ": " +
+                      llvm::toString(std::move(err)));
+    }
   }
 
   // Prune unreferenced declarations.
@@ -835,11 +852,25 @@ Status DynDbgDeoptimizer::LoadObjIntoDebuggee(
     }
 
     llvm::StringRef sec_data = *contents_or_err;
-    if (sec_data.empty())
-      continue;
-
     const llvm::object::coff_section *coff_sec = coff->getCOFFSection(sec);
     uint32_t chars = coff_sec->Characteristics;
+
+    // BSS (.bss) sections have no raw data but need zero-initialized memory.
+    // In COFF obj files, VirtualSize is 0; use SizeOfRawData instead (which
+    // gives the logical size even though PointerToRawData is 0).
+    size_t effective_size = sec_data.size();
+    bool is_bss = false;
+    if (effective_size == 0) {
+      size_t bss_size =
+          std::max(coff_sec->VirtualSize, coff_sec->SizeOfRawData);
+      if (bss_size > 0 &&
+          (chars & llvm::COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA)) {
+        effective_size = bss_size;
+        is_bss = true;
+      } else {
+        continue;
+      }
+    }
 
     // Skip debug/metadata sections; we only load code and data.
     if (chars & llvm::COFF::IMAGE_SCN_LNK_REMOVE)
@@ -864,7 +895,7 @@ Status DynDbgDeoptimizer::LoadObjIntoDebuggee(
         rel32_tramp_sym_index.count(sec_idx)
             ? rel32_tramp_sym_index[sec_idx].size()
             : 0;
-    size_t alloc_sz = sec_data.size() + tramp_slots * kRel32TrampSize;
+    size_t alloc_sz = effective_size + tramp_slots * kRel32TrampSize;
 
     Status alloc_error;
     addr_t alloc_addr =
@@ -874,14 +905,23 @@ Status DynDbgDeoptimizer::LoadObjIntoDebuggee(
                     name_or_err->str() + ": " + alloc_error.AsCString());
 
     Status write_error;
-    size_t written = process_sp->WriteMemory(
-        alloc_addr, sec_data.data(), sec_data.size(), write_error);
-    if (write_error.Fail() || written != sec_data.size())
-      return Status("WriteMemory failed for section " + name_or_err->str());
+    if (is_bss) {
+      std::vector<uint8_t> zeroes(effective_size, 0);
+      size_t written = process_sp->WriteMemory(alloc_addr, zeroes.data(),
+                                               zeroes.size(), write_error);
+      if (write_error.Fail() || written != zeroes.size())
+        return Status("WriteMemory failed for BSS section " +
+                      name_or_err->str());
+    } else {
+      size_t written = process_sp->WriteMemory(
+          alloc_addr, sec_data.data(), sec_data.size(), write_error);
+      if (write_error.Fail() || written != sec_data.size())
+        return Status("WriteMemory failed for section " + name_or_err->str());
+    }
 
     if (tramp_slots != 0) {
       std::vector<uint8_t> pad(tramp_slots * kRel32TrampSize, 0xCC);
-      addr_t pad_addr = alloc_addr + sec_data.size();
+      addr_t pad_addr = alloc_addr + effective_size;
       size_t pw =
           process_sp->WriteMemory(pad_addr, pad.data(), pad.size(), write_error);
       if (write_error.Fail() || pw != pad.size())
@@ -891,8 +931,9 @@ Status DynDbgDeoptimizer::LoadObjIntoDebuggee(
 
     SectionInfo info;
     info.debuggee_addr = alloc_addr;
-    info.data = reinterpret_cast<const uint8_t *>(sec_data.data());
-    info.size = sec_data.size();
+    info.data = is_bss ? nullptr
+                       : reinterpret_cast<const uint8_t *>(sec_data.data());
+    info.size = effective_size;
     info.allocated_size = alloc_sz;
     info.characteristics = chars;
     section_map[sec_idx] = info;
@@ -1347,45 +1388,30 @@ void DynDbgDeoptimizer::UnregisterJITModule(DynDbgPatchInfo &patch_info) {
 
 // ── TU hash extraction ──────────────────────────────────────────────────────
 
-std::string DynDbgDeoptimizer::ExtractTUHash(llvm::StringRef pdb_path) {
+std::string
+DynDbgDeoptimizer::ExtractTUHashFromObj(llvm::StringRef obj_path) {
   constexpr llvm::StringRef tag = ".dyndbg.";
 
-  std::unique_ptr<llvm::pdb::IPDBSession> session;
-  if (auto err = llvm::pdb::loadDataForPDB(llvm::pdb::PDB_ReaderType::Native,
-                                           pdb_path, session)) {
-    llvm::consumeError(std::move(err));
+  auto buf_or = llvm::MemoryBuffer::getFile(obj_path);
+  if (!buf_or)
+    return "";
+
+  auto obj_or =
+      llvm::object::COFFObjectFile::create((*buf_or)->getMemBufferRef());
+  if (!obj_or) {
+    llvm::consumeError(obj_or.takeError());
     return "";
   }
 
-  auto *ns = static_cast<llvm::pdb::NativeSession *>(session.get());
-  llvm::pdb::PDBFile &file = ns->getPDBFile();
-
-  auto exp_publics = file.getPDBPublicsStream();
-  if (!exp_publics) {
-    llvm::consumeError(exp_publics.takeError());
-    return "";
-  }
-  auto exp_symbols = file.getPDBSymbolStream();
-  if (!exp_symbols) {
-    llvm::consumeError(exp_symbols.takeError());
-    return "";
-  }
-
-  const auto &table = exp_publics->getPublicsTable();
-  for (uint32_t off : table) {
-    llvm::codeview::CVSymbol sym = exp_symbols->readRecord(off);
-    if (sym.kind() != llvm::codeview::SymbolKind::S_PUB32)
-      continue;
-    llvm::codeview::PublicSym32 pub(
-        llvm::codeview::SymbolRecordKind::PublicSym32);
-    if (auto err = llvm::codeview::SymbolDeserializer::deserializeAs<
-            llvm::codeview::PublicSym32>(sym, pub)) {
-      llvm::consumeError(std::move(err));
+  for (const auto &sym : (*obj_or)->symbols()) {
+    auto name_or = sym.getName();
+    if (!name_or) {
+      llvm::consumeError(name_or.takeError());
       continue;
     }
-    size_t pos = pub.Name.find(tag);
+    size_t pos = name_or->find(tag);
     if (pos != llvm::StringRef::npos)
-      return pub.Name.substr(pos + tag.size()).str();
+      return name_or->substr(pos + tag.size()).str();
   }
   return "";
 }
@@ -1685,16 +1711,9 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
   stream.Printf("    Function addr: 0x%llx\n",
                 (unsigned long long)function_addr);
 
-  // Extract TU hash for symbol name mangling.
-  std::string tu_hash;
-  ModuleSP pdb_module;
-  {
-    Address so_addr;
-    if (m_target.ResolveLoadAddress(function_addr, so_addr))
-      pdb_module = so_addr.GetModule();
-  }
-  if (FileSpec pdb_spec = GetNativePDBSpec(pdb_module); pdb_spec)
-    tu_hash = ExtractTUHash(pdb_spec.GetPath());
+  // Extract TU hash for symbol name mangling from the per-TU obj file.
+  std::string tu_hash =
+      ExtractTUHashFromObj(build_info.ObjFilePath);
 
   // Step 2: Determine mode by probing available artifacts.
   //   AOT:     .alt.obj exists alongside the .obj
@@ -1860,7 +1879,24 @@ Status DynDbgDeoptimizer::Reoptimize(llvm::StringRef function_name,
                 function_name.str().c_str(),
                 (unsigned long long)it->second.OriginalAddr);
 
-  // TODO: Deallocate loaded code/data sections.
+  if (ProcessSP process_sp = m_target.GetProcessSP()) {
+    const DynDbgPatchInfo &pi = it->second;
+    if (pi.AllocatedTextAddr != 0) {
+      Status dealloc_err = process_sp->DeallocateMemory(pi.AllocatedTextAddr);
+      if (dealloc_err.Fail())
+        stream.Printf("  Warning: failed to free .text at 0x%llx: %s\n",
+                      (unsigned long long)pi.AllocatedTextAddr,
+                      dealloc_err.AsCString());
+    }
+    if (pi.AllocatedDataAddr != 0) {
+      Status dealloc_err = process_sp->DeallocateMemory(pi.AllocatedDataAddr);
+      if (dealloc_err.Fail())
+        stream.Printf("  Warning: failed to free .data at 0x%llx: %s\n",
+                      (unsigned long long)pi.AllocatedDataAddr,
+                      dealloc_err.AsCString());
+    }
+  }
+
   m_patches.erase(it);
   return Status();
 }
