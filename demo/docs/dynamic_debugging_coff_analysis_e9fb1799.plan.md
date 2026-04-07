@@ -13,7 +13,7 @@ todos:
     status: pending
   - id: global-ref-stubs
     content: "Global access from unoptimized code: PoC uses Option C (thinBitcode externalizes all globals at IR level); Option A (__ref_* via WindowsSecureHotPatching) and Option B (relocation override) are alternatives for the LLDB loader"
-    status: in_progress
+    status: completed
   - id: pdb-bitcode-storage
     content: "lld-link collects .dyndbg sections from input .obj files and writes them as PDB named streams (e.g. /dyndbg/<key>); llvm-dyndbg/LLDB reads bitcode from PDB instead of requiring .obj files at debug time"
     status: pending
@@ -21,8 +21,11 @@ todos:
     content: "Create LLDB plugin for on-demand deoptimization: read LF_BUILDINFO from PDB, re-invoke Clang -O0, load code into debuggee, resolve symbols against PDB, patch function entries"
     status: in_progress
   - id: dap-extension
-    content: Add DAP protocol extension for deoptimize/reoptimize requests in lldb-dap
-    status: in_progress
+    content: "DAP protocol extension: __lldb_dyndbgDeoptimize, __lldb_dyndbgReoptimize, __lldb_dyndbgStatus custom requests in lldb-dap (delegates to CLI commands)"
+    status: completed
+  - id: dap-break-request
+    content: "Add __lldb_dyndbgBreak DAP request mirroring the CLI 'dyndbg break' command (deoptimize-if-needed + set breakpoint)"
+    status: pending
   - id: step-into-interception
     content: "Implement Mechanism 2 in LLDB: runtime step-into interception that swaps optimized callee with unoptimized version, with on-demand deopt or fall-through options"
     status: pending
@@ -33,8 +36,8 @@ todos:
     content: "lld-link accepts /FUNCTIONPADMIN from .drectve (embedded by Clang when /dyndbg is used), no explicit linker flag needed; preserve promoted symbol aliases; disable or restrict /OPT:ICF for preserve-abi functions; (future) collect .dyndbg into PDB named streams"
     status: in_progress
   - id: version-metadata
-    content: Embed build-compatibility hash in both .dyndbg.bc header and PDB (S_ENVBLOCK or custom record) so the debugger can verify bitcode matches the optimized binary
-    status: in_progress
+    content: "Embed build-compatibility hash in both .dyndbg header and PDB (S_ENVBLOCK or custom record) so the debugger can verify bitcode matches the optimized binary. Currently the DYDB header only has magic+size+compression; no compat hash."
+    status: pending
   - id: inlined-breakpoints
     content: Build inliners map from PDB S_INLINESITE records; when setting breakpoint on an inlined function, deoptimize all parent functions that inline it; support scoping to specific callers
     status: pending
@@ -51,8 +54,11 @@ todos:
     content: "(Tier 2) llvm-dyndbg --function: lazy bitcode load, materialize single fn, externalize rest, rename .dyndbg.unopt, file-based cache, codegen from thinned IR; per-step timing"
     status: completed
   - id: tier2-bitcode-embed
-    content: (Tier 2) Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100ms repeat extractions from unity TUs
+    content: "(Tier 2) Port per-function extraction into LLDB plugin (done: ThinBitcode in DynDbgDeoptimizer); cache lazy-loaded Modules in-process for sub-100ms repeat extractions from unity TUs (not yet: each call creates fresh LLVMContext)"
     status: in_progress
+  - id: memory-dealloc
+    content: "Deallocate VirtualAllocEx'd code/data sections on Reoptimize (currently leaked; see TODO in DynDbgDeoptimizer.cpp:1863)"
+    status: pending
   - id: aot-pipeline-fork
     content: "AOT mode: CloneModule after frontend CodeGen + -O0 codegen to .alt.obj (sequential and parallel via serialize/deserialize). Produces standard COFF .alt.obj with REL32 relocations."
     status: completed
@@ -116,18 +122,26 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 | Driver | ~~`/dyndbg`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ produces `.alt.obj`; help lists modes. Renamed from `/dynamicdeopt` to avoid confusion with MSVC's incompatible format. |
 | AOT pipeline | ~~`-fdynamic-debug-aot`~~ (`/dyndbg:aot`): ~~CloneModule~~ + `-O0` codegen to `.alt.obj` (sequential + parallel via serialize/deserialize); standard COFF REL32 relocations |
 | Tooling (`llvm-dyndbg`) | PDB `LF_BUILDINFO`, `--gen-recompile`, `--execute`, `--module`, `--function`, hash from publics, ~~`--extract-bc`~~, ~~**thin single-function pipeline**~~ (lazy load, materialize one fn, externalize rest, rename `.dyndbg.unopt`, codegen from IR), ~~**file-based bitcode cache**~~ (`.dyndbg-cache/`), ~~**per-step timing**~~ |
-| Demo | ~~`demo/dynamic-debugging/`~~ CMake + sources (math_utils / static / inline) |
+| Global access | ~~Option C at IR level~~ (`ThinBitcode` externalizes all globals/functions except the kept function, generating `.dyndbg.<TUHash>` suffixes for local-linkage symbols; COFF relocations bind to optimized binary via PDB). No `__ref_*` indirection needed. |
+| Demo | ~~`demo/dynamic-debugging/`~~ CMake + sources (math_utils / static / inline); ~~`demo/hello/test_dyndbg.ps1`~~ automated LLDB test for all three `/dyndbg` modes |
 | Analysis | ~~`clang_vs_msvc_dynamicdeopt_comparison.md`~~: full binary/PDB comparison with MSVC's `/dynamicdeopt` (movabs codegen, `.pmd_*` sections, PDB named streams, non-runnable `.alt.exe` template) |
 
 ### Partially implemented
 
-- **LLDB DynDbg plugin** (`lldb/source/Plugins/StructuredData/DynDbg/`): StructuredData plugin that registers `dyndbg deoptimize`, `dyndbg reoptimize`, `dyndbg status` commands via `DebuggerInitialize`. Full pipeline: PDB BuildInfo lookup -> bitcode extraction from `.dyndbg` COFF section -> per-function thinning (lazy load + materialize + externalize) -> codegen via `clang -cc1 -x ir -O0` subprocess -> COFF `.obj` loader (VirtualAllocEx + section copy + IMAGE_REL_AMD64_REL32/ADDR64/ADDR32NB relocation resolution against PDB symbols) -> JMP rel32 patch at optimized function entry. Per-target persistent state via `DynDbgDeoptimizer::GetForTarget()`.
-- **DAP extension** (`lldb/tools/lldb-dap/Handler/DynDbgRequestHandler.cpp`): Custom DAP requests `__lldb_dyndbgDeoptimize`, `__lldb_dyndbgReoptimize`, `__lldb_dyndbgStatus` that delegate to the `dyndbg` CLI commands.
-- **Tier 2 in-LLDB bitcode extraction**: The `thinBitcode` pipeline from `llvm-dyndbg` is ported into the LLDB plugin. Currently uses subprocess codegen; in-process `TargetMachine` codegen is a future optimization.
+- **LLDB DynDbg plugin** (`lldb/source/Plugins/StructuredData/DynDbg/`): StructuredData plugin that registers `dyndbg deoptimize`, `dyndbg reoptimize`, `dyndbg status`, and `dyndbg break` commands via `DebuggerInitialize`. Full pipeline: PDB BuildInfo lookup -> bitcode extraction from `.dyndbg` COFF section -> per-function thinning (lazy load + materialize + externalize) -> codegen via `clang -cc1 -x ir -O0` subprocess -> COFF `.obj` loader (VirtualAllocEx + section copy + IMAGE_REL_AMD64_REL32/ADDR64/ADDR32NB relocation resolution against PDB symbols) -> JMP rel32 patch at optimized function entry. Per-target persistent state via `DynDbgDeoptimizer::GetForTarget()`. Synthetic JIT modules registered via `RegisterJITModule` so backtraces show `[Deoptimized]` labels.
+  - **`dyndbg break <function-name>`**: Deoptimizes-if-needed and sets a breakpoint on the unoptimized function in one command (`CommandObjectDynDbgBreak`).
+  - **Known gap -- memory leak**: `Reoptimize()` restores original bytes and unregisters the JIT module, but does **not** call `VirtualFreeEx` to deallocate the loaded code/data sections (`TODO` at `DynDbgDeoptimizer.cpp:1863`).
+  - **Known gap -- no Module caching**: Each `ThinBitcode` call creates a fresh `LLVMContext` + `getLazyBitcodeModule`. For multiple functions from the same TU, each pays the full lazy-load cost (~650 ms). An in-process cache keyed by `ObjFilePath` would reduce repeat extractions to <100 ms.
+- **DAP extension** (`lldb/tools/lldb-dap/Handler/DynDbgRequestHandler.cpp`): Custom DAP requests `__lldb_dyndbgDeoptimize`, `__lldb_dyndbgReoptimize`, `__lldb_dyndbgStatus` -- all implemented and delegating to the CLI commands. Missing: `__lldb_dyndbgBreak` to mirror `dyndbg break`.
+- **Tier 2 in-LLDB bitcode extraction**: The `ThinBitcode` pipeline from `llvm-dyndbg` is ported into the LLDB plugin (`DynDbgDeoptimizer::ThinBitcode`). Currently uses subprocess codegen (`RunCodegen` invokes `clang -cc1`); in-process `TargetMachine` codegen is a future optimization.
 
 ### Not implemented (still per this doc)
 
-Step-into interception (breakpoint-based first, then investigate MSVC debug-info-guided register patching), thread-safe patching, `preserve-abi` IPO guards, **PDB bitcode storage** (lld-link collects `.dyndbg` sections into PDB named streams), parallel bitcode compression, in-LLDB Module caching for sub-100ms repeat extractions. AOT lld-link dual-link and `/dyndbg-storage:*` deferred (MSVC VS compat requires `.pmd_*` sections not yet implemented; LLDB can load `.alt.obj` directly).
+- **Correctness**: `preserve-abi` IPO guards (function attribute checked by GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion); build-compatibility hash in `.dyndbg` header.
+- **Debug experience**: Step-into interception (Mechanism 2: breakpoint-based first, then investigate MSVC debug-info-guided register patching); inlined breakpoints via `S_INLINESITE` map; thread-safe patching (dual-breakpoint fallback).
+- **Distribution**: PDB bitcode storage (lld-link collects `.dyndbg` sections into PDB named streams); parallel bitcode compression at build time.
+- **Lifecycle**: Attach/detach behavior (restore patches, crash dump symbolication).
+- **Deferred**: AOT lld-link dual-link and `/dyndbg-storage:*` (MSVC VS compat requires `.pmd_*` sections not yet implemented; LLDB can load `.alt.obj` directly); `/OPT:ICF` restrictions for preserve-abi functions.
 
 
 ---
@@ -986,17 +1000,20 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 
 **Phase 2: LLDB plugin** (critical path -- shared by all modes):
 
-1. LLDB plugin: load `.obj`/`.alt.obj` into debuggee (`VirtualAllocEx`), apply COFF relocations against PDB symbols, patch function entries with `jmp rel32`
-2. DAP protocol extension for deoptimize/reoptimize requests in lldb-dap
-3. Step-into interception (Mechanism 2, breakpoint-based first)
+1. ~~LLDB plugin: load `.obj`/`.alt.obj` into debuggee (`VirtualAllocEx`), apply COFF relocations against PDB symbols, patch function entries with `jmp rel32`~~ -- **PoC done.** Full pipeline: `GetBuildInfoForFunction` -> mode detection (AOT/hybrid/dynamic) -> `ThinBitcode` or `RunSourceRecompile` -> `LoadObjIntoDebuggee` -> `PatchFunctionEntry`. Three-mode auto-detection probes for `.alt.obj`, `.dyndbg` section, or falls back to source recompile. `DynDbgDeoptimizer::GetForTarget()` provides per-target persistent state.
+2. ~~DAP protocol extension for deoptimize/reoptimize/status requests in lldb-dap~~ -- **PoC done.** `__lldb_dyndbgDeoptimize`, `__lldb_dyndbgReoptimize`, `__lldb_dyndbgStatus`.
+3. ~~`dyndbg break` CLI command~~ -- **PoC done.** Deoptimizes-if-needed and sets a breakpoint in one command.
+4. ~~Synthetic JIT module registration~~ -- **PoC done.** `RegisterJITModule` creates `[Deoptimized]` labels visible in backtraces.
+5. Step-into interception (Mechanism 2, breakpoint-based first) -- **not in PoC**
 
-This is the single most impactful milestone: it unblocks end-to-end demos for all three modes (dynamic, hybrid, aot). The loader logic is identical regardless of where the `.obj` came from.
+*Remaining gaps in Phase 2:* memory deallocation on reoptimize (`VirtualFreeEx`); `__lldb_dyndbgBreak` DAP request.
 
 **Phase 3: Hybrid Tier 2 in LLDB** (bitcode-based on-demand):
 
 1. ~~Build-time: serialize + compress unoptimized bitcode~~ -- **PoC done:** sequential clone + zstd + embed in `.dyndbg` or sidecar.
 2. ~~`llvm-dyndbg --function` thin extraction pipeline~~ -- **PoC done.** Tested on SemaExpr.cpp (~24K functions): ~1.4 s total.
-3. Port per-function extraction into LLDB plugin; cache lazy-loaded Modules in-process for sub-100 ms repeat extractions from unity TUs -- **not yet started**
+3. ~~Port per-function extraction into LLDB plugin~~ -- **PoC done:** `DynDbgDeoptimizer::ThinBitcode` (lazy load + materialize + externalize + rename `.dyndbg.unopt`). Uses subprocess codegen via `RunCodegen`.
+4. Cache lazy-loaded Modules in-process for sub-100 ms repeat extractions from unity TUs -- **not yet started** (each call creates fresh `LLVMContext`)
 
 **Phase 4: PDB bitcode storage** (distribution):
 
@@ -1020,6 +1037,34 @@ This is the single most impactful milestone: it unblocks end-to-end demos for al
 6. Teach lld-link `/DYNAMICDEOPT` to produce non-runnable `.alt.exe` template
 
 The debug-time infrastructure (loading, relocation, patching) is shared across all phases. Phase 2 (LLDB plugin) is the critical path. Phases 3-4 build incrementally on that foundation. Phase 5 (AOT codegen) is already done; its linker integration is deferred. Phase 6 (MSVC compat) is a long-term goal only pursued if VS interop is needed.
+
+### Proposed Next Steps (April 2026)
+
+Priorities reassessed after reviewing PoC branch state. The LLDB plugin, DAP extension, three-mode detection (AOT/hybrid/dynamic), `dyndbg break`, and synthetic JIT module registration are all working end-to-end. The focus now shifts to **correctness**, **performance**, and **distribution**.
+
+**A. Correctness (high priority):**
+
+1. **`preserve-abi` function attribute** -- Most critical missing piece. Without it, IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) can silently change function signatures, causing the unoptimized code to crash when calling into the optimized binary. Scope: add `"preserve-abi"` attribute in `DynamicDebugPrepPass`; check it in the four IPO passes to skip ABI-changing transforms.
+2. **Memory deallocation on reoptimize** -- `Reoptimize()` restores original bytes but leaks the `VirtualAllocEx`'d sections. `DynDbgPatchInfo` already stores `AllocatedTextAddr`/`AllocatedDataAddr` and sizes; add `VirtualFreeEx` calls.
+3. **Build-compatibility hash in `.dyndbg` header** -- Extend the `DYDB` header (currently magic + size + compression flag) to include a content hash so the debugger can detect stale bitcode. Warn on mismatch, fall back to source recompile.
+
+**B. Performance (medium priority):**
+
+4. **In-process Module caching in LLDB** -- Add a `StringMap<CachedModule>` (keyed by `ObjFilePath`) to `DynDbgDeoptimizer` that persists the `LLVMContext` + lazy `Module` between `ThinBitcode` calls. This is the difference between ~650 ms and <100 ms for the second function from the same TU (critical for unity builds).
+5. **In-process codegen** -- Replace subprocess `clang -cc1 -x ir -O0` with in-process `TargetMachine` codegen to eliminate process-spawn overhead (~200-400 ms per function).
+
+**C. Distribution & IDE integration (medium priority):**
+
+6. **PDB bitcode storage** -- Teach lld-link to collect `.dyndbg` sections from input `.obj` files and write them as PDB named streams (`/dyndbg/<key>`). Single distribution artifact: `.exe` + `.pdb`.
+7. **DAP `__lldb_dyndbgBreak` request** -- Mirror the CLI `dyndbg break` command via DAP for IDE integration (VS Code, Cursor).
+8. **`/OPT:ICF` restrictions** -- Disable or restrict Identical COMDAT Folding in lld-link for functions with the `preserve-abi` attribute, so the debugger doesn't map one unoptimized function to a merged optimized function's address.
+
+**D. Debug experience (lower priority):**
+
+9. **Step-into interception (Mechanism 2)** -- Breakpoint-based: when stepping into a call from deoptimized code, set a temp breakpoint at the optimized callee's entry and redirect PC to the unoptimized version.
+10. **Inlined breakpoints** -- Build inliners map from PDB `S_INLINESITE` records; deoptimize all parent functions when setting a breakpoint on an inlined function.
+11. **Thread-safe patching** -- Dual-breakpoint fallback when a thread's RIP is inside the target function.
+12. **Attach/detach** -- Restore patches on detach; crash dump symbolication for patched stacks.
 
 ---
 
