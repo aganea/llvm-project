@@ -1743,12 +1743,20 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
 
   case DynDbgMode::Hybrid: {
     // Thin bitcode to single function, then codegen.
+    // Use function-name-qualified temp paths so multiple functions from the
+    // same TU don't clobber each other's intermediates.
+    std::string safe_name = function_name.str();
+    for (char &c : safe_name)
+      if (c == '?' || c == '@' || c == '<' || c == '>' || c == ':' ||
+          c == '*' || c == '/' || c == '\\')
+        c = '_';
+
     llvm::SmallString<256> thin_bc_path;
     llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
                                            thin_bc_path);
     llvm::sys::path::append(thin_bc_path,
                             llvm::sys::path::stem(build_info.SourceFile).str() +
-                                ".thin.bc");
+                                "." + safe_name + ".thin.bc");
 
     status = ThinBitcode(*bc_buf, function_name, tu_hash, thin_bc_path,
                          unopt_name, stream);
@@ -1762,7 +1770,7 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
                                            output_obj_path);
     llvm::sys::path::append(output_obj_path,
                             llvm::sys::path::stem(build_info.SourceFile).str() +
-                                ".dyndbg.obj");
+                                "." + safe_name + ".dyndbg.obj");
 
     status = RunCodegen(build_info, thin_bc_path, output_obj_path, stream);
     if (status.Fail())
@@ -1775,11 +1783,17 @@ Status DynDbgDeoptimizer::Deoptimize(llvm::StringRef function_name,
 
   case DynDbgMode::Dynamic: {
     // Source recompile at -O0 with -fdynamic-debug-extern.
+    std::string safe_name_dyn = function_name.str();
+    for (char &c : safe_name_dyn)
+      if (c == '?' || c == '@' || c == '<' || c == '>' || c == ':' ||
+          c == '*' || c == '/' || c == '\\')
+        c = '_';
+
     llvm::sys::path::system_temp_directory(/*ErasedOnReboot=*/true,
                                            output_obj_path);
     llvm::sys::path::append(output_obj_path,
                             llvm::sys::path::stem(build_info.SourceFile).str() +
-                                ".dyndbg.obj");
+                                "." + safe_name_dyn + ".dyndbg.obj");
 
     // -dynamic-debug-extern-keep= expects the mangled name (IR-level).
     llvm::StringRef keep_name = build_info.MangledName.empty()

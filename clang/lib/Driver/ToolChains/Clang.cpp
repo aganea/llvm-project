@@ -6904,6 +6904,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       D.Diag(diag::err_drv_unsupported_option_argument)
           << A->getSpelling() << Val;
     }
+    // Embed /FUNCTIONPADMIN in the .obj's .drectve section so that
+    // lld-link auto-enables function entry padding without an explicit
+    // linker flag -- analogous to how -flto embeds LTO bitcode.
+    CmdArgs.push_back("--linker-option=/FUNCTIONPADMIN");
   }
 
   if (Args.hasArg(options::OPT_fms_secure_hotpatch_functions_file))

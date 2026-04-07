@@ -161,7 +161,7 @@ if (-not $SkipBuild) {
         $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         $null = & $ClangCl /Z7 /O2 $flag (Join-Path $ScriptDir "hello.cpp") /c "/Fo$objFile" 2>&1
         $compileOk = $LASTEXITCODE -eq 0
-        $null = & $LldLink /DEBUG /FUNCTIONPADMIN:14 $objFile "/OUT:$exeFile" 2>&1
+        $null = & $LldLink /DEBUG $objFile "/OUT:$exeFile" 2>&1
         $linkOk = $LASTEXITCODE -eq 0
         $ErrorActionPreference = $prev
 

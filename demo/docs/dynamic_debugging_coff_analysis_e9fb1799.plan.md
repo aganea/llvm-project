@@ -30,7 +30,7 @@ todos:
     content: "PoC: -fdynamic-debug-bitcode embeds zstd-compressed pre-opt IR in .dyndbg (or -fdynamic-debug-bitcode-sidecar); sequential compression in Clang"
     status: completed
   - id: lld-link-integration
-    content: Ensure lld-link auto-enables /functionpadmin for -fdynamic-debug-prep objects; preserve promoted symbol aliases; disable or restrict /OPT:ICF for preserve-abi functions; (future) collect .llvmbc into archive
+    content: "lld-link accepts /FUNCTIONPADMIN from .drectve (embedded by Clang when /dyndbg is used), no explicit linker flag needed; preserve promoted symbol aliases; disable or restrict /OPT:ICF for preserve-abi functions; (future) collect .dyndbg into PDB named streams"
     status: in_progress
   - id: version-metadata
     content: Embed build-compatibility hash in both .dyndbg.bc header and PDB (S_ENVBLOCK or custom record) so the debugger can verify bitcode matches the optimized binary
@@ -110,7 +110,7 @@ The legacy source-based recompilation path (`--gen-recompile` without `--functio
 
 | Area | What landed |
 |------|-------------|
-| Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dyndbg*` (clang-cl); `MSVC.cpp` treats `/dyndbg*` like hotpatch for `/functionpadmin` |
+| Build-time | ~~`-fdynamic-debug-prep`~~, `DynamicDebugPrepPass` (`.dyndbg.<hash>` aliases + `@llvm.used`), ~~auto `-fms-hotpatch`~~ when `/dyndbg*` (clang-cl); Clang embeds `/FUNCTIONPADMIN` in `.drectve` section of `.obj` when `/dyndbg` is used; `MSVC.cpp` also passes `-functionpadmin` to linker when driver mediates linking. No explicit linker flag needed. |
 | Recompile-time | ~~`-fdynamic-debug-extern`~~, `DynamicDebugExternPass` (externalize locals; ~~GlobalAlias fix~~; PCH strip in tool for `-O0` replay) |
 | Hybrid bitcode | ~~`-fdynamic-debug-bitcode`~~ embeds **zstd**-compressed pre-opt IR in COFF **`.dyndbg`** (header `DYDB` + size + flag); ~~sidecar~~ `-fdynamic-debug-bitcode-sidecar` |
 | Driver | ~~`/dyndbg`~~ = hybrid; ~~`:dynamic`~~ (prep only); ~~`:aot`~~ produces `.alt.obj`; help lists modes. Renamed from `/dynamicdeopt` to avoid confusion with MSVC's incompatible format. |
@@ -235,7 +235,7 @@ BuildInfoRecord::CommandLine       -- Full canonical -cc1 command line
 
 This is populated from `MCTargetOptions::Argv0` and `MCTargetOptions::CommandlineArgs`, which is set by `flattenClangCommandLine()` in [clang/lib/CodeGen/BackendUtil.cpp](clang/lib/CodeGen/BackendUtil.cpp) (line 325). It stores the full `-cc1` invocation minus output file and main filename.
 
-**Hotpatch padding** -- Fully supported: Clang `/hotpatch` flag, lld-link `/functionpadmin` and `/hotpatchcompatible`, CodeView `S_COMPILE3` with HotPatch flag.
+**Hotpatch padding** -- Fully supported: Clang `/hotpatch` flag, CodeView `S_COMPILE3` with HotPatch flag. When `/dyndbg` is used, Clang embeds a `/FUNCTIONPADMIN` directive in the `.obj`'s `.drectve` section (same mechanism as `/DEFAULTLIB`). lld-link picks this up automatically, so no explicit `/functionpadmin` is needed on the linker command line. Note: MS `link.exe` does **not** auto-detect from `S_COMPILE3`; MSVC always sets the HotPatch flag regardless of `/hotpatch`.
 
 **Global variable indirection (`__ref_`*)** -- The `WindowsSecureHotPatching` pass in [llvm/lib/CodeGen/WindowsSecureHotPatching.cpp](llvm/lib/CodeGen/WindowsSecureHotPatching.cpp) already creates `__ref_`* pointer variables for redirecting global accesses from patched functions to the base image. This same mechanism (or a variant of it) can be reused for dynamic debugging.
 
@@ -284,7 +284,7 @@ Several LLVM passes can change function signatures or calling conventions:
 
 #### Problem 3: Hotpatch padding on all functions
 
-Already solved: `-fms-hotpatch` / `/hotpatch` adds a 2-byte `mov edi, edi` (x86) or equivalent NOP prologue. Combined with `/functionpadmin:6` (x64), this provides enough space for a 5-byte `jmp rel32` instruction to redirect to the unoptimized version. The `-fdynamic-debug-prep` flag should automatically enable both.
+Already solved: `-fms-hotpatch` / `/hotpatch` adds a 2-byte `mov edi, edi` (x86) or equivalent NOP prologue and sets the HotPatch flag in CodeView `S_COMPILE3`. The `/dyndbg` compiler flag automatically enables this **and** embeds a `/FUNCTIONPADMIN` directive in the `.obj`'s `.drectve` section. lld-link processes this directive automatically (6 bytes on x64 -- enough for a 5-byte `jmp rel32`; the LLDB loader uses a 12-byte indirect trampoline in the padding when the target is beyond ±2 GB). An explicit `/FUNCTIONPADMIN:N` on the linker command line can override with a larger value (std::max semantics).
 
 #### Problem 4: Functions must meet minimum size
 
@@ -465,7 +465,7 @@ flowchart TD
         SRC["Source Code (.cpp)"] --> CLANG["Clang -O2 -g -fdynamic-debug-prep"]
         CLANG --> PROMOTE["Promote internal-linkage symbols\nCreate .dyndbg.hash aliases\nPrevent ABI-changing IPO"]
         PROMOTE --> OBJ["Object File (.obj)\n+ hotpatch padding\n+ preserved symbol definitions\n+ LF_BUILDINFO with command-line"]
-        OBJ --> LLD["lld-link /functionpadmin /debug:full"]
+        OBJ --> LLD["lld-link /debug:full\n(picks up /FUNCTIONPADMIN\nfrom .drectve in .obj)"]
         LLD --> EXE["Executable (.exe)\nOptimized, all symbols preserved"]
         LLD --> PDB_OUT["PDB with:\n- LF_BUILDINFO per TU\n- promoted symbol addresses\n- full CodeView debug info"]
     end
@@ -621,10 +621,12 @@ Unknown named streams are **harmlessly ignored** by WinDbg, DIA, Visual Studio, 
 
 ```
 clang-cl /dyndbg:hybrid /O2 /Z7 -c foo.cpp
-  -> foo.obj  (contains .dyndbg section with zstd-compressed bitcode, marked !exclude)
+  -> foo.obj  (contains .dyndbg section with zstd-compressed bitcode, marked !exclude;
+               S_COMPILE3 has HotPatch flag set)
 
 lld-link /debug:full foo.obj bar.obj /out:app.exe
-  -> app.exe  (no .dyndbg sections -- stripped by !exclude)
+  -> app.exe  (no .dyndbg sections -- stripped by !exclude;
+               function padding auto-enabled from /FUNCTIONPADMIN in .drectve)
   -> app.pdb  (standard PDB + named streams: /dyndbg/foo.obj, /dyndbg/bar.obj, ...)
 ```
 
@@ -687,7 +689,7 @@ flowchart TD
     IR --> MAIN["Main Thread:\n-O3 optimization (10-60s)\n+ optimized codegen (5-20s)"]
     MAIN --> OBJ["Optimized .obj"]
 
-    OBJ --> LLD["lld-link /functionpadmin /debug:full"]
+    OBJ --> LLD["lld-link /debug:full\n(picks up /FUNCTIONPADMIN\nfrom .drectve)"]
     ALT_OBJ -.->|"passed through or\ncollected by linker"| LLD
     BC_FILE -.->|"sidecar or\nembedded"| LLD
     LLD --> EXE["demo.exe + demo.pdb"]
@@ -736,7 +738,8 @@ This matches MSVC's output model. For each TU, Clang produces both `foo.obj` (op
 clang-cl /O2 /Z7 /dyndbg:aot -c math_utils.cpp
 # Produces: math_utils.obj + math_utils.alt.obj
 
-lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
+lld-link /debug:full main.obj math_utils.obj /out:demo.exe
+# lld picks up /FUNCTIONPADMIN from .drectve in .obj files (embedded by Clang for /dyndbg).
 # Note: .alt.obj loaded directly by LLDB at debug time (no lld dual-link needed)
 ```
 
@@ -761,7 +764,7 @@ The unoptimized machine code is embedded in a `.dyndbg` COFF section in each `.o
 clang-cl /O2 /Z7 /dyndbg:aot /dyndbg-storage:embed -c math_utils.cpp
 # Produces: math_utils.obj (contains .dyndbg section with unoptimized code)
 
-lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
+lld-link /debug:full main.obj math_utils.obj /out:demo.exe
 # Produces: demo.exe (single file, .dyndbg section contains unoptimized code)
 ```
 
@@ -785,7 +788,7 @@ lld-link reads `.dyndbg` sections from input `.obj` files (or reads `.alt.obj` f
 clang-cl /O2 /Z7 /dyndbg:aot -c math_utils.cpp
 # Produces: math_utils.obj + math_utils.alt.obj
 
-lld-link /debug:full /functionpadmin /dyndbg-storage:archive \
+lld-link /debug:full /dyndbg-storage:archive \
     main.obj math_utils.obj /out:demo.exe
 # Produces: demo.exe + demo.pdb + demo.dyndbg.bca
 ```
@@ -978,7 +981,7 @@ All modes share `-fdynamic-debug-prep` build-time preparation (symbol promotion,
 
 1. ~~Symbol promotion and alias creation for internal-linkage functions~~ -- **PoC:** `DynamicDebugPrepPass` (aliases + `@llvm.used`). *Still missing:* full "keep out-of-line if inlined everywhere" story.
 2. `preserve-abi` function attribute checked by a handful of IPO passes (GlobalOpt, FunctionSpecialization, DeadArgElim, ArgPromotion) -- **not in PoC**
-3. ~~Auto-enabling hotpatch padding when `/dyndbg` is specified~~ -- **PoC:** driver + `MSVC.cpp` `/functionpadmin` coupling
+3. ~~Auto-enabling hotpatch padding when `/dyndbg` is specified~~ -- **Done.** Clang embeds `/FUNCTIONPADMIN` in the `.obj`'s `.drectve` section when `/dyndbg` is used. lld-link picks this up automatically (with `std::max` semantics so explicit `/FUNCTIONPADMIN:N` on the command line can override with a larger value). `MSVC.cpp` also passes `-functionpadmin` directly when the driver mediates linking. No explicit linker flag needed, like `-flto`.
 4. ~~Flag rename: `/dynamicdeopt` to `/dyndbg`~~ -- **Done.** Avoids confusion with MSVC's incompatible format.
 
 **Phase 2: LLDB plugin** (critical path -- shared by all modes):
@@ -1088,8 +1091,9 @@ clang-cl /O2 /Z7 /dyndbg:hybrid -c main.cpp -o main.obj
 #   main.obj                -- same (hybrid mode)
 # Optional: -fdynamic-debug-bitcode-sidecar on cc1 for stem.dyndbg.bc instead of embed
 
-# 2. Link with hotpatch padding and full debug info
-lld-link /debug:full /functionpadmin main.obj math_utils.obj /out:demo.exe
+# 2. Link with full debug info -- no extra linker flags needed.
+#    lld-link picks up /FUNCTIONPADMIN from .drectve in .obj files (embedded by Clang for /dyndbg).
+lld-link /debug:full main.obj math_utils.obj /out:demo.exe
 
 # Produces:
 #   demo.exe    -- optimized executable with hotpatch-ready functions

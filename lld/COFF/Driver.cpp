@@ -621,6 +621,17 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_inferasanlibs:
     case OPT_inferasanlibs_no:
       break;
+    case OPT_functionpadmin:
+    case OPT_functionpadmin_opt: {
+      // Allow /FUNCTIONPADMIN from .drectve (emitted by Clang for /dyndbg).
+      // Use std::max so an explicit command-line /FUNCTIONPADMIN:N always wins
+      // if it specifies a larger value.
+      uint32_t prev = ctx.config.functionPadMin;
+      parseFunctionPadMin(arg);
+      if (prev > ctx.config.functionPadMin)
+        ctx.config.functionPadMin = prev;
+      break;
+    }
     default:
       Err(ctx) << arg->getSpelling() << " is not allowed in .drectve ("
                << toString(file) << ")";

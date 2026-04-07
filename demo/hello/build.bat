@@ -15,19 +15,19 @@ echo.
 rem ── Mode 1: /dyndbg:dynamic (prep + hotpatch only) ──────────────────
 echo --- Mode: dynamic (prep + hotpatch, source recompile at debug time) ---
 %CLANG_CL% /Z7 /O2 /dyndbg:dynamic hello.cpp /c /Fohello.dynamic.obj
-%LLD_LINK% /DEBUG /FUNCTIONPADMIN:14 hello.dynamic.obj /OUT:hello.dynamic.exe
+%LLD_LINK% /DEBUG hello.dynamic.obj /OUT:hello.dynamic.exe
 echo.
 
 rem ── Mode 2: /dyndbg:hybrid (prep + embedded bitcode) ────────────────
 echo --- Mode: hybrid (prep + embedded bitcode, codegen at debug time) ---
 %CLANG_CL% /Z7 /O2 /dyndbg:hybrid hello.cpp /c /Fohello.hybrid.obj
-%LLD_LINK% /DEBUG /FUNCTIONPADMIN:14 hello.hybrid.obj /OUT:hello.hybrid.exe
+%LLD_LINK% /DEBUG hello.hybrid.obj /OUT:hello.hybrid.exe
 echo.
 
 rem ── Mode 3: /dyndbg:aot (prep + ahead-of-time .alt.obj) ─────────────
 echo --- Mode: aot (prep + ahead-of-time unoptimized .alt.obj) ---
 %CLANG_CL% /Z7 /O2 /dyndbg:aot hello.cpp /c /Fohello.aot.obj
-%LLD_LINK% /DEBUG /FUNCTIONPADMIN:14 hello.aot.obj /OUT:hello.aot.exe
+%LLD_LINK% /DEBUG hello.aot.obj /OUT:hello.aot.exe
 echo.
 
 rem ── Compare artifacts ───────────────────────────────────────────────
