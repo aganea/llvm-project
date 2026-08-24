@@ -44,7 +44,7 @@
 // CK-HELP: {{.*}}referring to the same source file but different targets into a single
 // CK-HELP: {{.*}}one. The resulting file can also be unbundled into different files by
 // CK-HELP: {{.*}}this tool if -unbundle is provided.
-// CK-HELP: {{.*}}USAGE: clang-offload-bundler [options]
+// CK-HELP: {{.*}}USAGE: clang-offload-bundler{{(\.exe)?}} [options]
 // CK-HELP: {{.*}}-### {{.*}}- Print any external commands that are to be executed instead of actually executing them - for testing purposes.
 // CK-HELP: {{.*}}-allow-missing-bundles {{.*}}- Create empty files if bundles are missing when unbundling.
 // CK-HELP: {{.*}}-bundle-align=<uint> {{.*}}- Alignment of bundle for binary files
@@ -98,7 +98,7 @@
 // CK-ERR6: error: '[[TYPE]]': invalid file type specified
 
 // RUN: not clang-offload-bundler 2>&1 | FileCheck %s --check-prefix CK-ERR7
-// CK-ERR7: clang-offload-bundler: for the --type option: must be specified at least once!
+// CK-ERR7: clang-offload-bundler{{(\.exe)?}}: for the --type option: must be specified at least once!
 
 // RUN: not clang-offload-bundler -type=i -input=%t.i -input=%t.tgt1 -input=%t.tgt2 2>&1 | FileCheck %s -check-prefix=CK-ERR7A
 // CK-ERR7A: error: no output file specified!

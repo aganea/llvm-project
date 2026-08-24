@@ -31,6 +31,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/Archive.h"
@@ -1051,8 +1052,7 @@ static Error runSYCLLink(ArrayRef<std::unique_ptr<MemoryBuffer>> Inputs,
   return (*OutputOrErr)->commit();
 }
 
-int main(int argc, char **argv) {
-  InitLLVM X(argc, argv);
+int clang_sycl_linker_main(int argc, char **argv, const llvm::ToolContext &) {
   InitializeAllTargetInfos();
   InitializeAllTargets();
   InitializeAllTargetMCs();
@@ -1060,7 +1060,6 @@ int main(int argc, char **argv) {
   InitializeAllAsmPrinters();
 
   Executable = argv[0];
-  sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   const OptTable &Tbl = getOptTable();
   BumpPtrAllocator Alloc;

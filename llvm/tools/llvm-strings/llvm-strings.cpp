@@ -20,7 +20,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/WithColor.h"
@@ -63,9 +63,6 @@ public:
 };
 
 static StringRef ToolName;
-
-static cl::list<std::string> InputFileNames(cl::Positional,
-                                            cl::desc("<input object files>"));
 
 static int MinLength = 4;
 static bool PrintFileName;
@@ -125,8 +122,7 @@ static void strings(raw_ostream &OS, StringRef FileName, StringRef Contents) {
     Print(S - B, StringRef(S, E - S));
 }
 
-int main(int argc, char **argv) {
-  InitLLVM X(argc, argv);
+int llvm_strings_main(int argc, char **argv, const llvm::ToolContext &) {
   BumpPtrAllocator A;
   StringSaver Saver(A);
   StringsOptTable Tbl;

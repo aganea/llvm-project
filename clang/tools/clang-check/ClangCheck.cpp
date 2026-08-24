@@ -30,6 +30,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Option/OptTable.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetSelect.h"
@@ -191,7 +192,7 @@ public:
 
 } // namespace
 
-int main(int argc, const char **argv) {
+int clang_check_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   // Initialize targets for clang module support.
@@ -200,8 +201,8 @@ int main(int argc, const char **argv) {
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
 
-  auto ExpectedParser =
-      CommonOptionsParser::create(argc, argv, ClangCheckCategory);
+  auto ExpectedParser = CommonOptionsParser::create(
+      argc, const_cast<const char **>(argv), ClangCheckCategory);
   if (!ExpectedParser) {
     llvm::errs() << llvm::toString(ExpectedParser.takeError());
     return 1;

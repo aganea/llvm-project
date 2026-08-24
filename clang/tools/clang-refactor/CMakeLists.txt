@@ -6,6 +6,8 @@ set(LLVM_LINK_COMPONENTS
 add_clang_tool(clang-refactor
   ClangRefactor.cpp
   TestSupport.cpp
+
+  GENERATE_DRIVER
   )
 
 clang_target_link_libraries(clang-refactor

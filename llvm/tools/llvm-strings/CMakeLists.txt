@@ -13,6 +13,7 @@ add_llvm_tool(llvm-strings
   llvm-strings.cpp
   DEPENDS
   StringsOptsTableGen
+  GENERATE_DRIVER
   )
 
 if(LLVM_INSTALL_BINUTILS_SYMLINKS)

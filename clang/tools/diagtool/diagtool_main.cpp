@@ -11,10 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "DiagTool.h"
+#include "llvm/Support/LLVMDriver.h"
 
 using namespace diagtool;
 
-int main(int argc, char *argv[]) {
+int diagtool_main(int argc, char **argv, const llvm::ToolContext &) {
   if (argc > 1)
     if (DiagTool *tool = diagTools->getTool(argv[1]))
       return tool->run(argc - 2, &argv[2], llvm::outs());

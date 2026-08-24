@@ -8,6 +8,8 @@ add_clang_tool(pp-trace
 
   DEPENDS
   ClangDriverOptions
+
+  GENERATE_DRIVER
   )
 
 clang_target_link_libraries(pp-trace

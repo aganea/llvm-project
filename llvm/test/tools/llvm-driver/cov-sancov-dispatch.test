@@ -1,0 +1,23 @@
+## llvm-driver's findTool matches argv[0] by suffix (see llvm-driver.cpp), so
+## folding llvm-cov in as "cov" makes any name ending in "...cov" ambiguous
+## against "sancov" (which also ends in "cov"). This only resolves correctly
+## today because LLVMDriverTools.def happens to list "sancov" before "cov"
+## (reverse-alphabetical order) -- verify both directions explicitly so a
+## future reordering doesn't silently misroute one tool to the other.
+
+## Don't make symlinks on Windows.
+# UNSUPPORTED: system-windows
+# REQUIRES: llvm-driver
+
+# RUN: rm -rf %t
+# RUN: mkdir %t
+# RUN: ln -s %llvm %t/sancov
+# RUN: ln -s %llvm %t/llvm-cov
+# RUN: ln -s %llvm %t/cov
+
+# RUN: %t/sancov --help | FileCheck %s --check-prefix=SANCOV
+# SANCOV: sancov [options] <action> <binary files...>
+
+# RUN: %t/llvm-cov --help | FileCheck %s --check-prefix=LLVM-COV
+# RUN: %t/cov --help | FileCheck %s --check-prefix=LLVM-COV
+# LLVM-COV: Usage: llvm-cov {export|gcov|report|show} [OPTION]...

@@ -34,6 +34,7 @@
 #include "llvm/LineEditor/LineEditor.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/WithColor.h"
@@ -78,12 +79,12 @@ bool runCommandsInFile(const char *ExeName, std::string const &FileName,
   return !Query.run(llvm::errs(), QS);
 }
 
-int main(int argc, const char **argv) {
+int clang_query_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   llvm::Expected<CommonOptionsParser> OptionsParser =
-      CommonOptionsParser::create(argc, argv, ClangQueryCategory,
-                                  llvm::cl::OneOrMore);
+      CommonOptionsParser::create(argc, const_cast<const char **>(argv),
+                                  ClangQueryCategory, llvm::cl::OneOrMore);
 
   if (!OptionsParser) {
     llvm::WithColor::error() << llvm::toString(OptionsParser.takeError());

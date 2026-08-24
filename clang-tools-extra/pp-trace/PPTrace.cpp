@@ -42,7 +42,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/GlobPattern.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/WithColor.h"
@@ -125,11 +125,10 @@ private:
 } // namespace pp_trace
 } // namespace clang
 
-int main(int argc, const char **argv) {
+int pp_trace_main(int argc, char **argv, const llvm::ToolContext &) {
   using namespace clang::pp_trace;
-  InitLLVM X(argc, argv);
   auto OptionsParser = clang::tooling::CommonOptionsParser::create(
-      argc, argv, Cat, llvm::cl::ZeroOrMore);
+      argc, const_cast<const char **>(argv), Cat, llvm::cl::ZeroOrMore);
   if (!OptionsParser)
     error(toString(OptionsParser.takeError()));
   // Parse the IgnoreCallbacks list into strings.

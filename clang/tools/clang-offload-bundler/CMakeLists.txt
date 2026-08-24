@@ -10,6 +10,8 @@ add_clang_tool(clang-offload-bundler
 
   DEPENDS
   intrinsics_gen
+
+  GENERATE_DRIVER
   )
 
 set(CLANG_OFFLOAD_BUNDLER_LIB_DEPS
