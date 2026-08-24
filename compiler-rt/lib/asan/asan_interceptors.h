@@ -112,7 +112,10 @@ void InitializePlatformInterceptors();
 #    define ASAN_INTERCEPT___CXA_ATEXIT 0
 #  endif
 
-#  if SANITIZER_NETBSD
+// Windows has no __cxa_atexit; on Windows this instead gates interception of
+// _crt_atexit, the UCRT entry point the CRT actually uses to register C++
+// static destructors (see asan_interceptors.cpp).
+#  if SANITIZER_NETBSD || SANITIZER_WINDOWS
 #    define ASAN_INTERCEPT_ATEXIT 1
 #  else
 #    define ASAN_INTERCEPT_ATEXIT 0

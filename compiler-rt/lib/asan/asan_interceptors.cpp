@@ -840,7 +840,8 @@ INTERCEPTOR(long long, atoll, const char* nptr) {
   return result;
 }
 
-#  if ASAN_INTERCEPT___CXA_ATEXIT || ASAN_INTERCEPT_ATEXIT
+#  if ASAN_INTERCEPT___CXA_ATEXIT || \
+      (ASAN_INTERCEPT_ATEXIT && !SANITIZER_WINDOWS)
 static void AtCxaAtexit(void* unused) {
   (void)unused;
   StopInitOrderChecking();
@@ -862,7 +863,25 @@ INTERCEPTOR(int, __cxa_atexit, void (*func)(void*), void* arg,
 }
 #  endif  // ASAN_INTERCEPT___CXA_ATEXIT
 
-#  if ASAN_INTERCEPT_ATEXIT
+#  if ASAN_INTERCEPT_ATEXIT && SANITIZER_WINDOWS
+// Windows has no __cxa_atexit. The public atexit() is a UCRT header-inlined
+// wrapper, not a real import -- compiler-generated calls that register C++
+// static destructors actually go through _crt_atexit. Chain a companion
+// callback right after each registered one; _crt_atexit callbacks run in
+// LIFO order, so the companion -- registered immediately after the real one
+// -- fires first, disabling init-order checking before that destructor runs.
+static void AtWindowsAtexit() { StopInitOrderChecking(); }
+
+INTERCEPTOR(int, _crt_atexit, void (*func)()) {
+  AsanInitFromRtl();
+#    if CAN_SANITIZE_LEAKS
+  __lsan::ScopedInterceptorDisabler disabler;
+#    endif
+  int res = REAL(_crt_atexit)(func);
+  REAL(_crt_atexit)(AtWindowsAtexit);
+  return res;
+}
+#  elif ASAN_INTERCEPT_ATEXIT
 INTERCEPTOR(int, atexit, void (*func)()) {
   AsanInitFromRtl();
 #    if CAN_SANITIZE_LEAKS
@@ -1001,7 +1020,9 @@ void InitializeAsanInterceptors() {
   ASAN_INTERCEPT_FUNC(__cxa_atexit);
 #  endif
 
-#  if ASAN_INTERCEPT_ATEXIT
+#  if ASAN_INTERCEPT_ATEXIT && SANITIZER_WINDOWS
+  ASAN_INTERCEPT_FUNC(_crt_atexit);
+#  elif ASAN_INTERCEPT_ATEXIT
   ASAN_INTERCEPT_FUNC(atexit);
 #  endif
 
