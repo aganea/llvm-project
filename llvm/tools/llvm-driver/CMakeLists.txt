@@ -24,15 +24,36 @@ file(WRITE
           "${CMAKE_CURRENT_BINARY_DIR}/LLVMDriverTools.def"
           "${def_decl}#undef LLVM_DRIVER_TOOL\n")
 
-# Generate a plain-text manifest of all tool aliases (one per line).
-# This is used by llvm-link-mode.ps1 to know which executables in bin/
-# are aliases of llvm.exe, regardless of whether they are currently
-# copies, hard links, symlinks, or stubs.
+# Generate a plain-text manifest mapping each tool alias in bin/ to the real
+# executable it stands in for: one "<alias> <target>" pair per line. This is
+# used by llvm-link-mode.ps1 to know which executables in bin/ are aliases,
+# and of what, regardless of whether they are currently copies, hard links,
+# symlinks, or stubs.
+#
+# <target> is "llvm" for every llvm-driver alias (llvm.exe). A handful of
+# aliases duplicate a *different* standalone tool that llvm-driver doesn't
+# fold in at all -- e.g. flang-new is an alias of flang.exe, not llvm.exe --
+# and are registered via the LLVM_NON_DRIVER_TOOL_ALIASES property instead
+# (see add_clang_symlink/add_flang_symlink) so they can be materialized
+# post-install the same way, instead of NSIS embedding a byte-identical
+# second copy of the target.
 get_property(_all_symlinks GLOBAL PROPERTY LLVM_DRIVER_TOOL_SYMLINKS)
 list(SORT _all_symlinks)
-list(JOIN _all_symlinks "\n" _symlinks_content)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/llvm-driver-tools.txt"
-     "${_symlinks_content}\n")
+set(_manifest_content "")
+foreach(_alias ${_all_symlinks})
+  string(APPEND _manifest_content "${_alias} llvm\n")
+endforeach()
+
+get_property(_non_driver_aliases GLOBAL PROPERTY LLVM_NON_DRIVER_TOOL_ALIASES)
+list(SORT _non_driver_aliases)
+foreach(_non_driver_alias ${_non_driver_aliases})
+  string(REPLACE ":" ";" _non_driver_alias_list ${_non_driver_alias})
+  list(GET _non_driver_alias_list 0 _alias)
+  list(GET _non_driver_alias_list 1 _target)
+  string(APPEND _manifest_content "${_alias} ${_target}\n")
+endforeach()
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/llvm-driver-tools.txt" "${_manifest_content}")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llvm-driver-tools.txt"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT llvm-driver)
@@ -57,10 +78,9 @@ if(APPLE)
   target_link_libraries(llvm-driver PRIVATE "-framework CoreFoundation")
 endif(APPLE)
 
-option(LLVM_INSTALL_DRIVER_ALIASES
-  "Install the per-tool llvm-driver alias files (clang.exe, lld-link.exe, ...) as real files. \
-Set to OFF to ship only llvm.exe, llvm-driver-tools.txt, and llvm-link-mode.ps1 -- the aliases \
-are then materialized at install time (e.g. by the NSIS installer) instead." ON)
+# LLVM_INSTALL_DRIVER_ALIASES is declared in the top-level llvm/CMakeLists.txt,
+# ahead of add_subdirectory(clang)/add_subdirectory(flang), so that
+# add_clang_symlink/add_flang_symlink can also read it.
 
 macro(generate_driver_tool_targets)
   get_property(LLVM_DRIVER_TOOL_SYMLINKS GLOBAL PROPERTY LLVM_DRIVER_TOOL_SYMLINKS)

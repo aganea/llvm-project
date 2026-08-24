@@ -455,6 +455,15 @@ set(LLVM_FORCE_VC_REPOSITORY
 
 option(LLVM_TOOL_LLVM_DRIVER_BUILD "Enables building the llvm multicall tool" OFF)
 
+# Declared here (rather than in llvm/tools/llvm-driver/CMakeLists.txt, which
+# is processed after clang/flang's tool subdirectories) so that
+# add_clang_symlink/add_flang_symlink can read its value when they run.
+option(LLVM_INSTALL_DRIVER_ALIASES
+  "Install the per-tool llvm-driver alias files (clang.exe, lld-link.exe, ...), and aliases of \
+other standalone tools that duplicate one (flang-new.exe, amdgpu-arch.exe, ...), as real files. \
+Set to OFF to ship only the real executables plus llvm-driver-tools.txt and llvm-link-mode.ps1 \
+-- every alias is then materialized at install time (e.g. by the NSIS installer) instead." ON)
+
 set(PACKAGE_NAME LLVM)
 set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "https://github.com/llvm/llvm-project/issues/")
