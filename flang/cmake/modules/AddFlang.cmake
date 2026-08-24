@@ -136,6 +136,14 @@ endmacro()
 
 macro(add_flang_symlink name dest)
   llvm_add_tool_symlink(FLANG ${name} ${dest} ALWAYS_GENERATE)
-  # Always generate install targets
-  llvm_install_symlink(FLANG ${name} ${dest} ALWAYS_GENERATE)
+  if(LLVM_TOOL_LLVM_DRIVER_BUILD AND NOT LLVM_INSTALL_DRIVER_ALIASES)
+    # See the matching comment in add_clang_symlink (AddClang.cmake): `dest`
+    # is never itself a driver tool for Flang, so without this every
+    # add_flang_symlink call would stage a byte-identical copy of `dest` that
+    # NSIS embeds a second time.
+    set_property(GLOBAL APPEND PROPERTY LLVM_NON_DRIVER_TOOL_ALIASES "${name}:${dest}")
+  else()
+    # Always generate install targets
+    llvm_install_symlink(FLANG ${name} ${dest} ALWAYS_GENERATE)
+  endif()
 endmacro()

@@ -210,8 +210,19 @@ macro(add_clang_symlink name dest)
     set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_ALIASES_${dest} ${name})
   else()
     llvm_add_tool_symlink(CLANG ${name} ${dest} ALWAYS_GENERATE)
-    # Always generate install targets
-    llvm_install_symlink(CLANG ${name} ${dest} ALWAYS_GENERATE)
+    if(LLVM_TOOL_LLVM_DRIVER_BUILD AND NOT LLVM_INSTALL_DRIVER_ALIASES)
+      # `dest` is a real standalone executable, not itself folded into
+      # llvm-driver, so installing this alias as a real file would stage a
+      # byte-identical copy that NSIS's `File /r` embeds a second time.
+      # llvm-link-mode.ps1 can already materialize aliases of llvm.exe
+      # post-install via a hard link (falling back to a copy -- the stub only
+      # knows how to spawn llvm.exe); route this alias through the same
+      # manifest instead of staging a duplicate.
+      set_property(GLOBAL APPEND PROPERTY LLVM_NON_DRIVER_TOOL_ALIASES "${name}:${dest}")
+    else()
+      # Always generate install targets
+      llvm_install_symlink(CLANG ${name} ${dest} ALWAYS_GENERATE)
+    endif()
   endif()
 endmacro()
 
