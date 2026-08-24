@@ -485,6 +485,17 @@ function(add_lldb_tool name)
   set_target_properties(${name} PROPERTIES XCODE_GENERATE_SCHEME ON)
 endfunction()
 
+# Like add_lldb_tool, but for executables that aren't part of the shipped
+# toolchain -- a test fixture (yaml2macho-core generates Mach-O core files
+# used only by the test suite) or a developer-only tool (lldb-instr). Mirrors
+# add_llvm_utility (AddLLVM.cmake) and add_flang_utility (AddFlang.cmake):
+# built exactly like a normal LLDB tool, just without GENERATE_INSTALL, so no
+# install() rule is ever created for it.
+function(add_lldb_utility name)
+  add_lldb_executable(${name} ${ARGN})
+  set_target_properties(${name} PROPERTIES XCODE_GENERATE_SCHEME ON)
+endfunction()
+
 # liblldb statically absorbs lldbHost, lldbUtility, and every plugin. A tool
 # that links the shared liblldb while also linking those archives statically
 # carries a second copy of their object code. On ELF, if the tool re-exports

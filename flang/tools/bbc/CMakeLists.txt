@@ -6,7 +6,7 @@ set(LLVM_LINK_COMPONENTS
   TargetParser
 )
 
-add_flang_tool(bbc bbc.cpp
+add_flang_utility(bbc bbc.cpp
   DEPENDS
   FIROptCodeGenPassIncGen
 )

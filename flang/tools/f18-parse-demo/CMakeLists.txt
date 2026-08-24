@@ -4,7 +4,7 @@ set(LLVM_LINK_COMPONENTS
   Support
   )
 
-add_flang_tool(f18-parse-demo
+add_flang_utility(f18-parse-demo
   f18-parse-demo.cpp
   stub-evaluate.cpp
 )
