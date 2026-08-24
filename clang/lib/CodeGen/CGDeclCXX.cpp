@@ -235,7 +235,8 @@ void CodeGenFunction::EmitCXXGlobalVarDeclInit(const VarDecl &D,
 /// which passes the given address to the given destructor function.
 llvm::Constant *CodeGenFunction::createAtExitStub(const VarDecl &VD,
                                                   llvm::FunctionCallee dtor,
-                                                  llvm::Constant *addr) {
+                                                  llvm::Constant *addr,
+                                                  llvm::FunctionCallee preCallHook) {
   // Get the destructor function type, void(*)(void).
   llvm::FunctionType *ty = llvm::FunctionType::get(CGM.VoidTy, false);
   SmallString<256> FnName;
@@ -255,6 +256,9 @@ llvm::Constant *CodeGenFunction::createAtExitStub(const VarDecl &VD,
                     VD.getLocation(), VD.getInit()->getExprLoc());
   // Emit an artificial location for this function.
   auto AL = ApplyDebugLocation::CreateArtificial(CGF);
+
+  if (preCallHook)
+    CGF.EmitNounwindRuntimeCall(preCallHook);
 
   llvm::CallInst *call = CGF.Builder.CreateCall(dtor, addr);
 

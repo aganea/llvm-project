@@ -2423,6 +2423,39 @@ static void emitGlobalDtorWithTLRegDtor(CodeGenFunction &CGF, const VarDecl &VD,
   CGF.EmitNounwindRuntimeCall(TLRegDtor, DtorStub);
 }
 
+// atexit() as shipped by the UCRT is not a real exported symbol: for /MD it
+// is a link-time alias resolved straight to the DLL-exported _crt_atexit,
+// but for /MT its body (and everything it calls) is compiled directly into
+// the executable with no import to hook. That makes it impossible for ASan
+// to reliably intercept atexit-triggered destructor calls on /MT builds
+// (needed to suppress false initialization-order-fiasco reports for globals
+// destructed during atexit-triggered teardown, e.g. after an early exit()).
+//
+// Registration itself is left completely untouched -- still a plain call to
+// "atexit", exactly as for a non-ASan build -- since /MT and /MD each have
+// their own separate onexit table, and the destructor must land in whichever
+// one the caller's own exit() will actually walk; routing the registration
+// call itself through the (always-separate) ASan runtime DLL would silently
+// register the destructor in the DLL's own table instead, so it would never
+// run at all. Instead, have the generated atexit stub call into the ASan
+// runtime DLL -- always a genuine, cross-module call regardless of the
+// caller's CRT linkage -- immediately before invoking the real destructor.
+static void emitGlobalDtorWithAsanHook(CodeGenFunction &CGF, const VarDecl &VD,
+                                       llvm::FunctionCallee Dtor,
+                                       llvm::Constant *Addr) {
+  // extern "C" void __asan_before_global_dtor(void);
+  llvm::FunctionType *HookTy =
+      llvm::FunctionType::get(CGF.VoidTy, /*isVarArg=*/false);
+  llvm::FunctionCallee Hook = CGF.CGM.CreateRuntimeFunction(
+      HookTy, "__asan_before_global_dtor", llvm::AttributeList(),
+      /*Local=*/true);
+  if (llvm::Function *HookFn = dyn_cast<llvm::Function>(Hook.getCallee()))
+    HookFn->setDoesNotThrow();
+
+  llvm::Constant *DtorStub = CGF.createAtExitStub(VD, Dtor, Addr, Hook);
+  CGF.registerGlobalDtorWithAtExit(DtorStub);
+}
+
 void MicrosoftCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
                                          llvm::FunctionCallee Dtor,
                                          llvm::Constant *Addr) {
@@ -2435,6 +2468,9 @@ void MicrosoftCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
   // HLSL doesn't support atexit.
   if (CGM.getLangOpts().HLSL)
     return CGM.AddCXXDtorEntry(Dtor, Addr);
+
+  if (CGM.getLangOpts().Sanitize.has(SanitizerKind::Address))
+    return emitGlobalDtorWithAsanHook(CGF, D, Dtor, Addr);
 
   // The default behavior is to use atexit.
   CGF.registerGlobalDtorWithAtExit(D, Dtor, Addr);

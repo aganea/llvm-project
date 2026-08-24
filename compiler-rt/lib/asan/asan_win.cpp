@@ -43,6 +43,26 @@ uptr __asan_get_shadow_memory_dynamic_address() {
   __asan_init();
   return __asan_shadow_memory_dynamic_address;
 }
+
+// Emitted by CodeGen (MicrosoftCXXABI::registerGlobalDtor) as the first
+// instruction of the small stub function it generates for atexit(), for
+// every global with a non-trivial destructor, when ASan is enabled. atexit()
+// registration itself is left untouched (still a plain "atexit" call
+// resolved however the target's own CRT linkage normally resolves it): the
+// destructor must land in whichever onexit table the caller's own exit()
+// will actually walk, and /MT and /MD each have their own separate one, so
+// routing registration through this (always-separate) DLL would silently
+// register it in the DLL's own table instead, where it would never run.
+//
+// Calling this hook from inside the generated stub, immediately before it
+// invokes the real destructor, sidesteps that: it's always a genuine
+// cross-module call into this DLL regardless of the caller's CRT linkage.
+// This suppresses false initialization-order-fiasco reports for globals
+// destructed during atexit-triggered teardown (e.g. after an early exit()
+// elsewhere in the same translation unit), matching the equivalent
+// __cxa_atexit-based mechanism already used on POSIX.
+SANITIZER_INTERFACE_ATTRIBUTE
+void __asan_before_global_dtor() { StopInitOrderChecking(); }
 }  // extern "C"
 
 // ---------------------- Windows-specific interceptors ---------------- {{{

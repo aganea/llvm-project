@@ -5208,8 +5208,13 @@ public:
   void EmitCXXGlobalVarDeclInit(const VarDecl &D, llvm::GlobalVariable *GV,
                                 bool PerformInit);
 
+  /// If PreCallHook is valid, the generated stub calls it (with no
+  /// arguments) before calling Dtor. Used to run ASan's
+  /// __asan_before_global_dtor hook from within the stub itself, rather than
+  /// changing how or where the stub gets registered.
   llvm::Constant *createAtExitStub(const VarDecl &VD, llvm::FunctionCallee Dtor,
-                                   llvm::Constant *Addr);
+                                   llvm::Constant *Addr,
+                                   llvm::FunctionCallee PreCallHook = {});
 
   llvm::Function *createTLSAtExitStub(const VarDecl &VD,
                                       llvm::FunctionCallee Dtor,
