@@ -920,6 +920,8 @@ static size_t GetInstructionSize(uptr address, size_t* rel_offset = nullptr) {
                       //   mov rax, QWORD PTR [rip + XXXXXXXX]
     case 0x058d48:    // 48 8d 05 XX XX XX XX :
                       //   lea rax, QWORD PTR [rip + XXXXXXXX]
+    case 0x0d8d48:    // 48 8d 0d XX XX XX XX :
+                      //   lea rcx, QWORD PTR [rip + XXXXXXXX]
     case 0x0d8948:    // 48 89 0d XX XX XX XX :
                       //   mov QWORD PTR [rip + XXXXXXXX], rcx
     case 0x158948:    // 48 89 15 XX XX XX XX :
