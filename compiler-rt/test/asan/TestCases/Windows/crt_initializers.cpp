@@ -24,8 +24,13 @@ int main() {
 // CHECK: Number of nonzero CRT initializers
 }
 
-void call_me_maybe() {}
+// Entries in .CRT$XI* are invoked by the CRT via _initterm_e as
+// int(__cdecl*)(void); a non-zero return aborts startup and becomes the
+// process exit code. call_me_maybe must therefore return 0 -- a void
+// function here leaves an arbitrary value in eax/rax that _initterm_e can
+// (and does, with some codegen) interpret as a fatal init failure.
+extern "C" int __cdecl call_me_maybe() { return 0; }
 
 #pragma data_seg(".CRT$XIB")
 // Add an initializer that shouldn't get its own redzone.
-FPTR run_on_startup = call_me_maybe;
+FPTR run_on_startup = reinterpret_cast<FPTR>(call_me_maybe);
