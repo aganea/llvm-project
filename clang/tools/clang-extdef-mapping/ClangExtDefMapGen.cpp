@@ -21,6 +21,7 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/WithColor.h"
@@ -198,7 +199,8 @@ static int HandleFiles(ArrayRef<std::string> SourceFiles,
   return 0;
 }
 
-int main(int argc, const char **argv) {
+int clang_extdef_mapping_main(int argc, char **argv,
+                               const llvm::ToolContext &) {
   // Print a stack trace if we signal out.
   sys::PrintStackTraceOnErrorSignal(argv[0], false);
   PrettyStackTraceProgram X(argc, argv);
@@ -210,7 +212,8 @@ int main(int argc, const char **argv) {
                          "with compile database or .ast files that are "
                          "created from clang's -emit-ast option.\n";
   auto ExpectedParser = CommonOptionsParser::create(
-      argc, argv, ClangExtDefMapGenCategory, cl::OneOrMore, Overview);
+      argc, const_cast<const char **>(argv), ClangExtDefMapGenCategory,
+      cl::OneOrMore, Overview);
   if (!ExpectedParser) {
     llvm::WithColor::error() << llvm::toString(ExpectedParser.takeError());
     return 1;

@@ -10,6 +10,8 @@ add_clang_tool(diagtool
   ListWarnings.cpp
   ShowEnabledWarnings.cpp
   TreeView.cpp
+
+  GENERATE_DRIVER
 )
 
 clang_target_link_libraries(diagtool

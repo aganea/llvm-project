@@ -24,6 +24,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
@@ -608,13 +609,14 @@ private:
 
 } // end anonymous namespace
 
-int main(int argc, const char **argv) {
+int clang_refactor_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   ClangRefactorTool RefactorTool;
 
   auto ExpectedParser = CommonOptionsParser::create(
-      argc, argv, cl::getGeneralCategory(), cl::ZeroOrMore,
+      argc, const_cast<const char **>(argv), cl::getGeneralCategory(),
+      cl::ZeroOrMore,
       "Clang-based refactoring tool for C, C++ and Objective-C");
   if (!ExpectedParser) {
     llvm::errs() << llvm::toString(ExpectedParser.takeError());

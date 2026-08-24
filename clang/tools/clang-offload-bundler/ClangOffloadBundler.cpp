@@ -31,6 +31,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
@@ -60,7 +61,8 @@ static void PrintVersion(raw_ostream &OS) {
   OS << clang::getClangToolFullVersion("clang-offload-bundler") << '\n';
 }
 
-int main(int argc, const char **argv) {
+int clang_offload_bundler_main(int argc, char **argv,
+                                const llvm::ToolContext &) {
 
   cl::opt<bool> Help("h", cl::desc("Alias for -help"), cl::Hidden);
 

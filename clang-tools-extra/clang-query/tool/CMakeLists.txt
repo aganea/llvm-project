@@ -2,6 +2,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 add_clang_tool(clang-query
   ClangQuery.cpp
+
+  GENERATE_DRIVER
   )
 clang_target_link_libraries(clang-query
   PRIVATE
@@ -12,8 +14,5 @@ clang_target_link_libraries(clang-query
   clangFrontend
   clangSerialization
   clangTooling
-  )
-target_link_libraries(clang-query
-  PRIVATE
   clangQuery
   )

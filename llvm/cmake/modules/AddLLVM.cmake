@@ -1089,7 +1089,7 @@ macro(add_llvm_library name)
 endmacro(add_llvm_library name)
 
 macro(generate_llvm_objects name)
-  cmake_parse_arguments(ARG "GENERATE_DRIVER" "" "DEPENDS" ${ARGN})
+  cmake_parse_arguments(ARG "GENERATE_DRIVER;DISABLE_PCH_REUSE" "" "DEPENDS" ${ARGN})
 
   llvm_process_sources( ALL_FILES ${ARG_UNPARSED_ARGUMENTS} )
 

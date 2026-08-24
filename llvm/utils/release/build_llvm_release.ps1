@@ -899,6 +899,17 @@ function Build-Zstd {
             "-DZSTD_BUILD_TESTS=OFF"
             "-DZSTD_BUILD_STATIC=ON"
             "-DZSTD_BUILD_SHARED=OFF"
+            # zstd's own CMakeLists.txt declares cmake_minimum_required(VERSION 3.10),
+            # below the 3.15 that introduced CMP0091 -- so it defaults to OLD, and
+            # CMAKE_MSVC_RUNTIME_LIBRARY below is silently ignored, leaving zstd on
+            # CMake's traditional default (/MD, dynamic CRT). That mismatches the
+            # rest of this build, which LLVM_ENABLE_RPMALLOC forces to /MT (see
+            # LLVM_ENABLE_RPMALLOC's handling in llvm/CMakeLists.txt) -- producing
+            # LNK4217 warnings ("locally defined symbol imported") for malloc/
+            # calloc/free/etc. when zstd_static.lib links into llvm.exe. Forcing the
+            # policy default (independent of zstd's own cmake_minimum_required)
+            # makes CMAKE_MSVC_RUNTIME_LIBRARY actually take effect.
+            "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW"
             "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
         )
         $cache = Write-CMakeCacheFile -Flags $zstdFlags -FileName 'zstd_cache.cmake'

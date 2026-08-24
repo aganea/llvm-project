@@ -13,7 +13,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
@@ -55,8 +55,12 @@ static int versionMain(int argc, const char *argv[]) {
   return 0;
 }
 
-int main(int argc, const char **argv) {
-  InitLLVM X(argc, argv);
+int llvm_cov_main(int argc, char **Argv, const llvm::ToolContext &) {
+  // The dispatch logic below rewrites argv[1] in place and forwards a
+  // trailing slice to sub-tool mains that all take `const char *argv[]`, so
+  // it needs a mutable array of const-char pointers, not the driver's
+  // required `char **`.
+  const char **argv = const_cast<const char **>(Argv);
 
   // If argv[0] is or ends with 'gcov', always be gcov compatible
   if (sys::path::stem(argv[0]).ends_with_insensitive("gcov"))

@@ -20,6 +20,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
@@ -355,12 +356,13 @@ mapInputsToAbsPaths(clang::tooling::CompilationDatabase &CDB,
 } // namespace include_cleaner
 } // namespace clang
 
-int main(int argc, const char **argv) {
+int clang_include_cleaner_main(int argc, char **argv,
+                                const llvm::ToolContext &) {
   using namespace clang::include_cleaner;
 
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
-  auto OptionsParser =
-      clang::tooling::CommonOptionsParser::create(argc, argv, IncludeCleaner);
+  auto OptionsParser = clang::tooling::CommonOptionsParser::create(
+      argc, const_cast<const char **>(argv), IncludeCleaner);
   if (!OptionsParser) {
     llvm::errs() << toString(OptionsParser.takeError());
     return 1;
