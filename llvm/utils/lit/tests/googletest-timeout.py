@@ -1,5 +1,12 @@
 # REQUIRES: lit-max-individual-test-time
 
+# This test hard-codes very tight timeouts (as low as 1 second) to keep the
+# self-test suite fast. Under heavy machine load (e.g. a full check-all run
+# with many parallel workers), process startup alone can occasionally exceed
+# that budget and time out a subtest that isn't supposed to. Allow a couple of
+# retries to absorb that without weakening what the test actually verifies.
+# ALLOW_RETRIES: 2
+
 ###############################################################################
 # Check tests can hit timeout when set
 ###############################################################################
