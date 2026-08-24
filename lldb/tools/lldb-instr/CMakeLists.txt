@@ -1,4 +1,4 @@
-add_lldb_tool(lldb-instr
+add_lldb_utility(lldb-instr
   Instrument.cpp
 
   LINK_COMPONENTS

@@ -134,6 +134,19 @@ macro(add_flang_tool name)
   endif()
 endmacro()
 
+# Like add_flang_tool, but for executables that Flang's own tests depend on
+# without being part of the shipped toolchain (e.g. bbc, f18-parse-demo).
+# Mirrors add_llvm_utility (AddLLVM.cmake): built exactly like a normal Flang
+# tool -- same FLANG_BUILD_TOOLS-gated EXCLUDE_FROM_ALL -- but never installed
+# and never added to the FLANG_EXPORTS install-export set.
+macro(add_flang_utility name)
+  if (NOT FLANG_BUILD_TOOLS)
+    set(EXCLUDE_FROM_ALL ON)
+  endif()
+
+  add_flang_executable(${name} ${ARGN})
+endmacro()
+
 macro(add_flang_symlink name dest)
   llvm_add_tool_symlink(FLANG ${name} ${dest} ALWAYS_GENERATE)
   if(LLVM_TOOL_LLVM_DRIVER_BUILD AND NOT LLVM_INSTALL_DRIVER_ALIASES)

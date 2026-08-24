@@ -1,4 +1,4 @@
-add_lldb_tool(yaml2macho-core
+add_lldb_utility(yaml2macho-core
     CoreSpec.cpp
     LCNoteWriter.cpp
     MemoryWriter.cpp
