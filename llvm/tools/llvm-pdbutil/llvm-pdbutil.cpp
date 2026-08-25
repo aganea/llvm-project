@@ -85,7 +85,7 @@
 #include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/LLVMDriver.h"
+#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -1599,7 +1599,8 @@ static void simplifyChunkList(llvm::cl::list<opts::ModuleSubsection> &Chunks) {
   Chunks.push_back(opts::ModuleSubsection::All);
 }
 
-int llvm_pdbutil_main(int Argc, char **Argv, const llvm::ToolContext &) {
+int main(int Argc, const char **Argv) {
+  InitLLVM X(Argc, Argv);
   ExitOnErr.setBanner("llvm-pdbutil: ");
 
   cl::HideUnrelatedOptions(
