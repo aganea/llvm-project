@@ -397,6 +397,78 @@ function Invoke-WithRetry {
     throw "Command failed after $MaxRetries attempts: $Command $($Arguments -join ' ')"
 }
 
+function Get-LitRerunCommand {
+    <#
+    .SYNOPSIS
+        Tries to recover the exact lit invocation that a ninja test target
+        (e.g. check-llvm) would run, so a retry can re-run lit directly
+        with '--filter-failed' instead of re-running the whole suite.
+    .DESCRIPTION
+        Only simple, single-command lit targets (add_lit_testsuite /
+        umbrella_lit_testsuite - e.g. check-llvm, check-clang, check-lld,
+        check-clang-tools, check-clangd) reduce to exactly one command via
+        'ninja -t commands'. Targets that fan out into a nested build
+        (e.g. check-runtimes, which drives a separate ExternalProject
+        ninja tree) don't, and are intentionally left alone by returning
+        $null so the caller can fall back to full-suite retries.
+    #>
+    param([Parameter(Mandatory)][string]$Target)
+
+    $output = & $script:NinjaCommand @script:NinjaExtraArgs -t commands $Target 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) { return $null }
+
+    $litLines = @($output | Where-Object { $_ -match 'llvm-lit(\.py)?["\s]' })
+    if ($litLines.Count -ne 1) { return $null }
+
+    $line = $litLines[0].Trim()
+    # Bail if this isn't a single plain invocation (shell chaining means
+    # blindly appending flags to the end could land in the wrong place).
+    if ($line -match '&&|\|\||\bcmd(\.exe)?\s+/c\b') { return $null }
+
+    return $line
+}
+
+function Invoke-TestTarget {
+    <#
+    .SYNOPSIS
+        Runs a single test target with retries. When a retry is needed,
+        re-runs only the tests that failed on the previous attempt
+        (via lit's own '--filter-failed', which lit tracks for us in
+        '.lit_test_times.txt') instead of the whole suite, falling back
+        to the old full-suite retry when that isn't possible for this
+        target.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Target,
+        [int]$MaxRetries = 3
+    )
+    $ninjaArgs = @($script:NinjaExtraArgs) + @($Target)
+    Write-Host "+ [attempt 1/$MaxRetries] $script:NinjaCommand $($ninjaArgs -join ' ')" -ForegroundColor DarkGray
+    & $script:NinjaCommand @ninjaArgs
+    if ($LASTEXITCODE -eq 0) { return }
+
+    $rerunCommand = Get-LitRerunCommand -Target $Target
+    if (-not $rerunCommand) {
+        Write-SubStep "Could not isolate a lit invocation for $Target; falling back to full-suite retries"
+        for ($i = 2; $i -le $MaxRetries; $i++) {
+            Write-Host "  Attempt $($i - 1) failed, retrying full suite (attempt $i/$MaxRetries)..." -ForegroundColor Yellow
+            & $script:NinjaCommand @ninjaArgs
+            if ($LASTEXITCODE -eq 0) { return }
+        }
+        throw "Command failed after $MaxRetries attempts: $script:NinjaCommand $($ninjaArgs -join ' ')"
+    }
+
+    for ($i = 2; $i -le $MaxRetries; $i++) {
+        Write-Host "  Attempt $($i - 1) failed; re-running only the previously-failed tests (attempt $i/$MaxRetries)..." -ForegroundColor Yellow
+        $filteredCommand = "$rerunCommand --filter-failed --allow-empty-runs"
+        Write-Host "+ [filtered rerun] $filteredCommand" -ForegroundColor DarkGray
+        cmd /c $filteredCommand
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    throw "Tests for $Target still failing after $MaxRetries attempts"
+}
+
 function Get-ForwardSlashPath {
     <#
     .SYNOPSIS
@@ -1024,6 +1096,8 @@ function Invoke-Tests {
     <#
     .SYNOPSIS
         Runs a list of test targets with retries, skipping as appropriate.
+        On failure, retries re-run only the previously-failed tests where
+        possible (see Get-LitRerunCommand) instead of the whole suite.
         Honors $script:NinjaCommand and $script:NinjaExtraArgs (set via
         LLVM_NINJA_OVERRIDE).
     #>
@@ -1037,7 +1111,7 @@ function Invoke-Tests {
             Write-SubStep "Skipping $target on $Arch"
             continue
         }
-        Invoke-WithRetry $script:NinjaCommand -Arguments (@($script:NinjaExtraArgs) + @($target))
+        Invoke-TestTarget -Target $target
     }
 }
 
