@@ -1605,6 +1605,16 @@ try {
 
     # Common flags
     $commonCompilerFlags = '-DLIBXML_STATIC -D_SILENCE_NONFLOATING_COMPLEX_DEPRECATION_WARNING'
+    # HandleLLVMOptions.cmake appends /W4 (clang-cl's warning-level flag,
+    # which re-enables -Wunused-template) to CMAKE_CXX_FLAGS *after* whatever
+    # we seed it with here, and Clang resolves conflicting -W flags by last-one-
+    # wins -- so putting -Wno-unused-template in $commonCompilerFlags above has
+    # no effect. CMAKE_CXX_FLAGS_RELEASE is the one flags variable CMake always
+    # emits after the fully-accumulated CMAKE_CXX_FLAGS on the actual compile
+    # line, so it's the only place a suppression like this reliably sticks.
+    # Value below matches CMake's own MSVC/clang-cl Release default so we don't
+    # lose /O2 /Ob2 /DNDEBUG by overriding the cache variable outright.
+    $releaseCompilerFlags = '/O2 /Ob2 /DNDEBUG -Wno-unused-template'
     $commonCMakeFlags = @(
         "-DCMAKE_BUILD_TYPE=Release"
         "-DLLVM_ENABLE_ASSERTIONS=OFF"
@@ -1620,6 +1630,7 @@ try {
         "-DLLVM_ENABLE_ZSTD=FORCE_ON"
         "-DCMAKE_C_FLAGS=`"$commonCompilerFlags`""
         "-DCMAKE_CXX_FLAGS=`"$commonCompilerFlags`""
+        "-DCMAKE_CXX_FLAGS_RELEASE=`"$releaseCompilerFlags`""
         "-DLLVM_ENABLE_RPMALLOC=ON"
         '-DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld"'
         '-DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp"'
