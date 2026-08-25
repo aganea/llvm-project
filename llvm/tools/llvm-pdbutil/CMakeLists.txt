@@ -29,6 +29,4 @@ add_llvm_tool(llvm-pdbutil
   StreamUtil.cpp
   TypeReferenceTracker.cpp
   YAMLOutputStyle.cpp
-
-  GENERATE_DRIVER
   )
