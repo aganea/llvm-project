@@ -49,29 +49,6 @@ using namespace clang::tooling;
 using namespace llvm;
 
 static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
-static cl::OptionCategory ClangQueryCategory("clang-query options");
-
-static cl::opt<bool>
-    UseColor("use-color",
-             cl::desc(
-                 R"(Use colors in detailed AST output. If not set, colors
-will be used if the terminal connected to
-standard output supports colors.)"),
-             cl::init(false), cl::cat(ClangQueryCategory));
-
-static cl::list<std::string> Commands("c", cl::desc("Specify command to run"),
-                                      cl::value_desc("command"),
-                                      cl::cat(ClangQueryCategory));
-
-static cl::list<std::string> CommandFiles("f",
-                                          cl::desc("Read commands from file"),
-                                          cl::value_desc("file"),
-                                          cl::cat(ClangQueryCategory));
-
-static cl::opt<std::string> PreloadFile(
-    "preload",
-    cl::desc("Preload commands from file and start interactive mode"),
-    cl::value_desc("file"), cl::cat(ClangQueryCategory));
 
 bool runCommandsInFile(const char *ExeName, std::string const &FileName,
                        QuerySession &QS) {
@@ -81,6 +58,35 @@ bool runCommandsInFile(const char *ExeName, std::string const &FileName,
 
 int clang_query_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
+
+  // Declared locally (rather than at file scope) so that these options are
+  // only registered with the CommandLine parser while clang-query is the
+  // tool actually being dispatched to -- llvm.exe folds many tools into one
+  // process, and file-scope cl::opt/cl::list globals register unconditionally
+  // for the whole process lifetime, which previously collided with llvm-cov's
+  // own "-c" and "-use-color" options.
+  cl::OptionCategory ClangQueryCategory("clang-query options");
+
+  cl::opt<bool> UseColor(
+      "use-color",
+      cl::desc(
+          R"(Use colors in detailed AST output. If not set, colors
+will be used if the terminal connected to
+standard output supports colors.)"),
+      cl::init(false), cl::cat(ClangQueryCategory));
+
+  cl::list<std::string> Commands("c", cl::desc("Specify command to run"),
+                                 cl::value_desc("command"),
+                                 cl::cat(ClangQueryCategory));
+
+  cl::list<std::string> CommandFiles("f", cl::desc("Read commands from file"),
+                                     cl::value_desc("file"),
+                                     cl::cat(ClangQueryCategory));
+
+  cl::opt<std::string> PreloadFile(
+      "preload",
+      cl::desc("Preload commands from file and start interactive mode"),
+      cl::value_desc("file"), cl::cat(ClangQueryCategory));
 
   llvm::Expected<CommonOptionsParser> OptionsParser =
       CommonOptionsParser::create(argc, const_cast<const char **>(argv),
@@ -106,9 +112,10 @@ int clang_query_main(int argc, char **argv, const llvm::ToolContext &) {
                  OptionsParser->getSourcePathList());
 
   if (UseColor.getNumOccurrences() > 0) {
-    ArgumentsAdjuster colorAdjustor = [](const CommandLineArguments &Args, StringRef /*unused*/) {
+    bool ShouldUseColor = UseColor;
+    ArgumentsAdjuster colorAdjustor = [ShouldUseColor](const CommandLineArguments &Args, StringRef /*unused*/) {
       CommandLineArguments AdjustedArgs = Args;
-      if (UseColor)
+      if (ShouldUseColor)
         AdjustedArgs.push_back("-fdiagnostics-color");
       else
         AdjustedArgs.push_back("-fno-diagnostics-color");

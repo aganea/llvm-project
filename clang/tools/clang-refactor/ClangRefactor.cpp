@@ -37,15 +37,27 @@ namespace cl = llvm::cl;
 
 namespace opts {
 
-static cl::OptionCategory CommonRefactorOptions("Refactoring options");
+// Bundled into a struct that clang_refactor_main declares as an ordinary
+// local (rather than declared as plain namespace-scope globals) so that
+// these are only registered with the CommandLine parser -- and only exist at
+// all -- while clang-refactor is actually the tool being dispatched to.
+// llvm.exe folds many tools into one process, and namespace-scope cl::opt
+// globals register unconditionally for the whole process lifetime, which
+// previously collided with llvm-cov's own "-i" option. ClangRefactorTool
+// takes a reference to this struct (see its constructor below) since its
+// member functions, which read Verbose/Inplace, aren't nested inside main
+// and so can't see main's locals any other way.
+struct Options {
+  cl::OptionCategory CommonRefactorOptions{"Refactoring options"};
 
-static cl::opt<bool> Verbose("v", cl::desc("Use verbose output"),
-                             cl::cat(cl::getGeneralCategory()),
-                             cl::sub(cl::SubCommand::getAll()));
+  cl::opt<bool> Verbose{"v", cl::desc("Use verbose output"),
+                        cl::cat(cl::getGeneralCategory()),
+                        cl::sub(cl::SubCommand::getAll())};
 
-static cl::opt<bool> Inplace("i", cl::desc("Inplace edit <file>s"),
-                             cl::cat(cl::getGeneralCategory()),
-                             cl::sub(cl::SubCommand::getAll()));
+  cl::opt<bool> Inplace{"i", cl::desc("Inplace edit <file>s"),
+                        cl::cat(cl::getGeneralCategory()),
+                        cl::sub(cl::SubCommand::getAll())};
+};
 
 } // end namespace opts
 
@@ -346,8 +358,8 @@ private:
 
 class ClangRefactorTool {
 public:
-  ClangRefactorTool()
-      : SelectedSubcommand(nullptr), MatchingRule(nullptr),
+  ClangRefactorTool(opts::Options &Opts)
+      : Opts(Opts), SelectedSubcommand(nullptr), MatchingRule(nullptr),
         Consumer(new ClangRefactorConsumer(Changes)), HasFailed(false) {
     std::vector<std::unique_ptr<RefactoringAction>> Actions =
         createRefactoringActions();
@@ -367,7 +379,7 @@ public:
     for (auto &Action : Actions) {
       SubCommands.push_back(std::make_unique<RefactoringActionSubcommand>(
           std::move(Action), Action->createActiveActionRules(),
-          opts::CommonRefactorOptions));
+          Opts.CommonRefactorOptions));
     }
   }
 
@@ -408,14 +420,14 @@ public:
     ActiveConsumer->beginTU(AST);
 
     auto InvokeRule = [&](RefactoringResultConsumer &Consumer) {
-      if (opts::Verbose)
+      if (Opts.Verbose)
         logInvocation(*SelectedSubcommand, Context);
       MatchingRule->invoke(*ActiveConsumer, Context);
     };
     if (HasSelection) {
       assert(SelectedSubcommand->getSelection() &&
              "Missing selection argument?");
-      if (opts::Verbose)
+      if (Opts.Verbose)
         SelectedSubcommand->getSelection()->print(llvm::outs());
       if (SelectedSubcommand->getSelection()->forAllRanges(
               Context.getSources(), [&](SourceRange R) {
@@ -501,7 +513,7 @@ public:
         return true;
       }
 
-      if (opts::Inplace) {
+      if (Opts.Inplace) {
         std::error_code EC;
         llvm::raw_fd_ostream OS(File, EC, llvm::sys::fs::OF_TextWithCRLF);
         if (EC) {
@@ -599,6 +611,7 @@ private:
     return Subcommand;
   }
 
+  opts::Options &Opts;
   std::vector<std::unique_ptr<RefactoringActionSubcommand>> SubCommands;
   RefactoringActionSubcommand *SelectedSubcommand;
   RefactoringActionRule *MatchingRule;
@@ -612,7 +625,8 @@ private:
 int clang_refactor_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
-  ClangRefactorTool RefactorTool;
+  opts::Options Opts;
+  ClangRefactorTool RefactorTool(Opts);
 
   auto ExpectedParser = CommonOptionsParser::create(
       argc, const_cast<const char **>(argv), cl::getGeneralCategory(),

@@ -54,21 +54,6 @@ using namespace llvm;
 namespace clang {
 namespace pp_trace {
 
-static cl::OptionCategory Cat("pp-trace options");
-
-static cl::opt<std::string> Callbacks(
-    "callbacks", cl::init("*"),
-    cl::desc("Comma-separated list of globs describing the list of callbacks "
-             "to output. Globs are processed in order of appearance. Globs "
-             "with the '-' prefix remove callbacks from the set. e.g. "
-             "'*,-Macro*'."),
-    cl::cat(Cat));
-
-static cl::opt<std::string> OutputFileName(
-    "output", cl::init("-"),
-    cl::desc("Output trace to the given file name or '-' for stdout."),
-    cl::cat(Cat));
-
 [[noreturn]] static void error(Twine Message) {
   WithColor::error() << Message << '\n';
   exit(1);
@@ -127,6 +112,27 @@ private:
 
 int pp_trace_main(int argc, char **argv, const llvm::ToolContext &) {
   using namespace clang::pp_trace;
+
+  // Declared locally (rather than at namespace scope) so that these options
+  // are only registered with the CommandLine parser while pp-trace is the
+  // tool actually being dispatched to -- see the comment on ClangQuery.cpp's
+  // clang_query_main for why file/namespace-scope cl::opt globals are unsafe
+  // once a tool is folded into the multicall llvm.exe.
+  cl::OptionCategory Cat("pp-trace options");
+
+  cl::opt<std::string> Callbacks(
+      "callbacks", cl::init("*"),
+      cl::desc("Comma-separated list of globs describing the list of callbacks "
+               "to output. Globs are processed in order of appearance. Globs "
+               "with the '-' prefix remove callbacks from the set. e.g. "
+               "'*,-Macro*'."),
+      cl::cat(Cat));
+
+  cl::opt<std::string> OutputFileName(
+      "output", cl::init("-"),
+      cl::desc("Output trace to the given file name or '-' for stdout."),
+      cl::cat(Cat));
+
   auto OptionsParser = clang::tooling::CommonOptionsParser::create(
       argc, const_cast<const char **>(argv), Cat, llvm::cl::ZeroOrMore);
   if (!OptionsParser)
