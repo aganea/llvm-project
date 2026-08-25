@@ -7,7 +7,7 @@
 - **Measured result.** `bin/` **2.79 GB → 1.94 GB**, total install **2.98 GB → 2.02 GB**, installer **458 MB** (against 434 MB for the last NSIS release and 780 MB for today's WIX MSI).
 - **No user-visible change.** Every existing tool name keeps working; hard links are indistinguishable from regular files.
 - **Status.** Fully implemented on a branch, splittable into small independent PRs.
-- **Later, not proposed here.** Folding the remaining 50 standalone tools into `llvm.exe` would take the install to ~1,019 MB and the installer to ~228 MB.
+- **Later, not proposed here.** Folding the remaining 50 standalone tools into `llvm.exe` would take the install to ~1,019 MB and the installer to ~237 MB. The first two steps of that are already built and measured: the same configuration now packages at **332 MB**, a further 27% off this proposal's 458 MB.
 
 ## Summary
 
@@ -19,7 +19,7 @@ This RFC proposes three related changes to the LLVM Windows release process:
 
 Together these take the installed toolchain from **2.98 GB to 2.02 GB** and the installer to **458 MB**, while preserving full backward compatibility.
 
-There is considerably more headroom beyond that. The 50 executables that remain standalone even after this change are **73% of the installer payload**, and folding the ones that need no or bounded work into `llvm.exe` would reach **1,019 MB installed, against 3,052 MB (2.98 GB) today**, with a **228 MB installer, against 780 MB today**. That work is deliberately *not* part of this proposal; see [Future Work](#future-work-folding-more-tools-into-llvmexe).
+There is considerably more headroom beyond that. The 50 executables that remain standalone even after this change are **73% of the installer payload**, and folding the ones that need no or bounded work into `llvm.exe` would reach **1,019 MB installed, against 3,052 MB (2.98 GB) today**, with a **~237 MB installer, against 780 MB today**. Enough of that follow-on work is now implemented to check the projection against a real package rather than a model: the packaging fixes and the easiest tool tier bring the same build to **332 MB**. That work is deliberately *not* part of this proposal; see [Future Work](#future-work-folding-more-tools-into-llvmexe).
 
 ## The Problem
 
@@ -96,7 +96,25 @@ The 50 standalone executables left in `bin/` are **73% of the installer payload*
 
 **Roughly 47 MB of installer — 10% — needs no driver work whatsoever, only packaging changes.** `flang-new.exe` is a byte-identical 136 MB copy of `flang.exe` that NSIS embeds twice, because it is an alias of a non-driver tool and `File /r` is hard-link blind. And three tools ship by accident: `bbc` (90.6 MB) is a lit-test lowering driver with exactly one non-test reference in the tree, alongside `f18-parse-demo` and `yaml2macho-core`.
 
-Taken together, the packaging fixes plus the free and bounded tiers would bring the installer down to **as little as 228 MB** and the install to **1,019 MB**. None of this is proposed here; it is noted so reviewers can see that the driver work has a much longer runway than the ~30% figure suggests.
+### What that actually buys: a measured data point
+
+The first two of those steps are no longer projections. A rebuild of the same x64 configuration used for the Savings table above — `clang;clang-tools-extra;lld;lldb;flang;mlir` — with the packaging fixes applied and eleven of the free tools folded into the driver produced:
+
+| | `bin/` | Total install | Installer |
+|---|---:|---:|---:|
+| LLVM 23, separate binaries | 2.79 GB | 2.98 GB | 780 MB (WIX) |
+| This proposal, Parts A–C | 1.94 GB | 2.02 GB | 458 MB (NSIS) |
+| **plus packaging fixes and the free tier** | **1.32 GB** | **1.40 GB** | **332 MB** |
+| *plus the bounded tier (projected)* | *0.91 GB* | *1.00 GB* | *~237 MB* |
+
+A further **27% off the installer**, and **53% off LLVM 23's `bin/`**, for changes that are CMake plumbing plus renaming `main` in eleven files. `llvm.exe` grew from 121.8 MB to 126.8 MB absorbing them — 5 MB paid once, against the 349 MB of standalone tool binaries those eleven folds removed.
+
+Two details worth stating precisely, because they are what makes the remaining projection credible or not:
+
+- **The disk model is accurate.** Predicted `bin/` was within 0.13% of measured. The triage's method — diffing each tool's `LINK_LIBRARIES` against `llvm.exe`'s to decide whether folding it adds code — holds up.
+- **The installer model is ~4% optimistic.** Compressing each file alone and summing understates a real LZMA package, so savings subtracted from a real baseline come out slightly too good. The measured 332 MB is 3.7% above what the model said for this exact composition. The raw model output for the bounded tier is 228 MB; corrected for that bias, **~237 MB is the honest number**, and it is what both tables here use.
+
+Taken together, the packaging fixes plus the free and bounded tiers would bring the installer down to **roughly 237 MB** and the install to **~1,019 MB**. None of this is proposed here; it is noted so reviewers can see that the driver work has a much longer runway than the ~30% figure suggests — and that the runway has now been partly walked, not just measured on paper.
 
 ## Drawbacks, Risks and Alternatives
 
