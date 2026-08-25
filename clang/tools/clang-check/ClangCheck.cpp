@@ -55,47 +55,59 @@ static cl::extrahelp MoreHelp(
     "\n"
 );
 
-static cl::OptionCategory ClangCheckCategory("clang-check options");
 static const opt::OptTable &Options = getDriverOptTable();
-static cl::opt<bool>
-    ASTDump("ast-dump",
-            cl::desc(Options.getOptionHelpText(options::OPT_ast_dump)),
-            cl::cat(ClangCheckCategory));
-static cl::opt<bool>
-    ASTList("ast-list",
-            cl::desc(Options.getOptionHelpText(options::OPT_ast_list)),
-            cl::cat(ClangCheckCategory));
-static cl::opt<bool>
-    ASTPrint("ast-print",
-             cl::desc(Options.getOptionHelpText(options::OPT_ast_print)),
-             cl::cat(ClangCheckCategory));
-static cl::opt<std::string> ASTDumpFilter(
-    "ast-dump-filter",
-    cl::desc(Options.getOptionHelpText(options::OPT_ast_dump_filter)),
-    cl::cat(ClangCheckCategory));
-static cl::opt<bool>
-    Analyze("analyze",
-            cl::desc(Options.getOptionHelpText(options::OPT_analyze)),
-            cl::cat(ClangCheckCategory));
-static cl::opt<std::string>
-    AnalyzerOutput("analyzer-output-path",
-                   cl::desc(Options.getOptionHelpText(options::OPT_o)),
-                   cl::cat(ClangCheckCategory));
 
-static cl::opt<bool>
-    Fixit("fixit", cl::desc(Options.getOptionHelpText(options::OPT_fixit)),
-          cl::cat(ClangCheckCategory));
-static cl::opt<bool> FixWhatYouCan(
-    "fix-what-you-can",
-    cl::desc(Options.getOptionHelpText(options::OPT_fix_what_you_can)),
-    cl::cat(ClangCheckCategory));
+// Bundled into a struct that clang_check_main declares as an ordinary local
+// (rather than declared as plain file-scope globals) so that these are only
+// registered with the CommandLine parser -- and only exist at all -- while
+// clang-check is actually the tool being dispatched to. llvm.exe folds many
+// tools into one process, and file-scope cl::opt globals register
+// unconditionally for the whole process lifetime, which risks colliding with
+// another folded tool's option of the same name (see ClangQuery.cpp's
+// clang_query_main for a worked example of such a collision).
+//
+// Some of these are read from class methods defined elsewhere in this file
+// (ClangCheckActionFactory::newASTConsumer, FixItOptions's constructor,
+// DumpSyntaxTree's nested Consumer) that aren't nested inside
+// clang_check_main, so those classes take a `const ClangCheckOptions &`
+// instead of touching global state.
+struct ClangCheckOptions {
+  cl::OptionCategory ClangCheckCategory{"clang-check options"};
 
-static cl::opt<bool> SyntaxTreeDump("syntax-tree-dump",
-                                    cl::desc("dump the syntax tree"),
-                                    cl::cat(ClangCheckCategory));
-static cl::opt<bool> TokensDump("tokens-dump",
-                                cl::desc("dump the preprocessed tokens"),
-                                cl::cat(ClangCheckCategory));
+  cl::opt<bool> ASTDump{
+      "ast-dump", cl::desc(Options.getOptionHelpText(options::OPT_ast_dump)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> ASTList{
+      "ast-list", cl::desc(Options.getOptionHelpText(options::OPT_ast_list)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> ASTPrint{
+      "ast-print",
+      cl::desc(Options.getOptionHelpText(options::OPT_ast_print)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<std::string> ASTDumpFilter{
+      "ast-dump-filter",
+      cl::desc(Options.getOptionHelpText(options::OPT_ast_dump_filter)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> Analyze{
+      "analyze", cl::desc(Options.getOptionHelpText(options::OPT_analyze)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<std::string> AnalyzerOutput{
+      "analyzer-output-path", cl::desc(Options.getOptionHelpText(options::OPT_o)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> Fixit{
+      "fixit", cl::desc(Options.getOptionHelpText(options::OPT_fixit)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> FixWhatYouCan{
+      "fix-what-you-can",
+      cl::desc(Options.getOptionHelpText(options::OPT_fix_what_you_can)),
+      cl::cat(ClangCheckCategory)};
+  cl::opt<bool> SyntaxTreeDump{"syntax-tree-dump",
+                               cl::desc("dump the syntax tree"),
+                               cl::cat(ClangCheckCategory)};
+  cl::opt<bool> TokensDump{"tokens-dump",
+                           cl::desc("dump the preprocessed tokens"),
+                           cl::cat(ClangCheckCategory)};
+};
 
 namespace {
 
@@ -103,8 +115,8 @@ namespace {
 // into a header file and reuse that.
 class FixItOptions : public clang::FixItOptions {
 public:
-  FixItOptions() {
-    FixWhatYouCan = ::FixWhatYouCan;
+  FixItOptions(bool ShouldFixWhatYouCan) {
+    FixWhatYouCan = ShouldFixWhatYouCan;
   }
 
   std::string RewriteFilename(const std::string& filename, int &fd) override {
@@ -138,25 +150,48 @@ public:
 /// \c FixItRewriter.
 class ClangCheckFixItAction : public clang::FixItAction {
 public:
+  ClangCheckFixItAction(const ClangCheckOptions &Opts) : Opts(Opts) {}
+
   bool BeginSourceFileAction(clang::CompilerInstance& CI) override {
-    FixItOpts.reset(new FixItOptions);
+    FixItOpts.reset(new FixItOptions(Opts.FixWhatYouCan));
     Rewriter.reset(new FixItRewriter(CI.getDiagnostics(), CI.getSourceManager(),
                                      CI.getLangOpts(), FixItOpts.get()));
     return true;
   }
+
+private:
+  const ClangCheckOptions &Opts;
+};
+
+// newFrontendActionFactory<T>() always default-constructs T, so
+// ClangCheckFixItAction (which now needs a ClangCheckOptions reference)
+// can't use it; this small factory plays the same role.
+class ClangCheckFixItActionFactory : public FrontendActionFactory {
+public:
+  ClangCheckFixItActionFactory(const ClangCheckOptions &Opts) : Opts(Opts) {}
+
+  std::unique_ptr<FrontendAction> create() override {
+    return std::make_unique<ClangCheckFixItAction>(Opts);
+  }
+
+private:
+  const ClangCheckOptions &Opts;
 };
 
 class DumpSyntaxTree : public clang::ASTFrontendAction {
 public:
+  DumpSyntaxTree(const ClangCheckOptions &Opts) : Opts(Opts) {}
+
   std::unique_ptr<clang::ASTConsumer>
   CreateASTConsumer(clang::CompilerInstance &CI, StringRef InFile) override {
     class Consumer : public clang::ASTConsumer {
     public:
-      Consumer(clang::CompilerInstance &CI) : Collector(CI.getPreprocessor()) {}
+      Consumer(clang::CompilerInstance &CI, const ClangCheckOptions &Opts)
+          : Collector(CI.getPreprocessor()), Opts(Opts) {}
 
       void HandleTranslationUnit(clang::ASTContext &AST) override {
         clang::syntax::TokenBuffer TB = std::move(Collector).consume();
-        if (TokensDump)
+        if (Opts.TokensDump)
           llvm::outs() << TB.dumpForTests();
         clang::syntax::TokenBufferTokenManager TBTM(TB, AST.getLangOpts(),
                                                     AST.getSourceManager());
@@ -167,27 +202,50 @@ public:
 
     private:
       clang::syntax::TokenCollector Collector;
+      const ClangCheckOptions &Opts;
     };
-    return std::make_unique<Consumer>(CI);
+    return std::make_unique<Consumer>(CI, Opts);
   }
+
+private:
+  const ClangCheckOptions &Opts;
+};
+
+// Same reasoning as ClangCheckFixItActionFactory above.
+class DumpSyntaxTreeFactory : public FrontendActionFactory {
+public:
+  DumpSyntaxTreeFactory(const ClangCheckOptions &Opts) : Opts(Opts) {}
+
+  std::unique_ptr<FrontendAction> create() override {
+    return std::make_unique<DumpSyntaxTree>(Opts);
+  }
+
+private:
+  const ClangCheckOptions &Opts;
 };
 
 class ClangCheckActionFactory {
 public:
+  ClangCheckActionFactory(const ClangCheckOptions &Opts) : Opts(Opts) {}
+
   std::unique_ptr<clang::ASTConsumer> newASTConsumer() {
-    if (ASTList)
+    if (Opts.ASTList)
       return clang::CreateASTDeclNodeLister();
-    if (ASTDump)
-      return clang::CreateASTDumper(nullptr /*Dump to stdout.*/, ASTDumpFilter,
+    if (Opts.ASTDump)
+      return clang::CreateASTDumper(nullptr /*Dump to stdout.*/,
+                                    Opts.ASTDumpFilter,
                                     /*DumpDecls=*/true,
                                     /*Deserialize=*/false,
                                     /*DumpLookups=*/false,
                                     /*DumpDeclTypes=*/false,
                                     clang::ADOF_Default);
-    if (ASTPrint)
-      return clang::CreateASTPrinter(nullptr, ASTDumpFilter);
+    if (Opts.ASTPrint)
+      return clang::CreateASTPrinter(nullptr, Opts.ASTDumpFilter);
     return std::make_unique<clang::ASTConsumer>();
   }
+
+private:
+  const ClangCheckOptions &Opts;
 };
 
 } // namespace
@@ -201,8 +259,10 @@ int clang_check_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
 
+  ClangCheckOptions Opts;
+
   auto ExpectedParser = CommonOptionsParser::create(
-      argc, const_cast<const char **>(argv), ClangCheckCategory);
+      argc, const_cast<const char **>(argv), Opts.ClangCheckCategory);
   if (!ExpectedParser) {
     llvm::errs() << llvm::toString(ExpectedParser.takeError());
     return 1;
@@ -211,16 +271,16 @@ int clang_check_main(int argc, char **argv, const llvm::ToolContext &) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-  if (Analyze) {
+  if (Opts.Analyze) {
     // Set output path if is provided by user.
     //
     // As the original -o options have been removed by default via the
     // strip-output adjuster, we only need to add the analyzer -o options here
     // when it is provided by users.
-    if (!AnalyzerOutput.empty())
-      Tool.appendArgumentsAdjuster(
-          getInsertArgumentAdjuster(CommandLineArguments{"-o", AnalyzerOutput},
-                                    ArgumentInsertPosition::END));
+    if (!Opts.AnalyzerOutput.empty())
+      Tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+          CommandLineArguments{"-o", Opts.AnalyzerOutput},
+          ArgumentInsertPosition::END));
 
     // Running the analyzer requires --analyze. Other modes can work with the
     // -fsyntax-only option.
@@ -243,16 +303,16 @@ int clang_check_main(int argc, char **argv, const llvm::ToolContext &) {
         getInsertArgumentAdjuster("--analyze", ArgumentInsertPosition::BEGIN));
   }
 
-  ClangCheckActionFactory CheckFactory;
+  ClangCheckActionFactory CheckFactory(Opts);
   std::unique_ptr<FrontendActionFactory> FrontendFactory;
 
   // Choose the correct factory based on the selected mode.
-  if (Analyze)
+  if (Opts.Analyze)
     FrontendFactory = newFrontendActionFactory<clang::ento::AnalysisAction>();
-  else if (Fixit)
-    FrontendFactory = newFrontendActionFactory<ClangCheckFixItAction>();
-  else if (SyntaxTreeDump || TokensDump)
-    FrontendFactory = newFrontendActionFactory<DumpSyntaxTree>();
+  else if (Opts.Fixit)
+    FrontendFactory = std::make_unique<ClangCheckFixItActionFactory>(Opts);
+  else if (Opts.SyntaxTreeDump || Opts.TokensDump)
+    FrontendFactory = std::make_unique<DumpSyntaxTreeFactory>(Opts);
   else
     FrontendFactory = newFrontendActionFactory(&CheckFactory);
 
