@@ -1,3 +1,11 @@
+; This test writes and renames files into a .dSYM bundle several times in a
+; row. Under heavy parallel load on Windows, a rename can transiently fail
+; with "permission denied" if something else (e.g. antivirus/EDR real-time
+; scanning) briefly holds the just-written file open. Confirmed to pass
+; reliably in isolation; only seen to flake under a full, heavily parallel
+; check-all run.
+ALLOW_RETRIES: 2
+
 RUN: rm -rf %t.dir
 RUN: mkdir -p %t.dir
 RUN: cat %p/../Inputs/basic.macho.x86_64 > %t.dir/basic
