@@ -1461,8 +1461,10 @@ function Build-Architecture {
                 Pop-Location
             }
 
-            # Create compressed tarball
-            Invoke-NativeCommand 7z a -ttar -so "$filename.tar" $filename `
+            # Create a compressed tarball.  Store subsequent names in a
+            # hard-link set as standard tar hard-link references instead of
+            # compressing the same contents once per path.
+            Invoke-NativeCommand 7z a -ttar -snh -so "$filename.tar" $filename `
                 | 7z a -txz -si "$filename.tar.xz"
         } else {
             Write-Step "Skipping tarball (-StartAt $($script:StartAtStep))"
