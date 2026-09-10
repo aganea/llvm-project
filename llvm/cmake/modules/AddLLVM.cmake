@@ -1116,7 +1116,7 @@ macro(generate_llvm_objects name)
   if (ARG_GENERATE_DRIVER)
     string(REPLACE "-" "_" TOOL_NAME ${name})
 
-    set(INITLLVM_ARGS "")
+    set(INITLLVM_ARGS "/*NeedsPOSIXUtilitySignalHandling=*/false")
 
     # When Clang is invoked as an OS utility (e.g., c17), it needs to follow the POSIX specification
     # for how utilities respond to signals.
