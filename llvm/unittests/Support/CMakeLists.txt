@@ -4,6 +4,7 @@ set(LLVM_LINK_COMPONENTS
   )
 
 add_llvm_unittest(SupportTests
+  PARTIAL_SOURCES_INTENDED
   AddressRangeTest.cpp
   AlignmentTest.cpp
   AlignOfTest.cpp
