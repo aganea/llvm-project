@@ -27,11 +27,13 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -675,6 +677,25 @@ struct TargetRegistry {
   // function).
   TargetRegistry() = delete;
 
+private:
+  LLVM_ABI static std::mutex &registrationMutex();
+
+  template <typename FnTy> static void registerComponent(FnTy &Slot, FnTy Fn) {
+    std::lock_guard<std::mutex> Guard(registrationMutex());
+    // Repeated InitializeAll* calls are part of the public contract. Avoid a
+    // same-value write so independently running tools can repeat initialization
+    // without racing on an otherwise immutable function pointer.
+    if (Slot == Fn)
+      return;
+
+    // The multicall driver pre-populates every built-in component before its
+    // first invocation. Any non-idempotent registration during overlap is
+    // therefore a late process-wide mutation, including filling an empty slot.
+    ProcessWideRegistryMutation Mutation("target registry");
+    Slot = Fn;
+  }
+
+public:
   class iterator {
     friend struct TargetRegistry;
 
@@ -783,7 +804,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct a MCAsmInfo for the target.
   static void RegisterMCAsmInfo(Target &T, Target::MCAsmInfoCtorFnTy Fn) {
-    T.MCAsmInfoCtorFn = Fn;
+    registerComponent(T.MCAsmInfoCtorFn, Fn);
   }
 
   /// Register a MCObjectFileInfo implementation for the given target.
@@ -796,7 +817,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct a MCObjectFileInfo for the target.
   static void RegisterMCObjectFileInfo(Target &T,
                                        Target::MCObjectFileInfoCtorFnTy Fn) {
-    T.MCObjectFileInfoCtorFn = Fn;
+    registerComponent(T.MCObjectFileInfoCtorFn, Fn);
   }
 
   /// RegisterMCInstrInfo - Register a MCInstrInfo implementation for the
@@ -809,14 +830,14 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct a MCInstrInfo for the target.
   static void RegisterMCInstrInfo(Target &T, Target::MCInstrInfoCtorFnTy Fn) {
-    T.MCInstrInfoCtorFn = Fn;
+    registerComponent(T.MCInstrInfoCtorFn, Fn);
   }
 
   /// RegisterMCInstrAnalysis - Register a MCInstrAnalysis implementation for
   /// the given target.
   static void RegisterMCInstrAnalysis(Target &T,
                                       Target::MCInstrAnalysisCtorFnTy Fn) {
-    T.MCInstrAnalysisCtorFn = Fn;
+    registerComponent(T.MCInstrAnalysisCtorFn, Fn);
   }
 
   /// RegisterMCRegInfo - Register a MCRegisterInfo implementation for the
@@ -829,7 +850,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct a MCRegisterInfo for the target.
   static void RegisterMCRegInfo(Target &T, Target::MCRegInfoCtorFnTy Fn) {
-    T.MCRegInfoCtorFn = Fn;
+    registerComponent(T.MCRegInfoCtorFn, Fn);
   }
 
   /// RegisterMCSubtargetInfo - Register a MCSubtargetInfo implementation for
@@ -843,7 +864,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct a MCSubtargetInfo for the target.
   static void RegisterMCSubtargetInfo(Target &T,
                                       Target::MCSubtargetInfoCtorFnTy Fn) {
-    T.MCSubtargetInfoCtorFn = Fn;
+    registerComponent(T.MCSubtargetInfoCtorFn, Fn);
   }
 
   /// RegisterTargetMachine - Register a TargetMachine implementation for the
@@ -856,7 +877,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct a TargetMachine for the target.
   static void RegisterTargetMachine(Target &T, Target::TargetMachineCtorTy Fn) {
-    T.TargetMachineCtorFn = Fn;
+    registerComponent(T.TargetMachineCtorFn, Fn);
   }
 
   /// RegisterMCAsmBackend - Register a MCAsmBackend implementation for the
@@ -869,7 +890,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an AsmBackend for the target.
   static void RegisterMCAsmBackend(Target &T, Target::MCAsmBackendCtorTy Fn) {
-    T.MCAsmBackendCtorFn = Fn;
+    registerComponent(T.MCAsmBackendCtorFn, Fn);
   }
 
   /// RegisterMCAsmParser - Register a MCTargetAsmParser implementation for
@@ -882,7 +903,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an MCTargetAsmParser for the target.
   static void RegisterMCAsmParser(Target &T, Target::MCAsmParserCtorTy Fn) {
-    T.MCAsmParserCtorFn = Fn;
+    registerComponent(T.MCAsmParserCtorFn, Fn);
   }
 
   /// RegisterAsmPrinter - Register an AsmPrinter implementation for the given
@@ -895,7 +916,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an AsmPrinter for the target.
   static void RegisterAsmPrinter(Target &T, Target::AsmPrinterCtorTy Fn) {
-    T.AsmPrinterCtorFn = Fn;
+    registerComponent(T.AsmPrinterCtorFn, Fn);
   }
 
   /// RegisterMCDisassembler - Register a MCDisassembler implementation for
@@ -909,7 +930,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct an MCDisassembler for the target.
   static void RegisterMCDisassembler(Target &T,
                                      Target::MCDisassemblerCtorTy Fn) {
-    T.MCDisassemblerCtorFn = Fn;
+    registerComponent(T.MCDisassemblerCtorFn, Fn);
   }
 
   /// RegisterMCInstPrinter - Register a MCInstPrinter implementation for the
@@ -922,7 +943,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an MCInstPrinter for the target.
   static void RegisterMCInstPrinter(Target &T, Target::MCInstPrinterCtorTy Fn) {
-    T.MCInstPrinterCtorFn = Fn;
+    registerComponent(T.MCInstPrinterCtorFn, Fn);
   }
 
   /// RegisterMCCodeEmitter - Register a MCCodeEmitter implementation for the
@@ -935,43 +956,43 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an MCCodeEmitter for the target.
   static void RegisterMCCodeEmitter(Target &T, Target::MCCodeEmitterCtorTy Fn) {
-    T.MCCodeEmitterCtorFn = Fn;
+    registerComponent(T.MCCodeEmitterCtorFn, Fn);
   }
 
   static void RegisterCOFFStreamer(Target &T, Target::COFFStreamerCtorTy Fn) {
-    T.COFFStreamerCtorFn = Fn;
+    registerComponent(T.COFFStreamerCtorFn, Fn);
   }
 
   static void RegisterMachOStreamer(Target &T, Target::MachOStreamerCtorTy Fn) {
-    T.MachOStreamerCtorFn = Fn;
+    registerComponent(T.MachOStreamerCtorFn, Fn);
   }
 
   static void RegisterELFStreamer(Target &T, Target::ELFStreamerCtorTy Fn) {
-    T.ELFStreamerCtorFn = Fn;
+    registerComponent(T.ELFStreamerCtorFn, Fn);
   }
 
   static void RegisterXCOFFStreamer(Target &T, Target::XCOFFStreamerCtorTy Fn) {
-    T.XCOFFStreamerCtorFn = Fn;
+    registerComponent(T.XCOFFStreamerCtorFn, Fn);
   }
 
   static void RegisterNullTargetStreamer(Target &T,
                                          Target::NullTargetStreamerCtorTy Fn) {
-    T.NullTargetStreamerCtorFn = Fn;
+    registerComponent(T.NullTargetStreamerCtorFn, Fn);
   }
 
   static void RegisterAsmStreamer(Target &T, Target::AsmStreamerCtorTy Fn) {
-    T.AsmStreamerCtorFn = Fn;
+    registerComponent(T.AsmStreamerCtorFn, Fn);
   }
 
   static void RegisterAsmTargetStreamer(Target &T,
                                         Target::AsmTargetStreamerCtorTy Fn) {
-    T.AsmTargetStreamerCtorFn = Fn;
+    registerComponent(T.AsmTargetStreamerCtorFn, Fn);
   }
 
   static void
   RegisterObjectTargetStreamer(Target &T,
                                Target::ObjectTargetStreamerCtorTy Fn) {
-    T.ObjectTargetStreamerCtorFn = Fn;
+    registerComponent(T.ObjectTargetStreamerCtorFn, Fn);
   }
 
   /// RegisterMCRelocationInfo - Register an MCRelocationInfo
@@ -985,7 +1006,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct an MCRelocationInfo for the target.
   static void RegisterMCRelocationInfo(Target &T,
                                        Target::MCRelocationInfoCtorTy Fn) {
-    T.MCRelocationInfoCtorFn = Fn;
+    registerComponent(T.MCRelocationInfoCtorFn, Fn);
   }
 
   /// RegisterMCSymbolizer - Register an MCSymbolizer
@@ -998,7 +1019,7 @@ struct TargetRegistry {
   /// @param T - The target being registered.
   /// @param Fn - A function to construct an MCSymbolizer for the target.
   static void RegisterMCSymbolizer(Target &T, Target::MCSymbolizerCtorTy Fn) {
-    T.MCSymbolizerCtorFn = Fn;
+    registerComponent(T.MCSymbolizerCtorFn, Fn);
   }
 
   /// RegisterCustomBehaviour - Register a CustomBehaviour
@@ -1012,7 +1033,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct a CustomBehaviour for the target.
   static void RegisterCustomBehaviour(Target &T,
                                       Target::CustomBehaviourCtorTy Fn) {
-    T.CustomBehaviourCtorFn = Fn;
+    registerComponent(T.CustomBehaviourCtorFn, Fn);
   }
 
   /// RegisterInstrPostProcess - Register an InstrPostProcess
@@ -1026,7 +1047,7 @@ struct TargetRegistry {
   /// @param Fn - A function to construct an InstrPostProcess for the target.
   static void RegisterInstrPostProcess(Target &T,
                                        Target::InstrPostProcessCtorTy Fn) {
-    T.InstrPostProcessCtorFn = Fn;
+    registerComponent(T.InstrPostProcessCtorFn, Fn);
   }
 
   /// RegisterInstrumentManager - Register an InstrumentManager
@@ -1041,11 +1062,11 @@ struct TargetRegistry {
   /// target.
   static void RegisterInstrumentManager(Target &T,
                                         Target::InstrumentManagerCtorTy Fn) {
-    T.InstrumentManagerCtorFn = Fn;
+    registerComponent(T.InstrumentManagerCtorFn, Fn);
   }
 
   static void RegisterMCLFIRewriter(Target &T, Target::MCLFIRewriterCtorTy Fn) {
-    T.MCLFIRewriterCtorFn = Fn;
+    registerComponent(T.MCLFIRewriterCtorFn, Fn);
   }
 
   /// @}

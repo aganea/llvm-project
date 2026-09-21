@@ -15,6 +15,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Pass.h"
 #include "llvm/PassInfo.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include <cassert>
 #include <memory>
 
@@ -46,6 +47,7 @@ const PassInfo *PassRegistry::getPassInfo(StringRef Arg) const {
 //
 
 void PassRegistry::registerPass(const PassInfo &PI, bool ShouldFree) {
+  ProcessWideRegistryMutation Mutation("pass registry");
   sys::SmartScopedWriter<true> Guard(Lock);
   bool Inserted =
       PassInfoMap.insert(std::make_pair(PI.getTypeInfo(), &PI)).second;
@@ -76,5 +78,6 @@ void PassRegistry::removeRegistrationListener(PassRegistrationListener *L) {
   sys::SmartScopedWriter<true> Guard(Lock);
 
   auto I = llvm::find(Listeners, L);
-  Listeners.erase(I);
+  if (I != Listeners.end())
+    Listeners.erase(I);
 }

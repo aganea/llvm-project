@@ -302,6 +302,10 @@ public:
   LLVM_ABI void addPseudoProbe(const MCPseudoProbe &Probe,
                                const MCPseudoProbeInlineStack &InlineStack);
   LLVM_ABI void emit(MCObjectStreamer *MCOS, const MCPseudoProbe *&LastProbe);
+
+private:
+  void emit(MCObjectStreamer *MCOS, const MCPseudoProbe *&LastProbe,
+            unsigned DdgPrintIndent);
 };
 
 // inline tree node for the decoded pseudo probe
@@ -374,10 +378,6 @@ public:
   LLVM_ABI static void emit(MCObjectStreamer *MCOS);
 
   MCPseudoProbeSections &getProbeSections() { return MCProbeSections; }
-
-#ifndef NDEBUG
-  static int DdgPrintIndent;
-#endif
 };
 
 class MCPseudoProbeDecoder {

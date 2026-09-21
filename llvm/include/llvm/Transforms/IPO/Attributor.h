@@ -146,6 +146,9 @@
 
 namespace llvm {
 
+/// Invocation-local limit selected by -attributor-max-potential-values.
+LLVM_ABI unsigned getAttributorMaxPotentialValues();
+
 class DataLayout;
 class LLVMContext;
 class Pass;
@@ -5037,10 +5040,6 @@ template <typename MemberTy> struct PotentialValuesState : AbstractState {
     return Set == RHS.getAssumedSet();
   }
 
-  /// Maximum number of potential values to be tracked.
-  /// This is set by -attributor-max-potential-values command line option
-  static unsigned MaxPotentialValues;
-
   /// Return empty set as the best state of potential values.
   static PotentialValuesState getBestState() {
     return PotentialValuesState(true);
@@ -5089,8 +5088,11 @@ protected:
 
 private:
   /// Check the size of this set, and invalidate when the size is no
-  /// less than \p MaxPotentialValues threshold.
+  /// less than the configured threshold.
   void checkAndInvalidate() {
+    const unsigned MaxPotentialValues =
+        std::is_same_v<MemberTy, APInt> ? getAttributorMaxPotentialValues()
+                                        : std::numeric_limits<unsigned>::max();
     if (Set.size() >= MaxPotentialValues)
       indicatePessimisticFixpoint();
     else

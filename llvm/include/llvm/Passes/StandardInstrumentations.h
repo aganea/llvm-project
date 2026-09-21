@@ -32,6 +32,7 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/IPO/SampleProfileProbe.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -588,6 +589,9 @@ public:
   PrintCrashIRInstrumentation()
       : SavedIR("*** Dump of IR Before Last Pass Unknown ***") {}
   LLVM_ABI ~PrintCrashIRInstrumentation();
+  PrintCrashIRInstrumentation(const PrintCrashIRInstrumentation &) = delete;
+  PrintCrashIRInstrumentation &
+  operator=(const PrintCrashIRInstrumentation &) = delete;
   LLVM_ABI void registerCallbacks(PassInstrumentationCallbacks &PIC);
   LLVM_ABI void reportCrashIR();
 
@@ -595,8 +599,11 @@ protected:
   std::string SavedIR;
 
 private:
-  // The crash reporter that will report on a crash.
-  static PrintCrashIRInstrumentation *CrashReporter;
+  // Nonzero only for the instance that owns the process crash-IR service.
+  // A generation, rather than this object's address, identifies the owner so
+  // the signal handler never dereferences invocation-lifetime storage.
+  uint64_t CrashIRServiceOwner = 0;
+
   // Crash handler registered when print-on-crash is specified.
   static void SignalHandler(void *);
 };

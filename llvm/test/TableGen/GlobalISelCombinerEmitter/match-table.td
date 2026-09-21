@@ -74,6 +74,16 @@ def MyCombiner: GICombiner<"GenMyCombiner", [
   PatFragTest0
 ]>;
 
+// Keep the callback-owned command-line accumulator in a semantic wrapper so
+// llvm-driver's static-arena list can select it without enumerating every
+// target-specific generated name.
+// CHECK: struct MyCombinerGICombinerRuleOptionStorage {
+// CHECK-NEXT:   std::vector<std::string> Values;
+// CHECK-NEXT: };
+// CHECK-NEXT: static MyCombinerGICombinerRuleOptionStorage MyCombinerOption;
+// CHECK: MyCombinerOption.Values.push_back(Str);
+// CHECK: for (StringRef Identifier : MyCombinerOption.Values) {
+
 // We have at most 2 registers used by one rule at a time, so we should only have 2 registers MDInfos.
 
 // Check predicates

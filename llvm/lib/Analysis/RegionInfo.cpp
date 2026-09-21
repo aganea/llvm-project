@@ -39,22 +39,32 @@ STATISTIC(numSimpleRegions, "The # of simple regions");
 
 // Always verify if expensive checking is enabled.
 
-static cl::opt<bool,true>
-VerifyRegionInfoX(
-  "verify-region-info",
-  cl::location(RegionInfoBase<RegionTraits<Function>>::VerifyRegionInfo),
-  cl::desc("Verify region info (time consuming)"));
+static cl::opt<bool>
+    VerifyRegionInfoX("verify-region-info",
+                      cl::desc("Verify region info (time consuming)"),
+#ifdef EXPENSIVE_CHECKS
+                      cl::init(true));
+#else
+                      cl::init(false));
+#endif
 
-static cl::opt<Region::PrintStyle, true> printStyleX("print-region-style",
-  cl::location(RegionInfo::printStyle),
-  cl::Hidden,
-  cl::desc("style of printing regions"),
-  cl::values(
-    clEnumValN(Region::PrintNone, "none",  "print no details"),
-    clEnumValN(Region::PrintBB, "bb",
-               "print regions in detail with block_iterator"),
-    clEnumValN(Region::PrintRN, "rn",
-               "print regions in detail with element_iterator")));
+template <>
+bool llvm::shouldVerifyRegionInfo<RegionTraits<Function>>() {
+  return VerifyRegionInfoX;
+}
+
+static cl::opt<Region::PrintStyle> printStyleX(
+    "print-region-style", cl::Hidden, cl::desc("style of printing regions"),
+    cl::values(clEnumValN(Region::PrintNone, "none", "print no details"),
+               clEnumValN(Region::PrintBB, "bb",
+                          "print regions in detail with block_iterator"),
+               clEnumValN(Region::PrintRN, "rn",
+                          "print regions in detail with element_iterator")));
+
+template <>
+unsigned llvm::getRegionPrintStyle<RegionTraits<Function>>() {
+  return printStyleX;
+}
 
 //===----------------------------------------------------------------------===//
 // Region implementation

@@ -79,26 +79,22 @@ public:
   /// Returns the timer for the specified pass if it exists.
   Timer *getPassTimer(Pass *, PassInstanceID);
 
-  static PassTimingInfo *TheTimeInfo;
-
 private:
   Timer *newPassTimer(StringRef PassID, StringRef PassDesc);
 };
 
-static ManagedStatic<sys::SmartMutex<true>> TimingInfoMutex;
+static ContextManagedStatic<sys::SmartMutex<true>> TimingInfoMutex;
+static ContextManagedStatic<PassTimingInfo> TTI;
 
 void PassTimingInfo::init() {
-  if (TheTimeInfo || !TimePassesIsEnabled)
+  if (TTI.isConstructed() || !TimePassesIsEnabled)
     return;
 
-  // Constructed the first time this is called, iff -time-passes is enabled.
-  // This guarantees that the object will be constructed after static globals,
-  // thus it will be destroyed before them.
-  static ManagedStatic<PassTimingInfo> TTI;
+  // Constructed once for the current invocation, iff -time-passes is enabled.
+  // Context teardown destroys it before earlier context-owned timer state.
   if (!TTI->PassTG)
     TTI->PassTG = &NamedRegionTimer::getNamedTimerGroup(
         TimePassesHandler::PassGroupName, TimePassesHandler::PassGroupDesc);
-  TheTimeInfo = &*TTI;
 }
 
 /// Prints out timing information and then resets the timers.
@@ -141,22 +137,21 @@ Timer *PassTimingInfo::getPassTimer(Pass *P, PassInstanceID Pass) {
   return T.get();
 }
 
-PassTimingInfo *PassTimingInfo::TheTimeInfo;
 } // namespace legacy
 } // namespace
 
 Timer *llvm::getPassTimer(Pass *P) {
   legacy::PassTimingInfo::init();
-  if (legacy::PassTimingInfo::TheTimeInfo)
-    return legacy::PassTimingInfo::TheTimeInfo->getPassTimer(P, P);
+  if (legacy::TTI.isConstructed())
+    return legacy::TTI->getPassTimer(P, P);
   return nullptr;
 }
 
 /// If timing is enabled, report the times collected up to now and then reset
 /// them.
 void llvm::reportAndResetTimings(raw_ostream *OutStream) {
-  if (legacy::PassTimingInfo::TheTimeInfo)
-    legacy::PassTimingInfo::TheTimeInfo->print(OutStream);
+  if (legacy::TTI.isConstructed())
+    legacy::TTI->print(OutStream);
 }
 
 //===----------------------------------------------------------------------===//

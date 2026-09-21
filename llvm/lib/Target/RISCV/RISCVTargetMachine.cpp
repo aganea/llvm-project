@@ -34,6 +34,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
@@ -339,7 +340,8 @@ static bool onlyAllocateRVVReg(const TargetRegisterInfo &TRI,
 
 static FunctionPass *useDefaultRegisterAllocator() { return nullptr; }
 
-static llvm::once_flag InitializeDefaultRVVRegisterAllocatorFlag;
+static ContextManagedStatic<llvm::once_flag>
+    InitializeDefaultRVVRegisterAllocatorFlag;
 
 /// -riscv-rvv-regalloc=<fast|basic|greedy> command line option.
 /// This option could designate the rvv register allocator only.
@@ -431,7 +433,7 @@ std::unique_ptr<CSEConfigBase> RISCVPassConfig::getCSEConfig() const {
 
 FunctionPass *RISCVPassConfig::createRVVRegAllocPass(bool Optimized) {
   // Initialize the global default.
-  llvm::call_once(InitializeDefaultRVVRegisterAllocatorFlag,
+  llvm::call_once(*InitializeDefaultRVVRegisterAllocatorFlag,
                   initializeDefaultRVVRegisterAllocatorOnce);
 
   RegisterRegAlloc::FunctionPassCtor Ctor = RVVRegisterRegAlloc::getDefault();

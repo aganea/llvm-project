@@ -69,11 +69,11 @@ static cl::opt<bool>
     GPOpt("mgpopt", cl::Hidden,
           cl::desc("Enable gp-relative addressing of mips small data items"));
 
-bool MipsSubtarget::DspWarningPrinted = false;
-bool MipsSubtarget::MSAWarningPrinted = false;
-bool MipsSubtarget::VirtWarningPrinted = false;
-bool MipsSubtarget::CRCWarningPrinted = false;
-bool MipsSubtarget::GINVWarningPrinted = false;
+std::atomic<bool> MipsSubtarget::DspWarningPrinted = false;
+std::atomic<bool> MipsSubtarget::MSAWarningPrinted = false;
+std::atomic<bool> MipsSubtarget::VirtWarningPrinted = false;
+std::atomic<bool> MipsSubtarget::CRCWarningPrinted = false;
+std::atomic<bool> MipsSubtarget::GINVWarningPrinted = false;
 
 void MipsSubtarget::anchor() {}
 
@@ -172,49 +172,45 @@ MipsSubtarget::MipsSubtarget(const Triple &TT, StringRef CPU, StringRef FS,
     UseSmallSection = false;
   }
 
-  if (hasDSPR2() && !DspWarningPrinted) {
-    if (hasMips64() && !hasMips64r2()) {
+  if (hasDSPR2()) {
+    if (hasMips64() && !hasMips64r2() &&
+        !DspWarningPrinted.exchange(true)) {
       errs() << "warning: the 'dspr2' ASE requires MIPS64 revision 2 or "
              << "greater\n";
-      DspWarningPrinted = true;
-    } else if (hasMips32() && !hasMips32r2()) {
+    } else if (hasMips32() && !hasMips32r2() &&
+               !DspWarningPrinted.exchange(true)) {
       errs() << "warning: the 'dspr2' ASE requires MIPS32 revision 2 or "
              << "greater\n";
-      DspWarningPrinted = true;
     }
-  } else if (hasDSP() && !DspWarningPrinted) {
-    if (hasMips64() && !hasMips64r2()) {
+  } else if (hasDSP()) {
+    if (hasMips64() && !hasMips64r2() &&
+        !DspWarningPrinted.exchange(true)) {
       errs() << "warning: the 'dsp' ASE requires MIPS64 revision 2 or "
              << "greater\n";
-      DspWarningPrinted = true;
-    } else if (hasMips32() && !hasMips32r2()) {
+    } else if (hasMips32() && !hasMips32r2() &&
+               !DspWarningPrinted.exchange(true)) {
       errs() << "warning: the 'dsp' ASE requires MIPS32 revision 2 or "
              << "greater\n";
-      DspWarningPrinted = true;
     }
   }
 
   StringRef ArchName = hasMips64() ? "MIPS64" : "MIPS32";
 
-  if (!hasMips32r5() && hasMSA() && !MSAWarningPrinted) {
+  if (!hasMips32r5() && hasMSA() && !MSAWarningPrinted.exchange(true)) {
     errs() << "warning: the 'msa' ASE requires " << ArchName
            << " revision 5 or greater\n";
-    MSAWarningPrinted = true;
   }
-  if (!hasMips32r5() && hasVirt() && !VirtWarningPrinted) {
+  if (!hasMips32r5() && hasVirt() && !VirtWarningPrinted.exchange(true)) {
     errs() << "warning: the 'virt' ASE requires " << ArchName
            << " revision 5 or greater\n";
-    VirtWarningPrinted = true;
   }
-  if (!hasMips32r6() && hasCRC() && !CRCWarningPrinted) {
+  if (!hasMips32r6() && hasCRC() && !CRCWarningPrinted.exchange(true)) {
     errs() << "warning: the 'crc' ASE requires " << ArchName
            << " revision 6 or greater\n";
-    CRCWarningPrinted = true;
   }
-  if (!hasMips32r6() && hasGINV() && !GINVWarningPrinted) {
+  if (!hasMips32r6() && hasGINV() && !GINVWarningPrinted.exchange(true)) {
     errs() << "warning: the 'ginv' ASE requires " << ArchName
            << " revision 6 or greater\n";
-    GINVWarningPrinted = true;
   }
 
   TSInfo = std::make_unique<MipsSelectionDAGInfo>();

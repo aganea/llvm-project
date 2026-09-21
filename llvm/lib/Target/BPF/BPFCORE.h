@@ -14,6 +14,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <atomic>
 
 namespace llvm {
 
@@ -62,8 +63,8 @@ public:
   /// The attribute attached to globals representing a type id
   static constexpr StringRef TypeIdAttr = "btf_type_id";
 
-  /// llvm.bpf.passthrough builtin seq number
-  static uint32_t SeqNum;
+  /// llvm.bpf.passthrough builtin sequence number.
+  static std::atomic<uint32_t> SeqNum;
 
   /// Insert a bpf passthrough builtin function.
   static Instruction *insertPassThrough(Module *M, BasicBlock *BB,

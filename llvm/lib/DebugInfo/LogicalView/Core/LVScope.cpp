@@ -2084,7 +2084,7 @@ Error LVScopeRoot::doPrintMatches(bool Split, raw_ostream &OS,
                                   bool UseMatchedElements) const {
   // During a view output splitting, use the output stream created by the
   // split context, then switch to the reader output stream.
-  static raw_ostream *StreamSplit = &OS;
+  raw_ostream *StreamSplit = &OS;
 
   if (Scopes) {
     if (UseMatchedElements)

@@ -25,6 +25,7 @@
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 
@@ -241,10 +242,16 @@ PassNameParser::PassNameParser(cl::Option &O)
   PassRegistry::getPassRegistry()->addRegistrationListener(this);
 }
 
-// This only gets called during static destruction, in which case the
-// PassRegistry will have already been destroyed by llvm_shutdown().  So
-// attempting to remove the registration listener is an error.
-PassNameParser::~PassNameParser() = default;
+PassNameParser::~PassNameParser() {
+  // Arena-backed command-line options are destroyed after every invocation,
+  // while the process-wide pass catalog remains alive. Do not leave it with a
+  // listener pointing into the released arena. Process-lifetime parsers retain
+  // the historical teardown behavior: their registry may already be gone
+  // during CRT destruction, and their default-context listener list dies with
+  // that context in any case.
+  if (isInCurrentStaticArena(this))
+    PassRegistry::getPassRegistry()->removeRegistrationListener(this);
+}
 
 //===----------------------------------------------------------------------===//
 //   AnalysisUsage Class Implementation

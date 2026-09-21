@@ -18,11 +18,19 @@
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <mutex>
 #include <vector>
 using namespace llvm;
 
-// Clients are responsible for avoid race conditions in registration.
+// Target identities are populated before concurrent llvm-driver invocations.
+// Component setters use the same mutex so their supported repeated
+// initialization is an idempotent read instead of a same-value data race.
 static Target *FirstTarget = nullptr;
+
+std::mutex &TargetRegistry::registrationMutex() {
+  static std::mutex Mutex;
+  return Mutex;
+}
 
 bool Target::isValidFeatureListFormat(StringRef Features) {
   if (Features.empty())
@@ -193,10 +201,14 @@ void TargetRegistry::RegisterTarget(Target &T, const char *Name,
   assert(Name && ShortDesc && ArchMatchFn &&
          "Missing required target information!");
 
+  std::lock_guard<std::mutex> Guard(registrationMutex());
+
   // Check if this target has already been initialized, we allow this as a
   // convenience to some clients.
   if (T.Name)
     return;
+
+  ProcessWideRegistryMutation Mutation("target registry");
 
   // Add to the list of targets.
   T.Next = FirstTarget;
@@ -215,7 +227,7 @@ static int TargetArraySortFn(const std::pair<StringRef, const Target *> *LHS,
 }
 
 void TargetRegistry::printRegisteredTargetsForVersion(raw_ostream &OS) {
-  std::vector<std::pair<StringRef, const Target*> > Targets;
+  std::vector<std::pair<StringRef, const Target *>> Targets;
   size_t Width = 0;
   for (const auto &T : TargetRegistry::targets()) {
     Targets.push_back(std::make_pair(T.getName(), &T));

@@ -111,6 +111,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include "llvm/Transforms/HipStdPar/HipStdPar.h"
 #include "llvm/Transforms/IPO.h"
@@ -248,9 +249,12 @@ static FunctionPass *useDefaultRegisterAllocator() { return nullptr; }
 
 /// A dummy default pass factory indicates whether the register allocator is
 /// overridden on the command line.
-static llvm::once_flag InitializeDefaultSGPRRegisterAllocatorFlag;
-static llvm::once_flag InitializeDefaultVGPRRegisterAllocatorFlag;
-static llvm::once_flag InitializeDefaultWWMRegisterAllocatorFlag;
+static ContextManagedStatic<llvm::once_flag>
+    InitializeDefaultSGPRRegisterAllocatorFlag;
+static ContextManagedStatic<llvm::once_flag>
+    InitializeDefaultVGPRRegisterAllocatorFlag;
+static ContextManagedStatic<llvm::once_flag>
+    InitializeDefaultWWMRegisterAllocatorFlag;
 
 static SGPRRegisterRegAlloc
 defaultSGPRRegAlloc("default",
@@ -1897,7 +1901,7 @@ bool GCNPassConfig::addPreRewrite() {
 
 FunctionPass *GCNPassConfig::createSGPRAllocPass(bool Optimized) {
   // Initialize the global default.
-  llvm::call_once(InitializeDefaultSGPRRegisterAllocatorFlag,
+  llvm::call_once(*InitializeDefaultSGPRRegisterAllocatorFlag,
                   initializeDefaultSGPRRegisterAllocatorOnce);
 
   RegisterRegAlloc::FunctionPassCtor Ctor = SGPRRegisterRegAlloc::getDefault();
@@ -1912,7 +1916,7 @@ FunctionPass *GCNPassConfig::createSGPRAllocPass(bool Optimized) {
 
 FunctionPass *GCNPassConfig::createVGPRAllocPass(bool Optimized) {
   // Initialize the global default.
-  llvm::call_once(InitializeDefaultVGPRRegisterAllocatorFlag,
+  llvm::call_once(*InitializeDefaultVGPRRegisterAllocatorFlag,
                   initializeDefaultVGPRRegisterAllocatorOnce);
 
   RegisterRegAlloc::FunctionPassCtor Ctor = VGPRRegisterRegAlloc::getDefault();
@@ -1927,7 +1931,7 @@ FunctionPass *GCNPassConfig::createVGPRAllocPass(bool Optimized) {
 
 FunctionPass *GCNPassConfig::createWWMRegAllocPass(bool Optimized) {
   // Initialize the global default.
-  llvm::call_once(InitializeDefaultWWMRegisterAllocatorFlag,
+  llvm::call_once(*InitializeDefaultWWMRegisterAllocatorFlag,
                   initializeDefaultWWMRegisterAllocatorOnce);
 
   RegisterRegAlloc::FunctionPassCtor Ctor = WWMRegisterRegAlloc::getDefault();

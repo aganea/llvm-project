@@ -14,6 +14,7 @@
 
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/LazyCallGraph.h"
@@ -40,10 +41,15 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -562,14 +568,18 @@ void IRChangedTester::registerCallbacks(PassInstrumentationCallbacks &PIC) {
 
 void IRChangedTester::handleIR(const std::string &S, StringRef PassID) {
   // Store the body into a temporary file
-  static SmallVector<int> FD{-1};
+  SmallVector<int> FD{-1};
   SmallVector<StringRef> SR{S};
-  static SmallVector<std::string> FileName{""};
+  SmallVector<std::string> FileName{""};
   if (prepareTempFiles(FD, SR, FileName)) {
     dbgs() << "Unable to create temporary file.";
     return;
   }
-  static ErrorOr<std::string> Exe = sys::findProgramByName(TestChanged);
+  scope_exit Cleanup([&] {
+    if (cleanUpTempFiles(FileName))
+      dbgs() << "Unable to remove temporary file.";
+  });
+  ErrorOr<std::string> Exe = sys::findProgramByName(TestChanged);
   if (!Exe) {
     dbgs() << "Unable to find test-changed executable.";
     return;
@@ -581,9 +591,6 @@ void IRChangedTester::handleIR(const std::string &S, StringRef PassID) {
     dbgs() << "Error executing test-changed executable.";
     return;
   }
-
-  if (cleanUpTempFiles(FileName))
-    dbgs() << "Unable to remove temporary file.";
 }
 
 void IRChangedTester::handleInitialIR(IRUnitRef IR) {
@@ -2487,61 +2494,173 @@ StandardInstrumentations::StandardInstrumentations(
       Verify(DebugLogging), DroppedStatsIR(DroppedVarStats),
       VerifyEach(VerifyEach) {}
 
-PrintCrashIRInstrumentation *PrintCrashIRInstrumentation::CrashReporter =
-    nullptr;
+namespace {
+struct CrashIRSnapshot {
+  std::string CrashPath;
+  std::string SavedIR;
+};
 
-void PrintCrashIRInstrumentation::reportCrashIR() {
-  if (!PrintOnCrashPath.empty()) {
+static_assert(std::atomic<const CrashIRSnapshot *>::is_always_lock_free,
+              "signal-time crash IR publication requires lock-free pointers");
+
+struct CrashIRProcessState {
+  std::mutex Mutex;
+  std::once_flag RegisterHandlerOnce;
+  std::atomic<bool> Active{false};
+  std::atomic<const CrashIRSnapshot *> Published{nullptr};
+  std::atomic<const CrashIRSnapshot *> SignalHazard{nullptr};
+  std::vector<std::unique_ptr<const CrashIRSnapshot>> RetiredSnapshots;
+  uint64_t Owner = 0;
+  uint64_t NextOwner = 1;
+  std::unique_ptr<ExclusiveProcessServiceLease> InvocationLease;
+
+  CrashIRProcessState() {
+    Published.store(
+        new CrashIRSnapshot{"", "*** Dump of IR Before Last Pass Unknown ***"},
+        std::memory_order_relaxed);
+  }
+};
+
+// Signal callbacks outlive every tool invocation and can still be reached
+// during process teardown. Keep their state alive for the life of the process.
+CrashIRProcessState &crashIRProcessState() {
+  static auto *State = new CrashIRProcessState();
+  return *State;
+}
+
+// Called with State.Mutex held. Published snapshots are immutable. The signal
+// callback protects the snapshot it is reading with SignalHazard, and
+// RunSignalHandlers serializes this one-shot callback slot. Reclamation is
+// therefore bounded to the published snapshot plus at most one retired
+// signal-held snapshot.
+void publishCrashIRSnapshot(CrashIRProcessState &State, StringRef CrashPath,
+                            StringRef SavedIR) {
+  auto Snapshot = std::make_unique<CrashIRSnapshot>(
+      CrashIRSnapshot{CrashPath.str(), SavedIR.str()});
+  const CrashIRSnapshot *Old =
+      State.Published.exchange(Snapshot.release(), std::memory_order_seq_cst);
+  if (Old)
+    State.RetiredSnapshots.emplace_back(Old);
+
+  const CrashIRSnapshot *Hazard =
+      State.SignalHazard.load(std::memory_order_seq_cst);
+  llvm::erase_if(State.RetiredSnapshots,
+                 [Hazard](const std::unique_ptr<const CrashIRSnapshot> &Entry) {
+                   return Entry.get() != Hazard;
+                 });
+}
+
+const CrashIRSnapshot *
+acquireCrashIRSnapshotForSignal(CrashIRProcessState &State) {
+  const CrashIRSnapshot *Snapshot;
+  do {
+    Snapshot = State.Published.load(std::memory_order_seq_cst);
+    State.SignalHazard.store(Snapshot, std::memory_order_seq_cst);
+  } while (Snapshot != State.Published.load(std::memory_order_seq_cst));
+  return Snapshot;
+}
+
+void reportCrashIRSnapshot(const CrashIRSnapshot &Snapshot) {
+  if (!Snapshot.CrashPath.empty()) {
     std::error_code EC;
-    raw_fd_ostream Out(PrintOnCrashPath, EC);
+    raw_fd_ostream Out(Snapshot.CrashPath, EC);
     if (EC)
       report_fatal_error(errorCodeToError(EC));
-    Out << SavedIR;
+    Out << Snapshot.SavedIR;
   } else {
-    dbgs() << SavedIR;
+    dbgs() << Snapshot.SavedIR;
   }
+}
+} // namespace
+
+void PrintCrashIRInstrumentation::reportCrashIR() {
+  CrashIRProcessState &State = crashIRProcessState();
+  CrashIRSnapshot Snapshot;
+  {
+    std::lock_guard<std::mutex> Lock(State.Mutex);
+    Snapshot = *State.Published.load(std::memory_order_acquire);
+  }
+  reportCrashIRSnapshot(Snapshot);
 }
 
 void PrintCrashIRInstrumentation::SignalHandler(void *) {
-  // Called by signal handlers so do not lock here
-  // Is the PrintCrashIRInstrumentation still alive?
-  if (!CrashReporter)
+  // Called by signal handlers, so do not lock or resolve invocation-owned
+  // command-line objects here. The handler is one-shot and a fatal signal is
+  // expected to terminate the process after it returns.
+  CrashIRProcessState &State = crashIRProcessState();
+  if (!State.Active.load(std::memory_order_acquire))
     return;
-
-  assert((PrintOnCrash || !PrintOnCrashPath.empty()) &&
-         "Did not expect to get here without option set.");
-  CrashReporter->reportCrashIR();
+  const CrashIRSnapshot *Snapshot = acquireCrashIRSnapshotForSignal(State);
+  if (State.Active.load(std::memory_order_acquire))
+    reportCrashIRSnapshot(*Snapshot);
+  State.SignalHazard.store(nullptr, std::memory_order_seq_cst);
 }
 
 PrintCrashIRInstrumentation::~PrintCrashIRInstrumentation() {
-  if (!CrashReporter)
+  if (CrashIRServiceOwner == 0)
     return;
 
-  assert((PrintOnCrash || !PrintOnCrashPath.empty()) &&
-         "Did not expect to get here without option set.");
-  CrashReporter = nullptr;
+  CrashIRProcessState &State = crashIRProcessState();
+  std::lock_guard<std::mutex> Lock(State.Mutex);
+  if (State.Owner != CrashIRServiceOwner)
+    report_fatal_error("print-on-crash process-service owner mismatch");
+  State.Active.store(false, std::memory_order_release);
+  State.Owner = 0;
+  CrashIRServiceOwner = 0;
+  State.InvocationLease.reset();
 }
 
 void PrintCrashIRInstrumentation::registerCallbacks(
     PassInstrumentationCallbacks &PIC) {
-  if ((!PrintOnCrash && PrintOnCrashPath.empty()) || CrashReporter)
+  if (!PrintOnCrash && PrintOnCrashPath.empty())
     return;
 
-  sys::AddSignalHandler(SignalHandler, nullptr);
-  CrashReporter = this;
+  CrashIRProcessState &State = crashIRProcessState();
+  std::string CrashPath;
+  {
+    std::lock_guard<std::mutex> Lock(State.Mutex);
+    // Preserve the existing first-reporter-wins behavior when one invocation
+    // creates more than one StandardInstrumentations object. Only the owner
+    // below installs callbacks or releases the process service.
+    if (State.Owner != 0)
+      return;
+
+    auto Lease =
+        std::make_unique<ExclusiveProcessServiceLease>("print-on-crash");
+    if (State.NextOwner == 0)
+      report_fatal_error("print-on-crash process-service generation overflow");
+    CrashIRServiceOwner = State.NextOwner++;
+
+    // These options live in the invocation arena. Snapshot them before a
+    // signal can run on a tokenless platform callback thread.
+    CrashPath = PrintOnCrashPath;
+    publishCrashIRSnapshot(State, CrashPath,
+                           "*** Dump of IR Before Last Pass Unknown ***");
+    State.Owner = CrashIRServiceOwner;
+    State.InvocationLease = std::move(Lease);
+    std::call_once(State.RegisterHandlerOnce,
+                   [] { sys::AddSignalHandler(SignalHandler, nullptr); });
+    State.Active.store(true, std::memory_order_release);
+  }
 
   PIC.registerBeforeNonSkippedPassCallback(
-      [&PIC, this](StringRef PassID, IRUnitRef IR) {
-        SavedIR.clear();
+      [&PIC, Owner = CrashIRServiceOwner,
+       CrashPath = std::move(CrashPath)](StringRef PassID, IRUnitRef IR) {
+        std::string SavedIR;
         raw_string_ostream OS(SavedIR);
         OS << formatv("; *** Dump of {0}IR Before Last Pass {1}",
                       llvm::forcePrintModuleIR() ? "Module " : "", PassID);
         if (!isInteresting(IR, PassID, PIC.getPassNameForClassName(PassID))) {
           OS << " Filtered Out ***\n";
-          return;
+        } else {
+          OS << " Started ***\n";
+          unwrapAndPrint(OS, IR);
         }
-        OS << " Started ***\n";
-        unwrapAndPrint(OS, IR);
+
+        CrashIRProcessState &State = crashIRProcessState();
+        std::lock_guard<std::mutex> Lock(State.Mutex);
+        if (State.Owner == Owner)
+          publishCrashIRSnapshot(State, CrashPath, SavedIR);
       });
 }
 

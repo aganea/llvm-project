@@ -33,10 +33,6 @@
 using namespace llvm;
 using namespace support;
 
-#ifndef NDEBUG
-int MCPseudoProbeTable::DdgPrintIndent = 0;
-#endif
-
 static const MCExpr *buildSymbolDiff(MCObjectStreamer *MCOS, const MCSymbol *A,
                                      const MCSymbol *B) {
   MCContext &Context = MCOS->getContext();
@@ -92,11 +88,6 @@ void MCPseudoProbe::emit(MCObjectStreamer *MCOS,
 
   if (Discriminator)
     MCOS->emitULEB128IntValue(Discriminator);
-
-  LLVM_DEBUG({
-    dbgs().indent(MCPseudoProbeTable::DdgPrintIndent);
-    dbgs() << "Probe: " << Index << "\n";
-  });
 }
 
 void MCPseudoProbeInlineTree::addPseudoProbe(
@@ -144,16 +135,21 @@ void MCPseudoProbeInlineTree::addPseudoProbe(
 
 void MCPseudoProbeInlineTree::emit(MCObjectStreamer *MCOS,
                                    const MCPseudoProbe *&LastProbe) {
+  emit(MCOS, LastProbe, 0);
+}
+
+void MCPseudoProbeInlineTree::emit(MCObjectStreamer *MCOS,
+                                   const MCPseudoProbe *&LastProbe,
+                                   unsigned DdgPrintIndent) {
   LLVM_DEBUG({
-    dbgs().indent(MCPseudoProbeTable::DdgPrintIndent);
+    dbgs().indent(DdgPrintIndent);
     dbgs() << "Group [\n";
-    MCPseudoProbeTable::DdgPrintIndent += 2;
   });
   assert(!isRoot() && "Root should be handled separately");
 
   // Emit probes grouped by GUID.
   LLVM_DEBUG({
-    dbgs().indent(MCPseudoProbeTable::DdgPrintIndent);
+    dbgs().indent(DdgPrintIndent + 2);
     dbgs() << "GUID: " << Guid << "\n";
   });
   // Emit Guid
@@ -173,12 +169,21 @@ void MCPseudoProbeInlineTree::emit(MCObjectStreamer *MCOS,
   // Emit number of direct inlinees
   MCOS->emitULEB128IntValue(Children.size());
   // Emit sentinel probe for top-level functions
-  if (NeedSentinel)
+  if (NeedSentinel) {
     LastProbe->emit(MCOS, nullptr);
+    LLVM_DEBUG({
+      dbgs().indent(DdgPrintIndent + 2);
+      dbgs() << "Probe: " << LastProbe->getIndex() << "\n";
+    });
+  }
 
   // Emit probes in this group
   for (const auto &Probe : Probes) {
     Probe.emit(MCOS, LastProbe);
+    LLVM_DEBUG({
+      dbgs().indent(DdgPrintIndent + 2);
+      dbgs() << "Probe: " << Probe.getIndex() << "\n";
+    });
     LastProbe = &Probe;
   }
 
@@ -194,16 +199,15 @@ void MCPseudoProbeInlineTree::emit(MCObjectStreamer *MCOS,
     // Emit probe index
     MCOS->emitULEB128IntValue(std::get<1>(Inlinee.first));
     LLVM_DEBUG({
-      dbgs().indent(MCPseudoProbeTable::DdgPrintIndent);
+      dbgs().indent(DdgPrintIndent + 2);
       dbgs() << "InlineSite: " << std::get<1>(Inlinee.first) << "\n";
     });
     // Emit the group
-    Inlinee.second->emit(MCOS, LastProbe);
+    Inlinee.second->emit(MCOS, LastProbe, DdgPrintIndent + 2);
   }
 
   LLVM_DEBUG({
-    MCPseudoProbeTable::DdgPrintIndent -= 2;
-    dbgs().indent(MCPseudoProbeTable::DdgPrintIndent);
+    dbgs().indent(DdgPrintIndent);
     dbgs() << "]\n";
   });
 }
@@ -263,8 +267,6 @@ void MCPseudoProbeTable::emit(MCObjectStreamer *MCOS) {
   auto &ProbeSections = ProbeTable.getProbeSections();
   if (ProbeSections.empty())
     return;
-
-  LLVM_DEBUG(MCPseudoProbeTable::DdgPrintIndent = 0);
 
   // Put out the probe.
   ProbeSections.emit(MCOS);

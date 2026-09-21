@@ -2530,7 +2530,11 @@ void GICombinerEmitter::emitRuleConfigImpl(raw_ostream &OS) {
        << "}\n\n";
   }
 
-  OS << "static std::vector<std::string> " << Name << "Option;\n"
+  OS << "struct " << Name << "GICombinerRuleOptionStorage {\n"
+     << "  std::vector<std::string> Values;\n"
+     << "};\n"
+     << "static " << Name << "GICombinerRuleOptionStorage " << Name
+     << "Option;\n"
      << "static cl::list<std::string> " << Name << "DisableOption(\n"
      << "    \"" << Name.lower() << "-disable-rule\",\n"
      << "    cl::desc(\"Disable one or more combiner rules temporarily in "
@@ -2539,7 +2543,7 @@ void GICombinerEmitter::emitRuleConfigImpl(raw_ostream &OS) {
      << "    cl::Hidden,\n"
      << "    cl::cat(GICombinerOptionCategory),\n"
      << "    cl::callback([](const std::string &Str) {\n"
-     << "      " << Name << "Option.push_back(Str);\n"
+     << "      " << Name << "Option.Values.push_back(Str);\n"
      << "    }));\n"
      << "static cl::list<std::string> " << Name << "OnlyEnableOption(\n"
      << "    \"" << Name.lower() << "-only-enable-rule\",\n"
@@ -2549,10 +2553,11 @@ void GICombinerEmitter::emitRuleConfigImpl(raw_ostream &OS) {
      << "    cl::cat(GICombinerOptionCategory),\n"
      << "    cl::callback([](const std::string &CommaSeparatedArg) {\n"
      << "      StringRef Str = CommaSeparatedArg;\n"
-     << "      " << Name << "Option.push_back(\"*\");\n"
+     << "      " << Name << "Option.Values.push_back(\"*\");\n"
      << "      do {\n"
      << "        auto X = Str.split(\",\");\n"
-     << "        " << Name << "Option.push_back((\"!\" + X.first).str());\n"
+     << "        " << Name
+     << "Option.Values.push_back((\"!\" + X.first).str());\n"
      << "        Str = X.second;\n"
      << "      } while (!Str.empty());\n"
      << "    }));\n"
@@ -2562,7 +2567,7 @@ void GICombinerEmitter::emitRuleConfigImpl(raw_ostream &OS) {
      << "    return  !DisabledRules.test(RuleID);\n"
      << "}\n"
      << "bool " << getRuleConfigClassName() << "::parseCommandLineOption() {\n"
-     << "  for (StringRef Identifier : " << Name << "Option) {\n"
+     << "  for (StringRef Identifier : " << Name << "Option.Values) {\n"
      << "    bool Enabled = Identifier.consume_front(\"!\");\n"
      << "    if (Enabled && !setRuleEnabled(Identifier))\n"
      << "      return false;\n"

@@ -41,6 +41,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Discriminator.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -688,8 +689,8 @@ std::string TargetPassConfig::getLimitedCodeGenPipelineReason() {
   if (!hasLimitedCodeGenPipeline())
     return std::string();
   std::string Res;
-  static cl::opt<std::string> *PassNames[] = {&StartAfterOpt, &StartBeforeOpt,
-                                              &StopAfterOpt, &StopBeforeOpt};
+  cl::opt<std::string> *PassNames[] = {&StartAfterOpt, &StartBeforeOpt,
+                                       &StopAfterOpt, &StopBeforeOpt};
   static const char *OptNames[] = {StartAfterOptName, StartBeforeOptName,
                                    StopAfterOptName, StopBeforeOptName};
   bool IsFirst = true;
@@ -1382,7 +1383,8 @@ void TargetPassConfig::addMachineSSAOptimization() {
 
 /// A dummy default pass factory indicates whether the register allocator is
 /// overridden on the command line.
-static llvm::once_flag InitializeDefaultRegisterAllocatorFlag;
+static ContextManagedStatic<llvm::once_flag>
+    InitializeDefaultRegisterAllocatorFlag;
 
 static RegisterRegAlloc
 defaultRegAlloc("default",
@@ -1397,7 +1399,7 @@ static void initializeDefaultRegisterAllocatorOnce() {
 bool TargetPassConfig::getOptimizeRegAlloc() const {
   // An explicit -regalloc choice implies its pipeline: only the fast
   // allocator uses the unoptimized one.
-  llvm::call_once(InitializeDefaultRegisterAllocatorFlag,
+  llvm::call_once(*InitializeDefaultRegisterAllocatorFlag,
                   initializeDefaultRegisterAllocatorOnce);
   RegisterRegAlloc::FunctionPassCtor Ctor = RegisterRegAlloc::getDefault();
   if (Ctor != (RegisterRegAlloc::FunctionPassCtor)&useDefaultRegisterAllocator)

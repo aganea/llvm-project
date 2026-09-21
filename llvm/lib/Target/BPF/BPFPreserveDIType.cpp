@@ -24,6 +24,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include <atomic>
 
 #define DEBUG_TYPE "bpf-preserve-di-type"
 
@@ -65,7 +66,7 @@ static bool BPFPreserveDITypeImpl(Function &F) {
     return false;
 
   std::string BaseName = "llvm.btf_type_id.";
-  static int Count = 0;
+  static std::atomic<unsigned> Count{0};
   for (auto *Call : PreserveDITypeCalls) {
     const ConstantInt *Flag = dyn_cast<ConstantInt>(Call->getArgOperand(1));
     assert(Flag);
@@ -94,8 +95,9 @@ static bool BPFPreserveDITypeImpl(Function &F) {
 
     BasicBlock *BB = Call->getParent();
     IntegerType *VarType = Type::getInt64Ty(BB->getContext());
+    unsigned ID = Count.fetch_add(1, std::memory_order_relaxed);
     std::string GVName =
-        BaseName + std::to_string(Count) + "$" + std::to_string(Reloc);
+        BaseName + std::to_string(ID) + "$" + std::to_string(Reloc);
     GlobalVariable *GV = new GlobalVariable(
         *M, VarType, false, GlobalVariable::ExternalLinkage, nullptr, GVName);
     GV->addAttribute(BPFCoreSharedInfo::TypeIdAttr);
@@ -108,7 +110,6 @@ static bool BPFPreserveDITypeImpl(Function &F) {
         BPFCoreSharedInfo::insertPassThrough(M, BB, LDInst, Call);
     Call->replaceAllUsesWith(PassThroughInst);
     Call->eraseFromParent();
-    Count++;
   }
 
   return true;

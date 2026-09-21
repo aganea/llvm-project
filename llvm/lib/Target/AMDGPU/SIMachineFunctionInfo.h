@@ -551,6 +551,52 @@ private:
 public:
   static bool MFMAVGPRForm;
 
+  struct MFMAExpInterleaveState {
+    unsigned TransPipeCount = 0;
+    unsigned MFMAPipeCount = 0;
+    unsigned AddPipeCount = 0;
+    unsigned MFMAEnablement = 0;
+    unsigned ExpRequirement = 0;
+    unsigned MFMAChains = 0;
+    bool HasCvt = false;
+    bool HasChainBetweenCvt = false;
+    std::optional<unsigned> FirstPipeDSR;
+  };
+
+private:
+  std::optional<MFMAExpInterleaveState> MFMAExpInterleave;
+
+public:
+  void clearMFMAExpInterleaveState() { MFMAExpInterleave.reset(); }
+
+  void setMFMAExpInterleaveState(const MFMAExpInterleaveState &State) {
+    MFMAExpInterleave = State;
+  }
+
+  const MFMAExpInterleaveState *getMFMAExpInterleaveState() const {
+    return MFMAExpInterleave ? &*MFMAExpInterleave : nullptr;
+  }
+
+  struct MFMASmallGemmSingleWaveState {
+    unsigned DSWCount = 0;
+    unsigned DSWWithPermCount = 0;
+    unsigned DSWWithSharedVMEMCount = 0;
+  };
+
+private:
+  std::optional<MFMASmallGemmSingleWaveState> MFMASmallGemmSingleWave;
+
+public:
+  void setMFMASmallGemmSingleWaveState(
+      const MFMASmallGemmSingleWaveState &State) {
+    MFMASmallGemmSingleWave = State;
+  }
+
+  const MFMASmallGemmSingleWaveState *
+  getMFMASmallGemmSingleWaveState() const {
+    return MFMASmallGemmSingleWave ? &*MFMASmallGemmSingleWave : nullptr;
+  }
+
   struct VGPRSpillToAGPR {
     SmallVector<MCPhysReg, 32> Lanes;
     bool FullyAllocated = false;

@@ -658,6 +658,27 @@ public:
   //@}
 };
 
+/// Keep the option state out of RegionInfoBase's template static data members
+/// while preserving the original per-specialization behavior. Only IR
+/// RegionInfo specializes these accessors to read its command-line options;
+/// other specializations retain their compile-time defaults.
+template <class Tr> constexpr bool shouldVerifyRegionInfo() {
+#ifdef EXPENSIVE_CHECKS
+  return true;
+#else
+  return false;
+#endif
+}
+
+template <class Tr> constexpr unsigned getRegionPrintStyle() {
+  return static_cast<unsigned>(RegionBase<Tr>::PrintNone);
+}
+
+template <>
+LLVM_ABI bool shouldVerifyRegionInfo<RegionTraits<Function>>();
+template <>
+LLVM_ABI unsigned getRegionPrintStyle<RegionTraits<Function>>();
+
 /// Print a RegionNode.
 template <class Tr>
 inline raw_ostream &operator<<(raw_ostream &OS, const RegionNodeBase<Tr> &Node);
@@ -796,9 +817,6 @@ private:
 public:
   RegionInfoBase(const RegionInfoBase &) = delete;
   RegionInfoBase &operator=(const RegionInfoBase &) = delete;
-
-  static bool VerifyRegionInfo;
-  static typename RegionT::PrintStyle printStyle;
 
   void print(raw_ostream &OS) const;
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)

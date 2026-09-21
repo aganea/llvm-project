@@ -20,6 +20,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 
 namespace llvm {
 
@@ -72,10 +75,20 @@ public:
 //===----------------------------------------------------------------------===//
 template <typename PassCtorTy> class MachinePassRegistry {
 private:
-  MachinePassRegistryNode<PassCtorTy> *List; // List of registry nodes.
-  PassCtorTy Default;                        // Default function pass creator.
-  MachinePassRegistryListener<PassCtorTy>
-      *Listener; // Listener for list adds are removes.
+  MachinePassRegistryNode<PassCtorTy> *List = nullptr;
+
+  struct InvocationState {
+    PassCtorTy Default{}; // Default function pass creator.
+    MachinePassRegistryListener<PassCtorTy> *Listener = nullptr;
+  };
+
+  // Registrations form a process-wide catalog. Selection and parser listener
+  // state belong to the current tool invocation.
+  ContextManagedStatic<InvocationState> State;
+
+  InvocationState *getStateIfConstructed() {
+    return State.isConstructed() ? &*State : nullptr;
+  }
 
 public:
   // NO CONSTRUCTOR - we don't want static constructor ordering to mess
@@ -84,8 +97,8 @@ public:
   // Accessors.
   //
   MachinePassRegistryNode<PassCtorTy> *getList() { return List; }
-  PassCtorTy getDefault() { return Default; }
-  void setDefault(PassCtorTy C) { Default = C; }
+  PassCtorTy getDefault() { return State->Default; }
+  void setDefault(PassCtorTy C) { State->Default = C; }
   /// setDefault - Set the default constructor by name.
   void setDefault(StringRef Name) {
     PassCtorTy Ctor = nullptr;
@@ -99,30 +112,47 @@ public:
     assert(Ctor && "Unregistered pass name");
     setDefault(Ctor);
   }
-  void setListener(MachinePassRegistryListener<PassCtorTy> *L) { Listener = L; }
+  void setListener(MachinePassRegistryListener<PassCtorTy> *L) {
+    InvocationState &S = *State;
+    if (S.Listener == L)
+      return;
+    if (S.Listener && L)
+      report_fatal_error(
+          "machine-pass registry already has a listener in this invocation");
+    S.Listener = L;
+  }
 
   /// Add - Adds a function pass to the registration list.
   ///
   void Add(MachinePassRegistryNode<PassCtorTy> *Node) {
-    Node->setNext(List);
-    List = Node;
-    if (Listener)
-      Listener->NotifyAdd(Node->getName(), Node->getCtor(),
-                          Node->getDescription());
+    {
+      ProcessWideRegistryMutation Mutation("machine-pass registry");
+      Node->setNext(List);
+      List = Node;
+    }
+    if (InvocationState *S = getStateIfConstructed(); S && S->Listener)
+      S->Listener->NotifyAdd(Node->getName(), Node->getCtor(),
+                             Node->getDescription());
   }
 
   /// Remove - Removes a function pass from the registration list.
   ///
   void Remove(MachinePassRegistryNode<PassCtorTy> *Node) {
-    for (MachinePassRegistryNode<PassCtorTy> **I = &List; *I;
-         I = (*I)->getNextAddress()) {
-      if (*I == Node) {
-        if (Listener)
-          Listener->NotifyRemove(Node->getName());
-        *I = (*I)->getNext();
-        break;
+    bool Removed = false;
+    {
+      ProcessWideRegistryMutation Mutation("machine-pass registry");
+      for (MachinePassRegistryNode<PassCtorTy> **I = &List; *I;
+           I = (*I)->getNextAddress()) {
+        if (*I == Node) {
+          *I = (*I)->getNext();
+          Removed = true;
+          break;
+        }
       }
     }
+    if (Removed)
+      if (InvocationState *S = getStateIfConstructed(); S && S->Listener)
+        S->Listener->NotifyRemove(Node->getName());
   }
 };
 

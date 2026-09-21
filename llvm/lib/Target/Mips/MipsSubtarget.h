@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <atomic>
 #include <bitset>
 
 #define GET_SUBTARGETINFO_HEADER
@@ -56,22 +57,19 @@ class MipsSubtarget : public MipsGenSubtargetInfo {
   enum class CPU { Others, P5600, I6400, I6500 };
 
   // Used to avoid printing dsp warnings multiple times.
-  static bool DspWarningPrinted;
+  static std::atomic<bool> DspWarningPrinted;
 
   // Used to avoid printing msa warnings multiple times.
-  static bool MSAWarningPrinted;
+  static std::atomic<bool> MSAWarningPrinted;
 
   // Used to avoid printing crc warnings multiple times.
-  static bool CRCWarningPrinted;
+  static std::atomic<bool> CRCWarningPrinted;
 
   // Used to avoid printing ginv warnings multiple times.
-  static bool GINVWarningPrinted;
-
-  // Used to avoid printing Mips1 warnings multiple times.
-  static bool MIPS1WarningPrinted;
+  static std::atomic<bool> GINVWarningPrinted;
 
   // Used to avoid printing virt warnings multiple times.
-  static bool VirtWarningPrinted;
+  static std::atomic<bool> VirtWarningPrinted;
 
   // Mips architecture version
   MipsArchEnum MipsArchVersion;

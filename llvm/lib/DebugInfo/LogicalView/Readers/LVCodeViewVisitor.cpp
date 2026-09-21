@@ -256,15 +256,15 @@ class LVStringRecords {
   using StringEntry = std::tuple<uint32_t, std::string, LVScopeCompileUnit *>;
   using StringIds = std::map<TypeIndex, StringEntry>;
   StringIds Strings;
+  uint32_t NextIndex = 0;
 
 public:
   LVStringRecords() = default;
 
   void add(TypeIndex TI, StringRef String) {
-    static uint32_t Index = 0;
     auto [It, Inserted] = Strings.try_emplace(TI);
     if (Inserted)
-      It->second = std::make_tuple(++Index, std::string(String), nullptr);
+      It->second = std::make_tuple(++NextIndex, std::string(String), nullptr);
   }
 
   StringRef find(TypeIndex TI) {

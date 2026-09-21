@@ -3447,16 +3447,7 @@ struct GraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *> {
 template <typename DerivedCCG, typename FuncTy, typename CallTy>
 struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
     : public DefaultDOTGraphTraits {
-  DOTGraphTraits(bool IsSimple = false) : DefaultDOTGraphTraits(IsSimple) {
-    // If the user requested the full graph to be exported, but provided an
-    // allocation id, or if the user gave a context id and requested more than
-    // just a specific context to be exported, note that highlighting is
-    // enabled.
-    DoHighlight =
-        (AllocIdForDot.getNumOccurrences() && DotGraphScope == DotScope::All) ||
-        (ContextIdForDot.getNumOccurrences() &&
-         DotGraphScope != DotScope::Context);
-  }
+  DOTGraphTraits(bool IsSimple = false) : DefaultDOTGraphTraits(IsSimple) {}
 
   using GraphType = const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *;
   using GTraits = GraphTraits<GraphType>;
@@ -3494,6 +3485,7 @@ struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
     // If highlighting enabled, see if this node contains any of the context ids
     // of interest. If so, it will use a different color and a larger fontsize
     // (which makes the node larger as well).
+    const bool DoHighlight = shouldHighlight();
     bool Highlight = false;
     if (DoHighlight) {
       assert(ContextIdForDot.getNumOccurrences() ||
@@ -3510,7 +3502,8 @@ struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
     if (Highlight)
       AttributeString += ",fontsize=\"30\"";
     AttributeString +=
-        (Twine(",fillcolor=\"") + getColor(Node->AllocTypes, Highlight) + "\"")
+        (Twine(",fillcolor=\"") +
+         getColor(Node->AllocTypes, Highlight, DoHighlight) + "\"")
             .str();
     if (Node->CloneOf) {
       AttributeString += ",color=\"blue\"";
@@ -3527,6 +3520,7 @@ struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
     // of interest. If so, it will use a different color and a heavier arrow
     // size and weight (the larger weight makes the highlighted path
     // straighter).
+    const bool DoHighlight = shouldHighlight();
     bool Highlight = false;
     if (DoHighlight) {
       assert(ContextIdForDot.getNumOccurrences() ||
@@ -3536,7 +3530,7 @@ struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
       else
         Highlight = set_intersects(Edge->ContextIds, G->DotAllocContextIds);
     }
-    auto Color = getColor(Edge->AllocTypes, Highlight);
+    auto Color = getColor(Edge->AllocTypes, Highlight, DoHighlight);
     std::string AttributeString =
         (Twine("tooltip=\"") + getContextIds(Edge->ContextIds) + "\"" +
          // fillcolor is the arrow head and color is the line
@@ -3566,6 +3560,16 @@ struct DOTGraphTraits<const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>
   }
 
 private:
+  static bool shouldHighlight() {
+    // If the user requested the full graph to be exported, but provided an
+    // allocation id, or if the user gave a context id and requested more than
+    // just a specific context to be exported, highlighting is enabled.
+    return (AllocIdForDot.getNumOccurrences() &&
+            DotGraphScope == DotScope::All) ||
+           (ContextIdForDot.getNumOccurrences() &&
+            DotGraphScope != DotScope::Context);
+  }
+
   static std::string getContextIds(const DenseSet<uint32_t> &ContextIds) {
     std::string IdString = "ContextIds:";
     if (ContextIds.size() < 100) {
@@ -3579,7 +3583,8 @@ private:
     return IdString;
   }
 
-  static std::string getColor(uint8_t AllocTypes, bool Highlight) {
+  static std::string getColor(uint8_t AllocTypes, bool Highlight,
+                              bool DoHighlight) {
     // If DoHighlight is not enabled, we want to use the highlight colors for
     // NotCold and Cold, and the non-highlight color for NotCold+Cold. This is
     // both compatible with the color scheme before highlighting was supported,
@@ -3602,16 +3607,7 @@ private:
     std::string Result = SStream.str();
     return Result;
   }
-
-  // True if we should highlight a specific context or allocation's contexts in
-  // the emitted graph.
-  static bool DoHighlight;
 };
-
-template <typename DerivedCCG, typename FuncTy, typename CallTy>
-bool DOTGraphTraits<
-    const CallsiteContextGraph<DerivedCCG, FuncTy, CallTy> *>::DoHighlight =
-    false;
 
 template <typename DerivedCCG, typename FuncTy, typename CallTy>
 void CallsiteContextGraph<DerivedCCG, FuncTy, CallTy>::exportToDot(

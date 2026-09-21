@@ -515,6 +515,8 @@ static const char *getFailureName(FunctionImporter::ImportFailureReason Reason);
 
 /// Determine the list of imports and exports for each module.
 class ModuleImportsManager {
+  int ImportCount = 0;
+
   void computeImportForFunction(
       const FunctionSummary &Summary, unsigned Threshold,
       const GVSummaryMapTy &DefinedGVSummaries,
@@ -616,7 +618,7 @@ class WorkloadImportsManager : public ModuleImportsManager {
                                   << " ImportFailureReason: "
                                   << getFailureName(Candidate.first) << "\n");
                 return Candidate.first ==
-                        FunctionImporter::ImportFailureReason::None;
+                       FunctionImporter::ImportFailureReason::None;
               }),
           [](const auto &Candidate) { return Candidate.second; });
       if (PotentialCandidates.empty()) {
@@ -891,7 +893,6 @@ void ModuleImportsManager::computeImportForFunction(
     FunctionImporter::ImportMapTy &ImportList,
     FunctionImporter::ImportThresholdsTy &ImportThresholds) {
   GVImporter.onImportingSummary(Summary);
-  static int ImportCount = 0;
   for (const auto &Edge : Summary.calls()) {
     ValueInfo VI = Edge.first;
     LLVM_DEBUG(dbgs() << " edge -> " << VI << " Threshold:" << Threshold
@@ -967,7 +968,7 @@ void ModuleImportsManager::computeImportForFunction(
       if (PreviouslyVisited && NewThreshold <= ProcessedThreshold) {
         LLVM_DEBUG(
             dbgs() << "ignored! Target was already rejected with Threshold "
-            << ProcessedThreshold << "\n");
+                   << ProcessedThreshold << "\n");
         if (PrintImportFailures) {
           assert(FailureInfo &&
                  "Expected FailureInfo for previously rejected candidate");
@@ -1689,10 +1690,9 @@ bool llvm::convertToDeclaration(GlobalValue &GV) {
   } else {
     GlobalValue *NewGV;
     if (GV.getValueType()->isFunctionTy())
-      NewGV =
-          Function::Create(cast<FunctionType>(GV.getValueType()),
-                           GlobalValue::ExternalLinkage, GV.getAddressSpace(),
-                           "", GV.getParent());
+      NewGV = Function::Create(cast<FunctionType>(GV.getValueType()),
+                               GlobalValue::ExternalLinkage,
+                               GV.getAddressSpace(), "", GV.getParent());
     else
       NewGV =
           new GlobalVariable(*GV.getParent(), GV.getValueType(),

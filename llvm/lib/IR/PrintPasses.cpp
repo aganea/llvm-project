@@ -9,6 +9,7 @@
 #include "llvm/IR/PrintPasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
@@ -386,13 +387,14 @@ std::string llvm::doSystemDiff(StringRef Before, StringRef After,
 
   // Store the 2 bodies into temporary files and call diff on them
   // to get the body of the node.
-  static SmallVector<int> FD{-1, -1, -1};
+  SmallVector<int> FD{-1, -1, -1};
   SmallVector<StringRef> SR{Before, After};
-  static SmallVector<std::string> FileName{"", "", ""};
+  SmallVector<std::string> FileName{"", "", ""};
   if (prepareTempFiles(FD, SR, FileName))
     return "Unable to create temporary file.";
+  scope_exit Cleanup([&] { (void)cleanUpTempFiles(FileName); });
 
-  static ErrorOr<std::string> DiffExe = sys::findProgramByName(DiffBinary);
+  ErrorOr<std::string> DiffExe = sys::findProgramByName(DiffBinary);
   if (!DiffExe)
     return "Unable to find diff executable.";
 
@@ -415,7 +417,9 @@ std::string llvm::doSystemDiff(StringRef Before, StringRef After,
   else
     return "Unable to read result.";
 
-  if (cleanUpTempFiles(FileName))
+  std::error_code CleanupError = cleanUpTempFiles(FileName);
+  Cleanup.release();
+  if (CleanupError)
     return "Unable to remove temporary file.";
 
   return Diff;

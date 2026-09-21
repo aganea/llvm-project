@@ -90,17 +90,13 @@ static cl::opt<bool> ManifestInternal(
 static cl::opt<int> MaxHeapToStackSize("max-heap-to-stack-size", cl::init(128),
                                        cl::Hidden);
 
-template <>
-unsigned llvm::PotentialConstantIntValuesState::MaxPotentialValues = 0;
+static cl::opt<unsigned>
+    MaxPotentialValues("attributor-max-potential-values", cl::Hidden,
+                       cl::desc("Maximum number of potential values to be "
+                                "tracked for each position."),
+                       cl::init(7));
 
-template <> unsigned llvm::PotentialLLVMValuesState::MaxPotentialValues = -1;
-
-static cl::opt<unsigned, true> MaxPotentialValues(
-    "attributor-max-potential-values", cl::Hidden,
-    cl::desc("Maximum number of potential values to be "
-             "tracked for each position."),
-    cl::location(llvm::PotentialConstantIntValuesState::MaxPotentialValues),
-    cl::init(7));
+unsigned llvm::getAttributorMaxPotentialValues() { return MaxPotentialValues; }
 
 static cl::opt<int> MaxPotentialValuesIterations(
     "attributor-max-potential-values-iterations", cl::Hidden,

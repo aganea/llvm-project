@@ -99,15 +99,16 @@
 #define DEBUG_TYPE "bpf-abstract-member-access"
 
 namespace llvm {
-uint32_t BPFCoreSharedInfo::SeqNum;
+std::atomic<uint32_t> BPFCoreSharedInfo::SeqNum{0};
 
 Instruction *BPFCoreSharedInfo::insertPassThrough(Module *M, BasicBlock *BB,
                                                   Instruction *Input,
                                                   Instruction *Before) {
   Function *Fn = Intrinsic::getOrInsertDeclaration(
       M, Intrinsic::bpf_passthrough, {Input->getType(), Input->getType()});
-  Constant *SeqNumVal = ConstantInt::get(Type::getInt32Ty(BB->getContext()),
-                                         BPFCoreSharedInfo::SeqNum++);
+  Constant *SeqNumVal = ConstantInt::get(
+      Type::getInt32Ty(BB->getContext()),
+      SeqNum.fetch_add(1, std::memory_order_relaxed));
 
   auto *NewInst = CallInst::Create(Fn, {SeqNumVal, Input});
   NewInst->insertBefore(Before->getIterator());
@@ -145,7 +146,6 @@ private:
   const DataLayout *DL = nullptr;
   Module *M = nullptr;
 
-  static std::map<std::string, GlobalVariable *> GEPGlobals;
   // A map to link preserve_*_access_index intrinsic calls.
   std::map<CallInst *, std::pair<CallInst *, CallInfo>> AIChain;
   // A map to hold all the base preserve_*_access_index intrinsic calls.
@@ -188,7 +188,6 @@ private:
   bool transformGEPChain(CallInst *Call, CallInfo &CInfo);
 };
 
-std::map<std::string, GlobalVariable *> BPFAbstractMemberAccess::GEPGlobals;
 } // End anonymous namespace
 
 bool BPFAbstractMemberAccess::run(Function &F) {
@@ -1081,7 +1080,7 @@ bool BPFAbstractMemberAccess::transformGEPChain(CallInst *Call,
   BasicBlock *BB = Call->getParent();
   GlobalVariable *GV;
 
-  if (GEPGlobals.find(AccessKey) == GEPGlobals.end()) {
+  if (!(GV = M->getGlobalVariable(AccessKey))) {
     IntegerType *VarType;
     if (IsInt32Ret)
       VarType = Type::getInt32Ty(BB->getContext()); // 32bit return value
@@ -1092,9 +1091,6 @@ bool BPFAbstractMemberAccess::transformGEPChain(CallInst *Call,
                             nullptr, AccessKey);
     GV->addAttribute(BPFCoreSharedInfo::AmaAttr);
     GV->setMetadata(LLVMContext::MD_preserve_access_index, TypeMeta);
-    GEPGlobals[AccessKey] = GV;
-  } else {
-    GV = GEPGlobals[AccessKey];
   }
 
   if (CInfo.Kind == BPFPreserveFieldInfoAI) {

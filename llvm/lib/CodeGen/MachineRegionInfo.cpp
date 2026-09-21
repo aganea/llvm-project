@@ -136,7 +136,7 @@ void MachineRegionInfoPass::verifyAnalysis() const {
   // Only do verification when user wants to, otherwise this expensive check
   // will be invoked by PMDataManager::verifyPreservedAnalysis when
   // a regionpass (marked PreservedAll) finish.
-  if (MachineRegionInfo::VerifyRegionInfo)
+  if (shouldVerifyRegionInfo<RegionTraits<MachineFunction>>())
     RI.verifyAnalysis();
 }
 

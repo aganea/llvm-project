@@ -11,12 +11,26 @@
 // keep the SupportTests target small.
 
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "gtest/gtest.h"
+
+#include <atomic>
+#include <thread>
 
 using namespace llvm;
 
 namespace {
+
+MCInstrInfo *createTestMCInstrInfo() {
+  static int Token;
+  return reinterpret_cast<MCInstrInfo *>(&Token);
+}
+MCInstrInfo *createOtherMCInstrInfo() {
+  static int Token;
+  return reinterpret_cast<MCInstrInfo *>(&Token);
+}
 
 TEST(TargetRegistry, TargetHasArchType) {
   // Presence of at least one target will be asserted when done with the loop,
@@ -87,6 +101,63 @@ TEST(TargetRegistry, IsValidFeatureListFormat) {
   EXPECT_FALSE(Target::isValidFeatureListFormat(","));
   EXPECT_FALSE(Target::isValidFeatureListFormat(",,"));
   EXPECT_FALSE(Target::isValidFeatureListFormat(",,,"));
+}
+
+TEST(TargetRegistry, ConcurrentRepeatedComponentRegistrationIsANoOp) {
+  Target T{};
+  TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+  std::atomic<unsigned> Ready{0};
+
+  auto RepeatRegistration = [&] {
+    cl::ScopedContext Context;
+    Ready.fetch_add(1, std::memory_order_release);
+    while (Ready.load(std::memory_order_acquire) != 2)
+      std::this_thread::yield();
+    TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+  };
+
+  std::thread First(RepeatRegistration);
+  std::thread Second(RepeatRegistration);
+  First.join();
+  Second.join();
+}
+
+TEST(TargetRegistry, CannotReplaceComponentAcrossInvocations) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#else
+  EXPECT_DEATH(
+      {
+        Target T{};
+        TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+        cl::ScopedContext FirstContext;
+        cl::ScopedContext SecondContext;
+        TargetRegistry::RegisterMCInstrInfo(T, createOtherMCInstrInfo);
+      },
+      "complete process-wide registration before concurrent tool execution");
+#endif
+}
+
+TEST(TargetRegistry, FrozenRegistryAllowsIdempotentComponentRegistration) {
+  Target T{};
+  TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+  ProcessWideRegistryFreeze Freeze;
+  TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+}
+
+TEST(TargetRegistry, FrozenRegistryRejectsComponentReplacement) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#else
+  EXPECT_DEATH(
+      {
+        Target T{};
+        TargetRegistry::RegisterMCInstrInfo(T, createTestMCInstrInfo);
+        ProcessWideRegistryFreeze Freeze;
+        TargetRegistry::RegisterMCInstrInfo(T, createOtherMCInstrInfo);
+      },
+      "target registry.*registration was frozen");
+#endif
 }
 
 } // end namespace

@@ -274,7 +274,7 @@ void RegionBase<Tr>::verifyRegion() const {
   // Only do verification when user wants to, otherwise this expensive check
   // will be invoked by PMDataManager::verifyPreservedAnalysis when
   // a regionpass (marked PreservedAll) finish.
-  if (!RegionInfoBase<Tr>::VerifyRegionInfo)
+  if (!shouldVerifyRegionInfo<Tr>())
     return;
 
   std::set<BlockT *> visited;
@@ -498,7 +498,8 @@ void RegionBase<Tr>::print(raw_ostream &OS, bool print_tree, unsigned level,
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 template <class Tr>
 void RegionBase<Tr>::dump() const {
-  print(dbgs(), true, getDepth(), RegionInfoBase<Tr>::printStyle);
+  print(dbgs(), true, getDepth(),
+        static_cast<typename RegionT::PrintStyle>(getRegionPrintStyle<Tr>()));
 }
 #endif
 
@@ -735,22 +736,12 @@ void RegionInfoBase<Tr>::buildRegionsTree(DomTreeNodeT *N, RegionT *region) {
   }
 }
 
-#ifdef EXPENSIVE_CHECKS
-template <class Tr>
-bool RegionInfoBase<Tr>::VerifyRegionInfo = true;
-#else
-template <class Tr>
-bool RegionInfoBase<Tr>::VerifyRegionInfo = false;
-#endif
-
-template <class Tr>
-typename Tr::RegionT::PrintStyle RegionInfoBase<Tr>::printStyle =
-    RegionBase<Tr>::PrintNone;
-
 template <class Tr>
 void RegionInfoBase<Tr>::print(raw_ostream &OS) const {
   OS << "Region tree:\n";
-  TopLevelRegion->print(OS, true, 0, printStyle);
+  TopLevelRegion->print(
+      OS, true, 0,
+      static_cast<typename RegionT::PrintStyle>(getRegionPrintStyle<Tr>()));
   OS << "End region tree\n";
 }
 
@@ -771,7 +762,7 @@ template <class Tr>
 void RegionInfoBase<Tr>::verifyAnalysis() const {
   // Do only verify regions if explicitely activated using EXPENSIVE_CHECKS or
   // -verify-region-info
-  if (!RegionInfoBase<Tr>::VerifyRegionInfo)
+  if (!shouldVerifyRegionInfo<Tr>())
     return;
 
   TopLevelRegion->verifyRegionNest();
