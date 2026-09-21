@@ -20,6 +20,13 @@ add_llvm_tool(llvm-cov
   SourceCoverageViewHTML.cpp
   SourceCoverageViewText.cpp
   TestingSupport.cpp
+
+  GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS
   )
 
-target_link_libraries(llvm-cov PRIVATE LLVMHTTP LLVMDebuginfod)
+if(NOT LLVM_TOOL_LLVM_DRIVER_BUILD OR
+   NOT LLVM_DRIVER_PER_INVOCATION_GLOBALS OR
+   (LLVM_DISTRIBUTION_COMPONENTS AND
+    NOT llvm-cov IN_LIST LLVM_DISTRIBUTION_COMPONENTS))
+  target_link_libraries(llvm-cov PRIVATE LLVMHTTP LLVMDebuginfod)
+endif()

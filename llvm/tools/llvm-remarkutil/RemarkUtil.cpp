@@ -9,7 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RemarkUtilRegistry.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Driver.h"
 
 using namespace llvm;
 using namespace llvm::remarkutil;
@@ -33,9 +33,9 @@ static Error handleSubOptions() {
       inconvertibleErrorCode());
 }
 
-int main(int argc, char *argv[]) {
-  InitLLVM X(argc, argv);
+int llvm_remarkutil_main(int argc, char **argv, const llvm::ToolContext &) {
   cl::ParseCommandLineOptions(argc, argv, "Remark file utilities\n");
   ExitOnErr.setBanner(std::string(argv[0]) + ": error: ");
   ExitOnErr(handleSubOptions());
+  return 0;
 }

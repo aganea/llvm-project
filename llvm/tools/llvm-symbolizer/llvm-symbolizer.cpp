@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 using namespace llvm;
@@ -107,16 +108,19 @@ enum class Command {
 };
 
 static void enableDebuginfod(LLVMSymbolizer &Symbolizer,
-                             const opt::ArgList &Args) {
-  static bool IsEnabled = false;
+                             const opt::ArgList &Args, bool &IsEnabled) {
   if (IsEnabled)
     return;
   IsEnabled = true;
   // Look up symbols using the debuginfod client.
   Symbolizer.setBuildIDFetcher(std::make_unique<DebuginfodFetcher>(
       Args.getAllArgValues(OPT_debug_file_directory_EQ)));
-  // The HTTPClient must be initialized for use by the debuginfod client.
-  HTTPClient::initialize();
+  // HTTP is a process-wide runtime service, while the fetcher belongs to this
+  // symbolizer invocation. The folded driver initializes HTTP before dispatch;
+  // call_once also keeps direct embedders and the standalone executable
+  // race-free.
+  static std::once_flag HTTPClientInit;
+  std::call_once(HTTPClientInit, [] { HTTPClient::initialize(); });
 }
 
 static StringRef getSpaceDelimitedWord(StringRef &Source) {
@@ -320,7 +324,8 @@ static void symbolizeInput(const opt::InputArgList &Args,
                            object::BuildIDRef IncomingBuildID,
                            uint64_t AdjustVMA, bool IsAddr2Line,
                            OutputStyle Style, StringRef InputString,
-                           LLVMSymbolizer &Symbolizer, DIPrinter &Printer) {
+                           LLVMSymbolizer &Symbolizer,
+                           bool &IsDebuginfodEnabled, DIPrinter &Printer) {
   Command Cmd;
   std::string ModuleName;
   object::BuildID BuildID(IncomingBuildID.begin(), IncomingBuildID.end());
@@ -347,7 +352,7 @@ static void symbolizeInput(const opt::InputArgList &Args,
   if (!BuildID.empty()) {
     assert(ModuleName.empty());
     if (!Args.hasArg(OPT_no_debuginfod))
-      enableDebuginfod(Symbolizer, Args);
+      enableDebuginfod(Symbolizer, Args, IsDebuginfodEnabled);
     std::string BuildIDStr = toHex(BuildID);
     executeCommand(BuildIDStr, BuildID, Cmd, Symbol, Offset, AdjustVMA,
                    ShouldInline, Style, Symbolizer, Printer);
@@ -521,9 +526,10 @@ int llvm_symbolizer_main(int argc, char **argv, const llvm::ToolContext &) {
   }
 
   LLVMSymbolizer Symbolizer(Opts);
+  bool IsDebuginfodEnabled = false;
 
   if (Args.hasFlag(OPT_debuginfod, OPT_no_debuginfod, canUseDebuginfod()))
-    enableDebuginfod(Symbolizer, Args);
+    enableDebuginfod(Symbolizer, Args, IsDebuginfodEnabled);
 
   if (Args.hasArg(OPT_filter_markup)) {
     filterMarkup(Args, Symbolizer);
@@ -579,14 +585,15 @@ int llvm_symbolizer_main(int argc, char **argv, const llvm::ToolContext &) {
       llvm::erase_if(StrippedInputString,
                      [](char c) { return c == '\r' || c == '\n'; });
       symbolizeInput(Args, BuildID, AdjustVMA, IsAddr2Line, Style,
-                     StrippedInputString, Symbolizer, *Printer);
+                     StrippedInputString, Symbolizer, IsDebuginfodEnabled,
+                     *Printer);
       outs().flush();
     }
   } else {
     Printer->listBegin();
     for (StringRef Address : InputAddresses)
       symbolizeInput(Args, BuildID, AdjustVMA, IsAddr2Line, Style, Address,
-                     Symbolizer, *Printer);
+                     Symbolizer, IsDebuginfodEnabled, *Printer);
     Printer->listEnd();
   }
 

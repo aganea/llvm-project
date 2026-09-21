@@ -237,6 +237,8 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
       }
     }
   }
+  if (Opts.Params.NoInclude && !Opts.Preprocessor)
+    Args.push_back("-nostdlibinc");
   llvm::append_range(Args, Opts.PreprocessArgs);
   if (Opts.Params.ShowIncludes) {
     Args.push_back("-Xclang");
@@ -525,14 +527,6 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   Opts.Params.Include = InputArgs.getAllArgValues(OPT_includepath);
   Opts.Params.NoInclude = InputArgs.hasArg(OPT_noinclude);
   Opts.Params.ShowIncludes = InputArgs.hasArg(OPT_show_includes);
-  if (Opts.Params.NoInclude) {
-    // Clear the INLCUDE variable for the external preprocessor
-#ifdef _WIN32
-    ::_putenv("INCLUDE=");
-#else
-    ::unsetenv("INCLUDE");
-#endif
-  }
   if (InputArgs.hasArg(OPT_codepage)) {
     if (InputArgs.getLastArgValue(OPT_codepage)
             .getAsInteger(10, Opts.Params.CodePage))

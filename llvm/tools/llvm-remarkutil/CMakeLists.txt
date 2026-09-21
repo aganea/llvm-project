@@ -15,4 +15,6 @@ add_llvm_tool(llvm-remarkutil
   RemarkUtil.cpp
   RemarkUtilHelpers.cpp
   RemarkUtilRegistry.cpp
+
+  GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS
   )

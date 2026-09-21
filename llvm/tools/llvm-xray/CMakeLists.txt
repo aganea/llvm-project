@@ -17,4 +17,6 @@ add_llvm_tool(llvm-xray
   xray-graph.cpp
   xray-registry.cpp
   xray-stacks.cpp
+
+  GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS
   )

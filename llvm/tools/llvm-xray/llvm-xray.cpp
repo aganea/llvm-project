@@ -17,12 +17,13 @@
 //
 #include "xray-registry.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace llvm::xray;
 
-int main(int argc, char *argv[]) {
+int llvm_xray_main(int argc, char **argv, const llvm::ToolContext &) {
   cl::ParseCommandLineOptions(argc, argv,
                               "XRay Tools\n\n"
                               "  This program consolidates multiple XRay trace "

@@ -239,10 +239,10 @@ static bool CompareFullPath = false;      ///< 'P' modifier
 static bool OnlyUpdate = false;           ///< 'u' modifier
 static bool Verbose = false;              ///< 'v' modifier
 static SymtabWritingMode Symtab =
-    SymtabWritingMode::NormalSymtab;      ///< 's' modifier
-static bool Deterministic = true;         ///< 'D' and 'U' modifiers
-static bool Thin = false;                 ///< 'T' modifier
-static bool AddLibrary = false;           ///< 'L' modifier
+    SymtabWritingMode::NormalSymtab; ///< 's' modifier
+static bool Deterministic = true;    ///< 'D' and 'U' modifiers
+static bool Thin = false;            ///< 'T' modifier
+static bool AddLibrary = false;      ///< 'L' modifier
 
 // Relative Positional Argument (for insert/move). This variable holds
 // the name of the archive member to which the 'a', 'b' or 'i' modifier
@@ -321,12 +321,6 @@ static void runMRIScript();
 // specified. Process all modifiers and check to make sure that constraints on
 // modifier/operation pairs have not been violated.
 static ArchiveOperation parseCommandLine() {
-  if (MRI) {
-    if (!PositionalArgs.empty() || !Options.empty())
-      badUsage("cannot mix -M and other options");
-    runMRIScript();
-  }
-
   // Keep track of number of operations. We can only specify one
   // per execution.
   unsigned NumOperations = 0;
@@ -768,7 +762,8 @@ static void addChildMember(std::vector<NewArchiveMember> &Members,
     Expected<std::string> FileNameOrErr(M.getName());
     failIfError(FileNameOrErr.takeError());
     if (sys::path::is_absolute(*FileNameOrErr)) {
-      NMOrErr->MemberName = Saver.save(sys::path::convert_to_slash(*FileNameOrErr));
+      NMOrErr->MemberName =
+          Saver.save(sys::path::convert_to_slash(*FileNameOrErr));
     } else {
       FileNameOrErr = M.getFullName();
       failIfError(FileNameOrErr.takeError());
@@ -1205,7 +1200,16 @@ static int performOperation(ArchiveOperation Operation) {
 }
 
 static void runMRIScript() {
-  enum class MRICommand { AddLib, AddMod, Create, CreateThin, Delete, Save, End, Invalid };
+  enum class MRICommand {
+    AddLib,
+    AddMod,
+    Create,
+    CreateThin,
+    Delete,
+    Save,
+    End,
+    Invalid
+  };
 
   ErrorOr<std::unique_ptr<MemoryBuffer>> Buf = MemoryBuffer::getSTDIN();
   failIfError(Buf.getError());
@@ -1292,7 +1296,6 @@ static void runMRIScript() {
   if (Saved)
     performOperation(ReplaceOrInsert, /*OldArchive=*/nullptr,
                      /*OldArchiveBuf=*/nullptr, &NewMembers);
-  exit(0);
 }
 
 static bool handleGenericOption(StringRef arg) {
@@ -1441,6 +1444,13 @@ static int ar_main(int argc, char **argv) {
     }
 
     Options += *ArgIt + 1;
+  }
+
+  if (MRI) {
+    if (!PositionalArgs.empty() || !Options.empty())
+      badUsage("cannot mix -M and other options");
+    runMRIScript();
+    return 0;
   }
 
   return performOperation(parseCommandLine());

@@ -18,6 +18,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -83,7 +84,7 @@ Error convertToYaml() {
 }
 } // namespace
 
-int main(int argc, const char **argv) {
+int llvm_ctxprof_util_main(int argc, char **argv, const llvm::ToolContext &) {
   cl::ParseCommandLineOptions(argc, argv, "LLVM Contextual Profile Utils\n");
   ExitOnError ExitOnErr("llvm-ctxprof-util: ");
   auto HandleErr = [&](Error E) -> int {

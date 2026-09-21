@@ -88,9 +88,10 @@ static Expected<DriverConfig> getDriverConfig(ArrayRef<const char *> Args) {
     if (Error Err = runExtractBundleEntry(*ArgsOrErr))
       return Err;
 
-    // The functionality of llvm-extract-bundle-entry is completely
-    // handled in runExtractBundleEntry, so we can exit(0) here.
-    std::exit(0);
+    // The functionality of llvm-extract-bundle-entry is completely handled in
+    // runExtractBundleEntry. An empty configuration lets the common entry
+    // point return normally without running an objcopy pass.
+    return DriverConfig{};
   }
   return parseObjcopyOptions(Args, reportWarning);
 }

@@ -55,7 +55,9 @@ static size_t MaxConcurrency;
 static bool VerboseLogging;
 static std::vector<std::string> ScanPaths;
 
-ExitOnError ExitOnErr;
+// llvm-driver folds tools that have their own ExitOnErr globals together.
+// Internal linkage keeps their independent arena variables from colliding.
+static ExitOnError ExitOnErr;
 
 template <typename T>
 static void parseIntArg(const opt::InputArgList &Args, int ID, T &Value,

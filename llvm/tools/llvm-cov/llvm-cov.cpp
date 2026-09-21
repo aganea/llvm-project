@@ -13,7 +13,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
@@ -55,8 +55,11 @@ static int versionMain(int argc, const char *argv[]) {
   return 0;
 }
 
-int main(int argc, const char **argv) {
-  InitLLVM X(argc, argv);
+int llvm_cov_main(int argc, char **Argv, const llvm::ToolContext &) {
+  // The subcommand entry points take const argv while the multicall driver
+  // hands us a mutable one. Re-point the array once rather than changing all
+  // of the sub-tool interfaces.
+  const char **argv = const_cast<const char **>(Argv);
 
   // If argv[0] is or ends with 'gcov', always be gcov compatible
   if (sys::path::stem(argv[0]).ends_with_insensitive("gcov"))

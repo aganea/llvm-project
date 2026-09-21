@@ -106,6 +106,7 @@ struct Config {
   std::string OutputFile;
   LipoAction ActionToPerform;
   bool UseFat64;
+  std::optional<int> EarlyExitCode;
 };
 
 static Slice createSliceFromArchive(LLVMContext &LLVMCtx, const Archive &A) {
@@ -151,19 +152,22 @@ static Config parseLipoOptions(ArrayRef<const char *> ArgsArr) {
   if (InputArgs.size() == 0) {
     // printHelp does not accept Twine.
     T.printHelp(errs(), "llvm-lipo input[s] option[s]", "llvm-lipo");
-    exit(EXIT_FAILURE);
+    C.EarlyExitCode = EXIT_FAILURE;
+    return C;
   }
 
   if (InputArgs.hasArg(LIPO_help)) {
     // printHelp does not accept Twine.
     T.printHelp(outs(), "llvm-lipo input[s] option[s]", "llvm-lipo");
-    exit(EXIT_SUCCESS);
+    C.EarlyExitCode = EXIT_SUCCESS;
+    return C;
   }
 
   if (InputArgs.hasArg(LIPO_version)) {
     outs() << ToolName + "\n";
     cl::PrintVersionMessage();
-    exit(EXIT_SUCCESS);
+    C.EarlyExitCode = EXIT_SUCCESS;
+    return C;
   }
 
   for (auto *Arg : InputArgs.filtered(LIPO_UNKNOWN))
@@ -353,9 +357,8 @@ readInputBinaries(LLVMContext &LLVMCtx, ArrayRef<InputFile> InputFiles) {
   return InputBinaries;
 }
 
-[[noreturn]] static void
-verifyArch(ArrayRef<OwningBinary<Binary>> InputBinaries,
-           ArrayRef<std::string> VerifyArchList) {
+static void verifyArch(ArrayRef<OwningBinary<Binary>> InputBinaries,
+                       ArrayRef<std::string> VerifyArchList) {
   assert(!VerifyArchList.empty() &&
          "The list of architectures should be non-empty");
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
@@ -380,7 +383,6 @@ verifyArch(ArrayRef<OwningBinary<Binary>> InputBinaries,
   } else {
     llvm_unreachable("Unexpected binary format");
   }
-  exit(EXIT_SUCCESS);
 }
 
 static void printBinaryArchs(LLVMContext &LLVMCtx, const Binary *Binary,
@@ -443,15 +445,14 @@ static void printBinaryArchs(LLVMContext &LLVMCtx, const Binary *Binary,
   OS << SliceOrErr->getArchString() << " \n";
 }
 
-[[noreturn]] static void
-printArchs(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries) {
+static void printArchs(LLVMContext &LLVMCtx,
+                       ArrayRef<OwningBinary<Binary>> InputBinaries) {
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
   printBinaryArchs(LLVMCtx, InputBinaries.front().getBinary(), outs());
-  exit(EXIT_SUCCESS);
 }
 
-[[noreturn]] static void
-printInfo(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries) {
+static void printInfo(LLVMContext &LLVMCtx,
+                      ArrayRef<OwningBinary<Binary>> InputBinaries) {
   // Group universal and thin files together for compatibility with cctools lipo
   for (auto &IB : InputBinaries) {
     const Binary *Binary = IB.getBinary();
@@ -471,13 +472,11 @@ printInfo(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries) {
       printBinaryArchs(LLVMCtx, Binary, outs());
     }
   }
-  exit(EXIT_SUCCESS);
 }
 
-[[noreturn]] static void thinSlice(LLVMContext &LLVMCtx,
-                                   ArrayRef<OwningBinary<Binary>> InputBinaries,
-                                   StringRef ArchType,
-                                   StringRef OutputFileName) {
+static void thinSlice(LLVMContext &LLVMCtx,
+                      ArrayRef<OwningBinary<Binary>> InputBinaries,
+                      StringRef ArchType, StringRef OutputFileName) {
   assert(!ArchType.empty() && "The architecture type should be non-empty");
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
   assert(!OutputFileName.empty() && "Thin expects a single output file");
@@ -502,12 +501,19 @@ printInfo(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries) {
   Binary *B;
   // Order here is important, because both Obj and IRObj will be valid with a
   // binary that has embedded bitcode.
-  if (Obj)
+  if (Obj) {
+    consumeError(IRObj.takeError());
+    consumeError(Ar.takeError());
     B = Obj->get();
-  else if (IRObj)
+  } else if (IRObj) {
+    consumeError(Obj.takeError());
+    consumeError(Ar.takeError());
     B = IRObj->get();
-  else
+  } else {
+    consumeError(Obj.takeError());
+    consumeError(IRObj.takeError());
     B = Ar->get();
+  }
 
   Expected<std::unique_ptr<FileOutputBuffer>> OutFileOrError =
       FileOutputBuffer::create(OutputFileName,
@@ -522,7 +528,6 @@ printInfo(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries) {
             OutFileOrError.get()->getBufferStart());
   if (Error E = OutFileOrError.get()->commit())
     reportError(OutputFileName, std::move(E));
-  exit(EXIT_SUCCESS);
 }
 
 static void checkArchDuplicates(ArrayRef<Slice> Slices) {
@@ -622,11 +627,11 @@ buildSlices(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries,
   return Slices;
 }
 
-[[noreturn]] static void
-createUniversalBinary(LLVMContext &LLVMCtx,
-                      ArrayRef<OwningBinary<Binary>> InputBinaries,
-                      const StringMap<const uint32_t> &Alignments,
-                      StringRef OutputFileName, FatHeaderType HeaderType) {
+static void createUniversalBinary(LLVMContext &LLVMCtx,
+                                  ArrayRef<OwningBinary<Binary>> InputBinaries,
+                                  const StringMap<const uint32_t> &Alignments,
+                                  StringRef OutputFileName,
+                                  FatHeaderType HeaderType) {
   assert(InputBinaries.size() >= 1 && "Incorrect number of input binaries");
   assert(!OutputFileName.empty() && "Create expects a single output file");
 
@@ -640,16 +645,13 @@ createUniversalBinary(LLVMContext &LLVMCtx,
   llvm::stable_sort(Slices);
   if (Error E = writeUniversalBinary(Slices, OutputFileName, HeaderType))
     reportError(std::move(E));
-
-  exit(EXIT_SUCCESS);
 }
 
-[[noreturn]] static void
-extractSlice(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries,
-             const StringMap<const uint32_t> &Alignments, StringRef ArchType,
-             StringRef OutputFileName) {
-  assert(!ArchType.empty() &&
-         "The architecture type should be non-empty");
+static void extractSlice(LLVMContext &LLVMCtx,
+                         ArrayRef<OwningBinary<Binary>> InputBinaries,
+                         const StringMap<const uint32_t> &Alignments,
+                         StringRef ArchType, StringRef OutputFileName) {
+  assert(!ArchType.empty() && "The architecture type should be non-empty");
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
   assert(!OutputFileName.empty() && "Thin expects a single output file");
 
@@ -668,20 +670,20 @@ extractSlice(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries,
   });
 
   if (Slices.empty())
-    reportError(
-        "fat input file " + InputBinaries.front().getBinary()->getFileName() +
-        " does not contain the specified architecture " + ArchType);
+    reportError("fat input file " +
+                InputBinaries.front().getBinary()->getFileName() +
+                " does not contain the specified architecture " + ArchType);
 
   llvm::stable_sort(Slices);
   if (Error E = writeUniversalBinary(Slices, OutputFileName))
     reportError(std::move(E));
-  exit(EXIT_SUCCESS);
 }
 
-[[noreturn]] static void
-removeSlice(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries,
-            const StringMap<const uint32_t> &Alignments,
-            ArrayRef<std::string> ArchTypes, StringRef OutputFileName) {
+static void removeSlice(LLVMContext &LLVMCtx,
+                        ArrayRef<OwningBinary<Binary>> InputBinaries,
+                        const StringMap<const uint32_t> &Alignments,
+                        ArrayRef<std::string> ArchTypes,
+                        StringRef OutputFileName) {
   assert(!ArchTypes.empty() &&
          "The architecture type list should be non-empty");
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
@@ -721,7 +723,6 @@ removeSlice(LLVMContext &LLVMCtx, ArrayRef<OwningBinary<Binary>> InputBinaries,
   llvm::stable_sort(Slices);
   if (Error E = writeUniversalBinary(Slices, OutputFileName))
     reportError(std::move(E));
-  exit(EXIT_SUCCESS);
 }
 
 static StringMap<Slice>
@@ -750,11 +751,11 @@ buildReplacementSlices(ArrayRef<OwningBinary<Binary>> ReplacementBinaries,
   return Slices;
 }
 
-[[noreturn]] static void
-replaceSlices(LLVMContext &LLVMCtx,
-              ArrayRef<OwningBinary<Binary>> InputBinaries,
-              const StringMap<const uint32_t> &Alignments,
-              StringRef OutputFileName, ArrayRef<InputFile> ReplacementFiles) {
+static void replaceSlices(LLVMContext &LLVMCtx,
+                          ArrayRef<OwningBinary<Binary>> InputBinaries,
+                          const StringMap<const uint32_t> &Alignments,
+                          StringRef OutputFileName,
+                          ArrayRef<InputFile> ReplacementFiles) {
   assert(InputBinaries.size() == 1 && "Incorrect number of input binaries");
   assert(!OutputFileName.empty() && "Replace expects a single output file");
 
@@ -792,7 +793,6 @@ replaceSlices(LLVMContext &LLVMCtx,
   llvm::stable_sort(Slices);
   if (Error E = writeUniversalBinary(Slices, OutputFileName))
     reportError(std::move(E));
-  exit(EXIT_SUCCESS);
 }
 
 int llvm_lipo_main(int argc, char **argv, const llvm::ToolContext &) {
@@ -801,6 +801,8 @@ int llvm_lipo_main(int argc, char **argv, const llvm::ToolContext &) {
   llvm::InitializeAllAsmParsers();
 
   Config C = parseLipoOptions(ArrayRef(argv + 1, argc - 1));
+  if (C.EarlyExitCode)
+    return *C.EarlyExitCode;
   LLVMContext LLVMCtx;
   SmallVector<OwningBinary<Binary>, 1> InputBinaries =
       readInputBinaries(LLVMCtx, C.InputFiles);

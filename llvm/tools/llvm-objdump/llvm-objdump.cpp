@@ -959,6 +959,10 @@ public:
     if (LeadingAddr)
       OS << format("%8" PRIx64 ":", Address.Address);
     if (ShowRawInsn) {
+      llvm::endianness InstructionEndianness =
+          STI.checkFeatures("+big-endian-instructions")
+              ? llvm::endianness::big
+              : llvm::endianness::little;
       size_t Pos = 0, End = Bytes.size();
       if (STI.checkFeatures("+thumb-mode")) {
         for (; Pos + 2 <= End; Pos += 2)
@@ -988,13 +992,6 @@ public:
     } else
       OS << "\t<unknown>";
   }
-
-  void setInstructionEndianness(llvm::endianness Endianness) {
-    InstructionEndianness = Endianness;
-  }
-
-private:
-  llvm::endianness InstructionEndianness = llvm::endianness::little;
 };
 ARMPrettyPrinter ARMPrettyPrinterInst;
 
@@ -2829,15 +2826,13 @@ static void disassembleObject(ObjectFile *Obj, bool InlineRelocs,
     // We must set the big-endian-instructions SubtargetFeature to make the
     // disassembler read the instructions the right way round, and also tell
     // our own prettyprinter to retrieve the encodings the same way to print in
-    // hex.
+    // hex. The prettyprinter reads this feature from its MCSubtargetInfo, so it
+    // remains stateless when two objdump invocations overlap.
     const auto *Elf32BE = dyn_cast<ELF32BEObjectFile>(Obj);
 
     if (Elf32BE && (Elf32BE->isRelocatableObject() ||
                     !(Elf32BE->getPlatformFlags() & ELF::EF_ARM_BE8))) {
       Features.AddFeature("+big-endian-instructions");
-      ARMPrettyPrinterInst.setInstructionEndianness(llvm::endianness::big);
-    } else {
-      ARMPrettyPrinterInst.setInstructionEndianness(llvm::endianness::little);
     }
   }
 

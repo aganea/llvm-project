@@ -29,7 +29,7 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Process.h"
-#include "llvm/Support/Signals.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/TargetParser/Host.h"
 #include <memory>
 
@@ -202,10 +202,10 @@ static bool run(ArrayRef<const char *> Args, const char *ProgName) {
 
 int clang_installapi_main(int argc, char **argv,
                           const llvm::ToolContext &ToolContext) {
-  // Standard set up, so program fails gracefully.
-  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
   llvm::PrettyStackTraceProgram StackPrinter(argc, argv);
-  llvm::llvm_shutdown_obj Shutdown;
+  std::unique_ptr<llvm::llvm_shutdown_obj> Shutdown;
+  if (!llvm::hasCurrentStaticArena())
+    Shutdown = std::make_unique<llvm::llvm_shutdown_obj>();
 
   if (llvm::sys::Process::FixupStandardFileDescriptors())
     return EXIT_FAILURE;

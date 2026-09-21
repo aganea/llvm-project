@@ -27,7 +27,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Regex.h"
-#include "llvm/Support/Signals.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
@@ -35,6 +35,7 @@
 #include <cstring>
 #include <inttypes.h>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -800,10 +801,10 @@ static llvm::Error benchmarkReader(StringRef GSYMPath, uint32_t Start,
 }
 
 int llvm_gsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
-  // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
-  llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
+  std::unique_ptr<llvm_shutdown_obj> Shutdown;
+  if (!hasCurrentStaticArena())
+    Shutdown = std::make_unique<llvm_shutdown_obj>();
 
   llvm::InitializeAllTargets();
 

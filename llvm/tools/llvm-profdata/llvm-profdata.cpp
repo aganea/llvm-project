@@ -36,7 +36,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -1881,11 +1881,11 @@ static void overlapInstrProfile(const std::string &BaseFilename,
     exitWithError(std::move(E), "error in getting profile count sums");
   if (Overlap.Base.CountSum < 1.0f) {
     OS << "Sum of edge counts for profile " << BaseFilename << " is 0.\n";
-    exit(0);
+    return;
   }
   if (Overlap.Test.CountSum < 1.0f) {
     OS << "Sum of edge counts for profile " << TestFilename << " is 0.\n";
-    exit(0);
+    return;
   }
   loadInput(WeightedInput, nullptr, nullptr, /*ProfiledBinary=*/"", &Context);
   overlapInput(BaseFilename, TestFilename, &Context, Overlap, FuncFilter, OS,
@@ -3542,8 +3542,9 @@ static int order_main() {
   return 0;
 }
 
-int main(int argc, const char *argv[]) {
-  InitLLVM X(argc, argv);
+int llvm_profdata_main(int argc, char **argvNonConst,
+                       const llvm::ToolContext &) {
+  const char **argv = const_cast<const char **>(argvNonConst);
   StringRef ProgName(sys::path::filename(argv[0]));
 
   if (argc < 2) {
