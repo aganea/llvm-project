@@ -249,8 +249,8 @@ static bool ActionsAreIndependent(const Action *A, const Action *B) {
 }
 
 static bool CanRunInParallelOffloadJobGroup(const Command &Job) {
-  return !Job.InProcess && !Job.PrintInputFilenames &&
-         !Job.getBoundArch().empty() &&
+  return !Job.InProcess && !Job.hasInProcessExecutor() &&
+         !Job.PrintInputFilenames && !Job.getBoundArch().empty() &&
          !Job.getOffloadDeviceParallelJobGroup().empty();
 }
 

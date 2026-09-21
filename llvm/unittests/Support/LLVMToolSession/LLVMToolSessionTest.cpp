@@ -28,6 +28,7 @@ int linkerMain(int Argc, char **Argv, const ToolContext &Context) {
   ++LinkerCalls;
   EXPECT_EQ(Argc, 3);
   EXPECT_STREQ(Argv[0], "wasm-ld");
+  EXPECT_TRUE(Context.hasSession());
   EXPECT_TRUE(Context.getCallableTool("clang"));
   return 0;
 }
@@ -84,6 +85,11 @@ TEST(LLVMToolSessionTest, SupportsSequentialNestedToolCalls) {
   EXPECT_EQ(*SecondResult, 0);
   EXPECT_EQ(CompilerCalls, CompilerCallsBefore + 2);
   EXPECT_EQ(LinkerCalls, LinkerCallsBefore + 2);
+}
+
+TEST(LLVMToolSessionTest, DistinguishesStandaloneContext) {
+  ToolContext Context("clang", nullptr, false);
+  EXPECT_FALSE(Context.hasSession());
 }
 
 TEST(LLVMToolSessionTest, ReportsUnknownTools) {

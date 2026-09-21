@@ -51,6 +51,9 @@ public:
   ToolContext(const char *Path, const char *PrependArg, bool NeedsPrependArg)
       : Path(Path), PrependArg(PrependArg), NeedsPrependArg(NeedsPrependArg) {}
 
+  /// Whether this invocation belongs to a ToolSession.
+  bool hasSession() const { return Session != nullptr; }
+
   /// Finds a tool registered with the session that owns this context.
   LLVM_ABI ErrorOr<CallableTool> getCallableTool(StringRef Name) const;
 

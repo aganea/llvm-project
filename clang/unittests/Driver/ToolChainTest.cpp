@@ -24,12 +24,14 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Frontend/Debug/Options.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <memory>
+#include <system_error>
 
 #include "SimpleDiagnosticConsumer.h"
 
@@ -566,6 +568,84 @@ TEST(ToolChainTest, PostCallback) {
   const Command *FailingCmd = nullptr;
   CC->ExecuteCommand(*CmdCompile, FailingCmd);
   EXPECT_TRUE(CallbackHasCalled);
+}
+
+TEST(ToolChainTest, InProcessExecutor) {
+  DiagnosticOptions DiagOpts;
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID = DiagnosticIDs::create();
+  struct TestDiagnosticConsumer : public DiagnosticConsumer {};
+  DiagnosticsEngine Diags(DiagID, DiagOpts, new TestDiagnosticConsumer);
+  auto InMemoryFileSystem =
+      llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+
+  Driver CCDriver("/home/test/bin/clang", "wasm32-unknown-unknown", Diags,
+                  "clang LLVM compiler", InMemoryFileSystem);
+  CCDriver.setCheckInputsExist(false);
+  std::unique_ptr<Compilation> CC(CCDriver.BuildCompilation(
+      {"/home/test/bin/clang", "-nostdlib", "input.o", "-o", "out.wasm"}));
+  ASSERT_FALSE(CC->containsError());
+  ASSERT_EQ(CC->getJobs().size(), 1u);
+
+  Command &Link = *CC->getJobs().getJobs().back();
+  Command EnvironmentFallback(Link);
+  Command RedirectFallback(Link);
+  Command ProcessStatsFallback(Link);
+  Command ExecutorError(Link);
+
+  unsigned Calls = 0;
+  Link.setInProcessExecutor([&](ArrayRef<const char *> ToolArgs)
+                                -> llvm::ErrorOr<int> {
+    ++Calls;
+    EXPECT_GE(ToolArgs.size(), 3u);
+    EXPECT_TRUE(
+        llvm::sys::path::stem(ToolArgs.front()).equals_insensitive("wasm-ld"));
+    EXPECT_STREQ(ToolArgs[1], "-m");
+    EXPECT_STREQ(ToolArgs[2], "wasm32");
+    for (const char *Arg : ToolArgs)
+      EXPECT_NE(Arg, nullptr);
+    return 7;
+  });
+  // Generated response files are a subprocess transport and must be bypassed.
+  // An empty response path would fail immediately if that path were taken.
+  Link.setResponseFile("");
+  std::string Error;
+  bool ExecutionFailed = true;
+  EXPECT_EQ(Link.Execute({}, &Error, &ExecutionFailed), 7);
+  EXPECT_EQ(Calls, 1u);
+  EXPECT_TRUE(Error.empty());
+  EXPECT_FALSE(ExecutionFailed);
+
+  ExecutorError.setInProcessExecutor(
+      [](ArrayRef<const char *>) -> llvm::ErrorOr<int> {
+        return std::make_error_code(std::errc::permission_denied);
+      });
+  ExecutorError.setResponseFile("");
+  ExecutionFailed = false;
+  EXPECT_EQ(ExecutorError.Execute({}, &Error, &ExecutionFailed), -1);
+  EXPECT_EQ(Error,
+            std::make_error_code(std::errc::permission_denied).message());
+  EXPECT_TRUE(ExecutionFailed);
+
+  auto MustNotRun = [&](ArrayRef<const char *>) -> llvm::ErrorOr<int> {
+    ADD_FAILURE() << "in-process executor should have fallen back";
+    return 0;
+  };
+  const char *Environment[] = {"IN_PROCESS_EXECUTOR_TEST=1"};
+  EnvironmentFallback.setInProcessExecutor(MustNotRun);
+  EnvironmentFallback.setEnvironment(Environment);
+  EnvironmentFallback.setResponseFile("");
+  EXPECT_EQ(EnvironmentFallback.Execute({}, nullptr, nullptr), -1);
+
+  RedirectFallback.setInProcessExecutor(MustNotRun);
+  RedirectFallback.setResponseFile("");
+  const std::optional<StringRef> Redirects[] = {std::nullopt, StringRef(""),
+                                                StringRef("")};
+  EXPECT_EQ(RedirectFallback.Execute(Redirects, nullptr, nullptr), -1);
+
+  ProcessStatsFallback.setInProcessExecutor(MustNotRun);
+  ProcessStatsFallback.setResponseFile("");
+  CCDriver.CCPrintProcessStats = true;
+  EXPECT_EQ(ProcessStatsFallback.Execute({}, nullptr, nullptr), -1);
 }
 
 TEST(CompilerInvocation, SplitSwarfSingleCrash) {

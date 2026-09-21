@@ -17,7 +17,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Option/Option.h"
+#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/Program.h"
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -105,6 +107,11 @@ struct ResponseFileSupport {
 /// Command - An executable path/name and argument vector to
 /// execute.
 class Command {
+public:
+  using InProcessExecutor =
+      std::function<llvm::ErrorOr<int>(llvm::ArrayRef<const char *>)>;
+
+private:
   /// Source - The action which caused the creation of this job.
   const Action &Source;
 
@@ -158,6 +165,10 @@ class Command {
   /// device commands from the same group.
   std::string OffloadDeviceParallelJobGroup;
 
+  /// Optional entry point for executing this command without spawning a
+  /// subprocess.
+  InProcessExecutor Executor;
+
   /// When a response file is needed, we try to put most arguments in an
   /// exclusive file, while others remains as regular command line arguments.
   /// This functions fills a vector with the regular command line arguments,
@@ -176,6 +187,9 @@ public:
 
   /// Whether the command will be executed in this process or not.
   bool InProcess = false;
+
+  /// Whether this command accepts -disable-free.
+  bool SupportsDisableFree = false;
 
   Command(const Action &Source, const Tool &Creator,
           ResponseFileSupport ResponseSupport, const char *Executable,
@@ -231,6 +245,17 @@ public:
 
   void
   setRedirectFiles(const std::vector<std::optional<std::string>> &Redirects);
+
+  /// Execute this command in-process when process-specific environment,
+  /// redirection, and statistics behavior is not required.
+  void setInProcessExecutor(InProcessExecutor NewExecutor) {
+    Executor = std::move(NewExecutor);
+  }
+
+  bool hasInProcessExecutor() const { return static_cast<bool>(Executor); }
+
+  /// Remove -disable-free so an in-process tool releases its resources.
+  void enableFree();
 
   void replaceArguments(llvm::opt::ArgStringList List) {
     Arguments = std::move(List);

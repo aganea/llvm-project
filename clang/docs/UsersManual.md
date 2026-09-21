@@ -2303,6 +2303,27 @@ LLVM's multicall-driver integration is enabled as one unit by the
 the participating libraries with the production arena list, emits the matching
 lifecycle ranges, and installs the invocation context before running them.
 
+An Emscripten host must build one statically linked Wasm main module and keep
+one `llvm::ToolSession` alive for that module's lifetime. The host dispatches
+repeated `clang` requests through the session, with Clang's integrated `cc1` and
+registered `wasm-ld` kept in-process, rather than splitting arena-producing
+LLVM code into Wasm side modules or repeatedly entering `main`. The hosted
+linker may still produce application side modules. Configure LLVM with
+`LLVM_ENABLE_THREADS=OFF` for sequential dispatch without Emscripten
+pthreads. Concurrent dispatch requires `LLVM_ENABLE_THREADS=ON` and an
+Emscripten pthreads/shared-memory build. Every worker task spawned during an
+invocation must propagate and install its captured LLVM tool execution context.
+
+The command-line `llvm-driver` owns its session for one call to `main`; it is
+not itself the JavaScript embedding API. An Emscripten application needs a thin
+exported C or embind wrapper which owns the `ToolSession`, registers its folded
+entry points through `runLLVMDriverTool`, and calls `ToolSession::callTool` for
+each request. Before the first request, that wrapper must also perform the
+process-wide target, target-MC, assembler, disassembler, and CodeGen pass
+registration done by `llvm-driver` startup, plus the process services required
+by its folded tools (including HTTP initialization in the current driver).
+All of that initialization must finish before concurrent dispatch begins.
+
 The multicall driver uses the following lifetime and concurrency policy:
 
 - Mutable command-line objects, their external `cl::location` storage and

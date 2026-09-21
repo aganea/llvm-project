@@ -387,6 +387,43 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
 
+  // A long-lived session cannot use process exit to reclaim cc1 state. Restore
+  // the integrated jobs disabled for a multi-job compilation and make each
+  // CompilerInstance release its resources before returning to the host.
+  if (ToolContext.hasSession() && !UseNewCC1Process &&
+      !TheDriver.CCPrintProcessStats) {
+    for (Command &Job : C->getJobs()) {
+      if (!Job.SupportsDisableFree)
+        continue;
+      Job.enableFree();
+      Job.InProcess = true;
+    }
+  }
+
+  bool HasExplicitLinkerPath =
+      C->getArgs().hasArg(options::OPT_ld_path_EQ);
+  if (const Arg *A = C->getArgs().getLastArg(options::OPT_fuse_ld_EQ))
+    HasExplicitLinkerPath |= llvm::sys::path::is_absolute(A->getValue());
+
+  // A Wasm host has no subprocess to launch for the ordinary built-in linker
+  // selection. Route that job through the session's registered wasm-ld while
+  // preserving explicit-path and process-specific execution semantics.
+  if (!TheDriver.CCPrintProcessStats && !HasExplicitLinkerPath) {
+    for (Command &Job : C->getJobs()) {
+      if (!llvm::sys::path::stem(Job.getExecutable())
+               .equals_insensitive("wasm-ld"))
+        continue;
+
+      llvm::ErrorOr<llvm::CallableTool> Tool =
+          ToolContext.getCallableTool(Job.getExecutable());
+      if (!Tool || !*Tool || !Tool->Name.equals_insensitive("wasm-ld"))
+        continue;
+
+      Job.setInProcessExecutor([ToolContext](ArrayRef<const char *> ToolArgs) {
+        return ToolContext.callTool(ToolArgs);
+      });
+    }
+  }
   Driver::ReproLevel ReproLevel = Driver::ReproLevel::OnCrash;
   if (Arg *A = C->getArgs().getLastArg(options::OPT_gen_reproducer_eq)) {
     auto Level =

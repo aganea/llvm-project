@@ -15,6 +15,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
@@ -314,6 +315,11 @@ void Command::setRedirectFiles(
   RedirectFiles = Redirects;
 }
 
+void Command::enableFree() {
+  llvm::erase_if(Arguments,
+                 [](StringRef Arg) { return Arg == "-disable-free"; });
+}
+
 void Command::PrintFileNames() const {
   if (PrintInputFilenames) {
     for (const auto &Arg : InputInfoList)
@@ -325,6 +331,35 @@ void Command::PrintFileNames() const {
 int Command::Execute(ArrayRef<std::optional<StringRef>> Redirects,
                      std::string *ErrMsg, bool *ExecutionFailed) const {
   PrintFileNames();
+
+  bool HasRedirects = false;
+  for (const std::optional<StringRef> &Redirect : Redirects)
+    HasRedirects |= Redirect.has_value();
+  for (const std::optional<std::string> &Redirect : RedirectFiles)
+    HasRedirects |= Redirect.has_value();
+
+  const Driver &D = getCreator().getToolChain().getDriver();
+  if (Executor && Environment.empty() && !HasRedirects &&
+      !D.CCPrintProcessStats) {
+    SmallVector<const char *, 128> Argv;
+    Argv.push_back(Executable);
+    if (PrependArg)
+      Argv.push_back(PrependArg);
+    Argv.append(Arguments.begin(), Arguments.end());
+
+    if (ExecutionFailed)
+      *ExecutionFailed = false;
+
+    llvm::ErrorOr<int> Result = Executor(Argv);
+    if (!Result) {
+      if (ErrMsg)
+        *ErrMsg = Result.getError().message();
+      if (ExecutionFailed)
+        *ExecutionFailed = true;
+      return -1;
+    }
+    return *Result;
+  }
 
   SmallVector<const char *, 128> Argv;
   if (ResponseFile == nullptr) {
@@ -396,6 +431,7 @@ CC1Command::CC1Command(const Action &Source, const Tool &Creator,
     : Command(Source, Creator, ResponseSupport, Executable, Arguments, Inputs,
               Outputs, PrependArg) {
   InProcess = true;
+  SupportsDisableFree = true;
 }
 
 void CC1Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,

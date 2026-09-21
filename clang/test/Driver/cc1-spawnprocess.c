@@ -32,14 +32,19 @@
 // RUN: %clang -fintegrated-cc1 -fintegrated-as -c %s -### 2>&1 | FileCheck %s --check-prefix=YES
 
 // Only one TU, but we're linking, two jobs, thus integrated-cc1 is disabled.
-// RUN: %clang -fintegrated-cc1 %s -### 2>&1 | FileCheck %s --check-prefix=NO
+// A long-lived llvm-driver session keeps the cc1 job in-process and frees it
+// explicitly instead.
+// RUN: %clang -fintegrated-cc1 %s -### 2>&1 | FileCheck %s \
+// RUN:   --check-prefix=%if llvm-driver %{YES%} %else %{NO%}
 
 // RUN: echo 'int main() { return f() + g(); }' > %t1.cpp
 // RUN: echo 'int f() { return 1; }' > %t2.cpp
 // RUN: echo 'int g() { return 2; }' > %t3.cpp
 
-// Three jobs, thus integrated-cc1 is disabled.
-// RUN: %clang -fintegrated-cc1 -c %t1.cpp %t2.cpp %t3.cpp -### 2>&1 | FileCheck %s --check-prefix=NO
+// Three jobs, thus integrated-cc1 is disabled. An llvm-driver session can
+// instead run and release each cc1 job in-process.
+// RUN: %clang -fintegrated-cc1 -c %t1.cpp %t2.cpp %t3.cpp -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=%if llvm-driver %{YES%} %else %{NO%}
 
 // -fintegrated-cc1 works with cc1as.
 // macOS triples have an extra -x assembler-with-cpp job so (in-process) is not triggered.

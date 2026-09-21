@@ -10,6 +10,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/HTTP/HTTPClient.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/PassRegistry.h"
 #include "llvm/Support/Driver.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
@@ -97,6 +99,22 @@ int main(int Argc, char **Argv) {
     llvm::InitializeAllAsmPrinters();
     llvm::InitializeAllAsmParsers();
     llvm::InitializeAllDisassemblers();
+    // LTO backends still construct legacy IR and CodeGen passes. Register the
+    // same production pass set as llc before a nested linker invocation can
+    // start worker threads; lazy registration from one of those workers would
+    // mutate the process-wide registry while invocation contexts are active.
+    llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
+    llvm::initializeCore(Registry);
+    llvm::initializeCodeGen(Registry);
+    llvm::initializeLoopStrengthReducePass(Registry);
+    llvm::initializePostInlineEntryExitInstrumenterPass(Registry);
+    llvm::initializeUnreachableBlockElimLegacyPassPass(Registry);
+    llvm::initializeConstantHoistingLegacyPassPass(Registry);
+    llvm::initializeScalarOpts(Registry);
+    llvm::initializeIPO(Registry);
+    llvm::initializeVectorization(Registry);
+    llvm::initializeScalarizeMaskedMemIntrinLegacyPassPass(Registry);
+    llvm::initializeTransformUtils(Registry);
     return RunTool();
   }
   return RunTool();
