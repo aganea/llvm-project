@@ -18,6 +18,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/Threading.h"
 #include <algorithm>
 #include <cassert>
@@ -42,6 +43,7 @@ using std::chrono::time_point_cast;
 struct TimeTraceProfilerInstances {
   std::mutex Lock;
   std::vector<TimeTraceProfiler *> List;
+  std::unique_ptr<ExclusiveProcessServiceLease> InvocationLease;
 };
 
 TimeTraceProfilerInstances &getTimeTraceProfilerInstances() {
@@ -395,6 +397,14 @@ void llvm::timeTraceProfilerInitialize(unsigned TimeTraceGranularity,
                                        bool TimeTraceVerbose) {
   assert(TimeTraceProfilerInstance == nullptr &&
          "Profiler should not be initialized");
+  auto &Instances = getTimeTraceProfilerInstances();
+  {
+    std::lock_guard<std::mutex> Lock(Instances.Lock);
+    if (!Instances.InvocationLease)
+      Instances.InvocationLease =
+          std::make_unique<ExclusiveProcessServiceLease>(
+              "time trace profiler");
+  }
   TimeTraceProfilerInstance = new TimeTraceProfiler(
       TimeTraceGranularity, llvm::sys::path::filename(ProcName),
       TimeTraceVerbose);
@@ -411,6 +421,7 @@ void llvm::timeTraceProfilerCleanup() {
   for (auto *TTP : Instances.List)
     delete TTP;
   Instances.List.clear();
+  Instances.InvocationLease.reset();
 }
 
 // Finish TimeTraceProfilerInstance on a worker thread.

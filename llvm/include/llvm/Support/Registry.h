@@ -19,6 +19,7 @@
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include <memory>
 
 namespace llvm {
@@ -149,6 +150,7 @@ public:
   /// the executable.
   ///
   static void add_node(node *N) {
+    ProcessWideRegistryMutation Mutation("process-wide plugin registry");
     auto &[Head, Tail] = detail::getRegistryLinkListInstance<Registry>();
     if (Tail)
       Tail->Next = N;

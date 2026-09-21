@@ -16,6 +16,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/WindowsError.h"
+#include <atomic>
 #include <malloc.h>
 #include <optional>
 
@@ -311,7 +312,7 @@ bool Process::StandardOutHasColors() { return FileDescriptorHasColors(1); }
 
 bool Process::StandardErrHasColors() { return FileDescriptorHasColors(2); }
 
-static bool UseANSI = false;
+static std::atomic<bool> UseANSI{false};
 void Process::UseANSIEscapeCodes(bool enable) {
 #if defined(ENABLE_VIRTUAL_TERMINAL_PROCESSING)
   if (enable) {
@@ -322,7 +323,7 @@ void Process::UseANSIEscapeCodes(bool enable) {
     SetConsoleMode(Console, Mode);
   }
 #endif
-  UseANSI = enable;
+  UseANSI.store(enable, std::memory_order_relaxed);
 }
 
 namespace {
@@ -354,10 +355,12 @@ WORD bg_color(WORD color) {
 }
 } // namespace
 
-bool Process::ColorNeedsFlush() { return !UseANSI; }
+bool Process::ColorNeedsFlush() {
+  return !UseANSI.load(std::memory_order_relaxed);
+}
 
 const char *Process::OutputBold(bool bg) {
-  if (UseANSI)
+  if (UseANSI.load(std::memory_order_relaxed))
     return "\033[1m";
 
   WORD colors = DefaultColors::GetCurrentColor();
@@ -370,7 +373,7 @@ const char *Process::OutputBold(bool bg) {
 }
 
 const char *Process::OutputColor(char code, bool bold, bool bg) {
-  if (UseANSI)
+  if (UseANSI.load(std::memory_order_relaxed))
     return colorcodes[bg ? 1 : 0][bold ? 1 : 0][code & 15];
 
   WORD current = DefaultColors::GetCurrentColor();
@@ -401,7 +404,7 @@ static WORD GetConsoleTextAttribute(HANDLE hConsoleOutput) {
 }
 
 const char *Process::OutputReverse() {
-  if (UseANSI)
+  if (UseANSI.load(std::memory_order_relaxed))
     return "\033[7m";
 
   const WORD attributes =
@@ -429,7 +432,7 @@ const char *Process::OutputReverse() {
 }
 
 const char *Process::ResetColor() {
-  if (UseANSI)
+  if (UseANSI.load(std::memory_order_relaxed))
     return "\033[0m";
   SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), defaultColors());
   return 0;

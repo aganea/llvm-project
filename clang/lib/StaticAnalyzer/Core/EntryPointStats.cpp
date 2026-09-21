@@ -48,7 +48,7 @@ struct Registry {
 };
 } // namespace
 
-static llvm::ManagedStatic<Registry> StatsRegistry;
+static llvm::ContextManagedStatic<Registry> StatsRegistry;
 
 namespace {
 template <typename Callback> void enumerateStatVectors(const Callback &Fn) {

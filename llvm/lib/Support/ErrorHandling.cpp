@@ -23,6 +23,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/WindowsError.h"
 #include "llvm/Support/raw_ostream.h"
@@ -41,8 +42,39 @@
 
 using namespace llvm;
 
-static fatal_error_handler_t ErrorHandler = nullptr;
-static void *ErrorHandlerUserData = nullptr;
+namespace {
+
+struct FatalErrorHandlerState {
+  std::atomic_flag Lock = ATOMIC_FLAG_INIT;
+  fatal_error_handler_t Handler = nullptr;
+  void *UserData = nullptr;
+};
+
+class FatalErrorHandlerLock {
+  std::atomic_flag &Lock;
+
+public:
+  explicit FatalErrorHandlerLock(std::atomic_flag &Lock) : Lock(Lock) {
+    while (Lock.test_and_set(std::memory_order_acquire))
+      ;
+  }
+  ~FatalErrorHandlerLock() { Lock.clear(std::memory_order_release); }
+};
+
+static FatalErrorHandlerState ProcessFatalErrorHandlerState;
+static FatalErrorHandlerState InvocationFatalErrorHandlerState;
+
+static FatalErrorHandlerState &fatalErrorHandlerState() {
+  // Do not even form the address of the arena-selected state on an unattached
+  // thread: static-arena lowering resolves that address, and the resolver
+  // intentionally fails closed without an installed arena token. Foreign
+  // threads still need the process handler to remain usable.
+  if (hasCurrentStaticArena())
+    return InvocationFatalErrorHandlerState;
+  return ProcessFatalErrorHandlerState;
+}
+
+} // namespace
 
 static fatal_error_handler_t BadAllocErrorHandler = nullptr;
 static void *BadAllocErrorHandlerUserData = nullptr;
@@ -59,7 +91,6 @@ static void *BadAllocErrorHandlerUserData = nullptr;
 // STL and hide all of its symbols with 'opt -internalize'. To reduce size, it
 // cuts out the threading portions of the hermetic copy of libc++ that it
 // builds. We can remove these ifdefs if that script goes away.
-static std::mutex ErrorHandlerMutex;
 static std::mutex BadAllocErrorHandlerMutex;
 #endif
 
@@ -76,20 +107,18 @@ static bool write_retry(int fd, const char *buf, size_t count) {
 
 void llvm::install_fatal_error_handler(fatal_error_handler_t handler,
                                        void *user_data) {
-#if LLVM_ENABLE_THREADS == 1
-  std::lock_guard<std::mutex> Lock(ErrorHandlerMutex);
-#endif
-  assert(!ErrorHandler && "Error handler already registered!\n");
-  ErrorHandler = handler;
-  ErrorHandlerUserData = user_data;
+  FatalErrorHandlerState &State = fatalErrorHandlerState();
+  FatalErrorHandlerLock Lock(State.Lock);
+  assert(!State.Handler && "Error handler already registered!\n");
+  State.Handler = handler;
+  State.UserData = user_data;
 }
 
 void llvm::remove_fatal_error_handler() {
-#if LLVM_ENABLE_THREADS == 1
-  std::lock_guard<std::mutex> Lock(ErrorHandlerMutex);
-#endif
-  ErrorHandler = nullptr;
-  ErrorHandlerUserData = nullptr;
+  FatalErrorHandlerState &State = fatalErrorHandlerState();
+  FatalErrorHandlerLock Lock(State.Lock);
+  State.Handler = nullptr;
+  State.UserData = nullptr;
 }
 
 void llvm::report_fatal_error(const char *Reason, bool GenCrashDiag) {
@@ -103,14 +132,13 @@ void llvm::report_fatal_error(StringRef Reason, bool GenCrashDiag) {
 void llvm::report_fatal_error(const Twine &Reason, bool GenCrashDiag) {
   llvm::fatal_error_handler_t handler = nullptr;
   void* handlerData = nullptr;
+  FatalErrorHandlerState &State = fatalErrorHandlerState();
   {
     // Only acquire the mutex while reading the handler, so as not to invoke a
     // user-supplied callback under a lock.
-#if LLVM_ENABLE_THREADS == 1
-    std::lock_guard<std::mutex> Lock(ErrorHandlerMutex);
-#endif
-    handler = ErrorHandler;
-    handlerData = ErrorHandlerUserData;
+    FatalErrorHandlerLock Lock(State.Lock);
+    handler = State.Handler;
+    handlerData = State.UserData;
   }
 
   if (handler) {

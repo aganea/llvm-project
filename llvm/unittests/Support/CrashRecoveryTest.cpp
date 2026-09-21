@@ -19,6 +19,9 @@
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
+#include <atomic>
+#include <thread>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
@@ -45,6 +48,50 @@ TEST(CrashRecoveryTest, Basic) {
   EXPECT_EQ(1, GlobalInt);
   EXPECT_FALSE(CrashRecoveryContext().RunSafely(nullDeref));
   EXPECT_FALSE(CrashRecoveryContext().RunSafely(llvmTrap));
+}
+
+TEST(CrashRecoveryTest, EnabledStateCanBeReadConcurrently) {
+  CrashRecoveryContext::Disable();
+
+  std::atomic<bool> Stop{false};
+  std::atomic<unsigned> Reads{0};
+  std::thread Reader([&] {
+    while (!Stop.load(std::memory_order_relaxed)) {
+      (void)CrashRecoveryContext::GetCurrent();
+      Reads.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  while (Reads.load(std::memory_order_relaxed) == 0)
+    std::this_thread::yield();
+  for (unsigned I = 0; I != 32; ++I) {
+    CrashRecoveryContext::Enable();
+    CrashRecoveryContext::Disable();
+  }
+
+  Stop.store(true, std::memory_order_relaxed);
+  Reader.join();
+  EXPECT_GT(Reads.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(CrashRecoveryTest, RunSafelyOnThreadPropagatesCommandLineContext) {
+  llvm::CrashRecoveryContext::Enable();
+  cl::ScopedContext Context;
+  bool SawInvocationOption = false;
+  {
+    cl::opt<int> InvocationOption("crash-recovery-invocation-option",
+                                  cl::init(11));
+    CrashRecoveryContext CRC;
+    EXPECT_TRUE(CRC.RunSafelyOnThread([&] {
+      auto &Options = cl::getRegisteredOptions();
+      SawInvocationOption =
+          Options.lookup("crash-recovery-invocation-option") ==
+          &InvocationOption;
+    }));
+  }
+  EXPECT_TRUE(SawInvocationOption);
+  Context.beginClosing();
+  llvm::CrashRecoveryContext::Disable();
 }
 
 struct IncrementGlobalCleanup : CrashRecoveryContextCleanup {

@@ -7,8 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
+#include <memory>
 using namespace llvm;
 
 using OptionalStatistic = std::optional<std::pair<StringRef, uint64_t>>;
@@ -167,6 +170,34 @@ TEST(StatisticTest, API) {
   // we can't tell if it failed anyway.
   ResetStatistics();
 #endif
+}
+
+TEST(StatisticTest, TeardownAfterStaticArenaFinalization) {
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  {
+    ScopedStaticArenaBinding ArenaBinding(*Arena);
+    {
+      cl::ScopedContext Context;
+
+      // Match clients such as Clang that touch the statistics API before
+      // parsing their command line. Settings and StatLock must still outlive
+      // StatisticInfo during reverse-order context teardown.
+      (void)GetStatistics();
+
+      const char *Args[] = {"stats-test", "-stats", "-stats-json"};
+      ASSERT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args));
+
+      // The options and their values must be owned by the command-line
+      // context, not by storage that finalizes before context teardown.
+      cl::Option *StatsOption = cl::getRegisteredOptions().lookup("stats");
+      ASSERT_NE(nullptr, StatsOption);
+      EXPECT_TRUE(cl::isCurrentInvocationOwned(StatsOption));
+
+      Context.beginClosing();
+      Arena->beginClosing();
+      Arena->runDestructors();
+    }
+  }
 }
 
 } // end anonymous namespace

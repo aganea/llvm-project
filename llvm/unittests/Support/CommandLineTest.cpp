@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/CommandLine.h"
+#include "../../lib/Support/DebugOptions.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -29,6 +30,7 @@
 #include <fstream>
 #include <stdlib.h>
 #include <string>
+#include <thread>
 #if HAVE_UNISTD_H
 #include <unistd.h>
 #endif
@@ -48,9 +50,8 @@ bool preferForwardSlash() { return llvm::sys::path::native("/") == "/"; }
 #endif
 
 class TempEnvVar {
- public:
-  TempEnvVar(const char *name, const char *value)
-      : name(name) {
+public:
+  TempEnvVar(const char *name, const char *value) : name(name) {
     const char *old_value = getenv(name);
     EXPECT_EQ(nullptr, old_value) << old_value;
 #if HAVE_SETENV
@@ -67,7 +68,7 @@ class TempEnvVar {
 #endif
   }
 
- private:
+private:
   const char *const name;
 };
 
@@ -75,7 +76,7 @@ template <typename T, typename Base = cl::opt<T>>
 class StackOption : public Base {
 public:
   template <class... Ts>
-  explicit StackOption(Ts &&... Ms) : Base(std::forward<Ts>(Ms)...) {}
+  explicit StackOption(Ts &&...Ms) : Base(std::forward<Ts>(Ms)...) {}
 
   ~StackOption() override { this->removeArgument(); }
 
@@ -87,15 +88,11 @@ public:
 
 class StackSubCommand : public cl::SubCommand {
 public:
-  StackSubCommand(StringRef Name,
-                  StringRef Description = StringRef())
+  StackSubCommand(StringRef Name, StringRef Description = StringRef())
       : SubCommand(Name, Description) {}
 
   StackSubCommand() : SubCommand() {}
-
-  ~StackSubCommand() { unregisterSubCommand(); }
 };
-
 
 cl::OptionCategory TestCategory("Test Options", "Description");
 TEST(CommandLineTest, ModifyExisitingOption) {
@@ -141,8 +138,8 @@ TEST(CommandLineTest, ModifyExisitingOption) {
       << "Failed to modify option's Value string.";
 
   Retrieved->setHiddenFlag(cl::Hidden);
-  ASSERT_EQ(cl::Hidden, TestOption.getOptionHiddenFlag()) <<
-    "Failed to modify option's hidden flag.";
+  ASSERT_EQ(cl::Hidden, TestOption.getOptionHiddenFlag())
+      << "Failed to modify option's hidden flag.";
 }
 
 TEST(CommandLineTest, UseOptionCategory) {
@@ -150,9 +147,9 @@ TEST(CommandLineTest, UseOptionCategory) {
 
   ASSERT_NE(TestOption2.Categories.end(),
             find_if(TestOption2.Categories,
-                         [&](const llvm::cl::OptionCategory *Cat) {
-                           return Cat == &TestCategory;
-                         }))
+                    [&](const llvm::cl::OptionCategory *Cat) {
+                      return Cat == &TestCategory;
+                    }))
       << "Failed to assign Option Category.";
 }
 
@@ -166,9 +163,9 @@ TEST(CommandLineTest, UseMultipleCategories) {
 
   ASSERT_NE(TestOption2.Categories.end(),
             find_if(TestOption2.Categories,
-                         [&](const llvm::cl::OptionCategory *Cat) {
-                           return Cat == &TestCategory;
-                         }))
+                    [&](const llvm::cl::OptionCategory *Cat) {
+                      return Cat == &TestCategory;
+                    }))
       << "Failed to assign Option Category.";
   ASSERT_NE(TestOption2.Categories.end(),
             find_if(TestOption2.Categories,
@@ -188,15 +185,15 @@ TEST(CommandLineTest, UseMultipleCategories) {
       << "Failed to remove General Category.";
   ASSERT_NE(TestOption.Categories.end(),
             find_if(TestOption.Categories,
-                         [&](const llvm::cl::OptionCategory *Cat) {
-                           return Cat == &TestCategory;
-                         }))
+                    [&](const llvm::cl::OptionCategory *Cat) {
+                      return Cat == &TestCategory;
+                    }))
       << "Failed to assign Option Category.";
   ASSERT_NE(TestOption.Categories.end(),
             find_if(TestOption.Categories,
-                         [&](const llvm::cl::OptionCategory *Cat) {
-                           return Cat == &AnotherCategory;
-                         }))
+                    [&](const llvm::cl::OptionCategory *Cat) {
+                      return Cat == &AnotherCategory;
+                    }))
       << "Failed to assign Another Category.";
 }
 
@@ -223,9 +220,9 @@ TEST(CommandLineTest, TokenizeGNUCommandLine) {
   const char Input[] =
       "foo\\ bar \"foo bar\" \'foo bar\' 'foo\\\\bar' -DFOO=bar\\(\\) "
       "foo\"bar\"baz C:\\\\src\\\\foo.cpp \"C:\\src\\foo.cpp\"";
-  const char *const Output[] = {
-      "foo bar",     "foo bar",   "foo bar",          "foo\\bar",
-      "-DFOO=bar()", "foobarbaz", "C:\\src\\foo.cpp", "C:srcfoo.cpp"};
+  const char *const Output[] = {"foo bar",          "foo bar",     "foo bar",
+                                "foo\\bar",         "-DFOO=bar()", "foobarbaz",
+                                "C:\\src\\foo.cpp", "C:srcfoo.cpp"};
   testCommandLineTokenizer(cl::TokenizeGNUCommandLine, Input, Output);
 }
 
@@ -297,14 +294,14 @@ TEST(CommandLineTest, TokenizeGNUCommandLineNewlines) {
 TEST(CommandLineTest, TokenizeWindowsCommandLine1) {
   const char Input[] =
       R"(a\b c\\d e\\"f g" h\"i j\\\"k "lmn" o pqr "st \"u" \v)";
-  const char *const Output[] = { "a\\b", "c\\\\d", "e\\f g", "h\"i", "j\\\"k",
-                                 "lmn", "o", "pqr", "st \"u", "\\v" };
+  const char *const Output[] = {"a\\b", "c\\\\d", "e\\f g", "h\"i",   "j\\\"k",
+                                "lmn",  "o",      "pqr",    "st \"u", "\\v"};
   testCommandLineTokenizer(cl::TokenizeWindowsCommandLine, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeWindowsCommandLine2) {
   const char Input[] = "clang -c -DFOO=\"\"\"ABC\"\"\" x.cpp";
-  const char *const Output[] = { "clang", "-c", "-DFOO=\"ABC\"", "x.cpp"};
+  const char *const Output[] = {"clang", "-c", "-DFOO=\"ABC\"", "x.cpp"};
   testCommandLineTokenizer(cl::TokenizeWindowsCommandLine, Input, Output);
 }
 
@@ -370,43 +367,43 @@ TEST(CommandLineTest, TokenizeAndMarkEOLs) {
 
 TEST(CommandLineTest, TokenizeConfigFile1) {
   const char *Input = "\\";
-  const char *const Output[] = { "\\" };
+  const char *const Output[] = {"\\"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile2) {
   const char *Input = "\\abc";
-  const char *const Output[] = { "abc" };
+  const char *const Output[] = {"abc"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile3) {
   const char *Input = "abc\\";
-  const char *const Output[] = { "abc\\" };
+  const char *const Output[] = {"abc\\"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile4) {
   const char *Input = "abc\\\n123";
-  const char *const Output[] = { "abc123" };
+  const char *const Output[] = {"abc123"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile5) {
   const char *Input = "abc\\\r\n123";
-  const char *const Output[] = { "abc123" };
+  const char *const Output[] = {"abc123"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile6) {
   const char *Input = "abc\\\n";
-  const char *const Output[] = { "abc" };
+  const char *const Output[] = {"abc"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile7) {
   const char *Input = "abc\\\r\n";
-  const char *const Output[] = { "abc" };
+  const char *const Output[] = {"abc"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
@@ -428,24 +425,22 @@ TEST(CommandLineTest, TokenizeConfigFile9) {
 
 TEST(CommandLineTest, TokenizeConfigFile10) {
   const char *Input = "\\\nabc";
-  const char *const Output[] = { "abc" };
+  const char *const Output[] = {"abc"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, TokenizeConfigFile11) {
   const char *Input = "\\\r\nabc";
-  const char *const Output[] = { "abc" };
+  const char *const Output[] = {"abc"};
   testCommandLineTokenizer(cl::tokenizeConfigFile, Input, Output);
 }
 
 TEST(CommandLineTest, AliasesWithArguments) {
   static const size_t ARGC = 3;
-  const char *const Inputs[][ARGC] = {
-    { "-tool", "-actual=x", "-extra" },
-    { "-tool", "-actual", "x" },
-    { "-tool", "-alias=x", "-extra" },
-    { "-tool", "-alias", "x" }
-  };
+  const char *const Inputs[][ARGC] = {{"-tool", "-actual=x", "-extra"},
+                                      {"-tool", "-actual", "x"},
+                                      {"-tool", "-alias=x", "-extra"},
+                                      {"-tool", "-alias", "x"}};
 
   for (size_t i = 0, e = std::size(Inputs); i < e; ++i) {
     StackOption<std::string> Actual("actual");
@@ -474,8 +469,8 @@ void testAliasRequired(int argc, const char *const *argv) {
 }
 
 TEST(CommandLineTest, AliasRequired) {
-  const char *opts1[] = { "-tool", "-option=x" };
-  const char *opts2[] = { "-tool", "-o", "x" };
+  const char *opts1[] = {"-tool", "-option=x"};
+  const char *opts2[] = {"-tool", "-o", "x"};
   testAliasRequired(std::size(opts1), opts1);
   testAliasRequired(std::size(opts2), opts2);
 }
@@ -866,8 +861,8 @@ TEST(CommandLineTest, DefaultOptions) {
   StackOption<std::string> SC2_Foo("foo", cl::sub(SC2));
 
   const char *args0[] = {"prog", "-b", "args0 bar string", "-f"};
-  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args0), args0,
-                                          StringRef(), &llvm::nulls()));
+  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args0), args0, StringRef(),
+                                          &llvm::nulls()));
   EXPECT_EQ(Bar, "args0 bar string");
   EXPECT_TRUE(Foo);
   EXPECT_FALSE(SC1_B);
@@ -876,8 +871,8 @@ TEST(CommandLineTest, DefaultOptions) {
   cl::ResetAllOptionOccurrences();
 
   const char *args1[] = {"prog", "sc1", "-b", "-bar", "args1 bar string", "-f"};
-  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args1), args1,
-                                          StringRef(), &llvm::nulls()));
+  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args1), args1, StringRef(),
+                                          &llvm::nulls()));
   EXPECT_EQ(Bar, "args1 bar string");
   EXPECT_TRUE(Foo);
   EXPECT_TRUE(SC1_B);
@@ -890,10 +885,10 @@ TEST(CommandLineTest, DefaultOptions) {
 
   cl::ResetAllOptionOccurrences();
 
-  const char *args2[] = {"prog", "sc2", "-b", "args2 bar string",
-                         "-f", "-foo", "foo string"};
-  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args2), args2,
-                                          StringRef(), &llvm::nulls()));
+  const char *args2[] = {"prog", "sc2",  "-b",        "args2 bar string",
+                         "-f",   "-foo", "foo string"};
+  EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(args2), args2, StringRef(),
+                                          &llvm::nulls()));
   EXPECT_EQ(Bar, "args2 bar string");
   EXPECT_TRUE(Foo);
   EXPECT_FALSE(SC1_B);
@@ -1358,11 +1353,14 @@ TEST(CommandLineTest, PositionalEatArgsError) {
   std::string Errs;
   raw_string_ostream OS(Errs);
   EXPECT_FALSE(cl::ParseCommandLineOptions(2, args, StringRef(), &OS));
-  EXPECT_FALSE(Errs.empty()); Errs.clear();
+  EXPECT_FALSE(Errs.empty());
+  Errs.clear();
   EXPECT_FALSE(cl::ParseCommandLineOptions(3, args2, StringRef(), &OS));
-  EXPECT_FALSE(Errs.empty()); Errs.clear();
+  EXPECT_FALSE(Errs.empty());
+  Errs.clear();
   EXPECT_TRUE(cl::ParseCommandLineOptions(3, args3, StringRef(), &OS));
-  EXPECT_TRUE(Errs.empty()); Errs.clear();
+  EXPECT_TRUE(Errs.empty());
+  Errs.clear();
 
   cl::ResetAllOptionOccurrences();
   EXPECT_TRUE(cl::ParseCommandLineOptions(6, args4, StringRef(), &OS));
@@ -1462,8 +1460,8 @@ public:
   const StringRef HelpText = "some help";
 };
 
-  // This is a workaround for cl::Option sub-classes having their
-  // printOptionInfo functions private.
+// This is a workaround for cl::Option sub-classes having their
+// printOptionInfo functions private.
 void printOptionInfo(const cl::Option &O) {
   O.printOptionInfo(/*GlobalWidth=*/26);
 }
@@ -1983,28 +1981,28 @@ TEST(CommandLineTest, LongOptions) {
   // longest string.
   //
 
-  EXPECT_TRUE(
-      cl::ParseCommandLineOptions(4, args1, StringRef(), &OS));
+  EXPECT_TRUE(cl::ParseCommandLineOptions(4, args1, StringRef(), &OS));
   EXPECT_TRUE(OptA);
   EXPECT_FALSE(OptBLong);
   EXPECT_STREQ("val1", OptAB.c_str());
-  EXPECT_TRUE(Errs.empty()); Errs.clear();
+  EXPECT_TRUE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 
-  EXPECT_TRUE(
-      cl::ParseCommandLineOptions(4, args2, StringRef(), &OS));
+  EXPECT_TRUE(cl::ParseCommandLineOptions(4, args2, StringRef(), &OS));
   EXPECT_TRUE(OptA);
   EXPECT_FALSE(OptBLong);
   EXPECT_STREQ("val1", OptAB.c_str());
-  EXPECT_TRUE(Errs.empty()); Errs.clear();
+  EXPECT_TRUE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 
   // Fails because `-ab` and `--ab` are treated the same and appear more than
   // once.  Also, `val1` is unexpected.
-  EXPECT_FALSE(
-      cl::ParseCommandLineOptions(4, args3, StringRef(), &OS));
-  outs()<< Errs << "\n";
-  EXPECT_FALSE(Errs.empty()); Errs.clear();
+  EXPECT_FALSE(cl::ParseCommandLineOptions(4, args3, StringRef(), &OS));
+  outs() << Errs << "\n";
+  EXPECT_FALSE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 
   //
@@ -2016,13 +2014,15 @@ TEST(CommandLineTest, LongOptions) {
   // `val1` is unexpected.
   EXPECT_FALSE(cl::ParseCommandLineOptions(4, args1, StringRef(), &OS, nullptr,
                                            nullptr, true));
-  EXPECT_FALSE(Errs.empty()); Errs.clear();
+  EXPECT_FALSE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 
   // Works because `-a` is treated differently than `--ab`.
   EXPECT_TRUE(cl::ParseCommandLineOptions(4, args2, StringRef(), &OS, nullptr,
                                           nullptr, true));
-  EXPECT_TRUE(Errs.empty()); Errs.clear();
+  EXPECT_TRUE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 
   // Works because `-ab` is treated as `-a -b`, and `--ab` is a long option.
@@ -2031,7 +2031,8 @@ TEST(CommandLineTest, LongOptions) {
   EXPECT_TRUE(OptA);
   EXPECT_TRUE(OptBLong);
   EXPECT_STREQ("val1", OptAB.c_str());
-  EXPECT_TRUE(Errs.empty()); Errs.clear();
+  EXPECT_TRUE(Errs.empty());
+  Errs.clear();
   cl::ResetAllOptionOccurrences();
 }
 
@@ -2108,9 +2109,9 @@ TEST(CommandLineTest, Callback) {
   cl::ResetCommandLineParser();
 
   StackOption<bool> OptA("a", cl::desc("option a"));
-  StackOption<bool> OptB(
-      "b", cl::desc("option b -- This option turns on option a"),
-      cl::callback([&](const bool &) { OptA = true; }));
+  StackOption<bool> OptB("b",
+                         cl::desc("option b -- This option turns on option a"),
+                         cl::callback([&](const bool &) { OptA = true; }));
   StackOption<bool> OptC(
       "c", cl::desc("option c -- This option turns on options a and b"),
       cl::callback([&](const bool &) { OptB = true; }));
@@ -2118,8 +2119,7 @@ TEST(CommandLineTest, Callback) {
       "list",
       cl::desc("option list -- This option turns on options a, b, and c when "
                "'foo' is included in list"),
-      cl::CommaSeparated,
-      cl::callback([&](const std::string &Str) {
+      cl::CommaSeparated, cl::callback([&](const std::string &Str) {
         if (Str == "foo")
           OptC = true;
       }));
@@ -2167,11 +2167,10 @@ TEST(CommandLineTest, Callback) {
 }
 
 enum Enum { Val1, Val2 };
-static cl::bits<Enum> ExampleBits(
-    cl::desc("An example cl::bits to ensure it compiles"),
-    cl::values(
-      clEnumValN(Val1, "bits-val1", "The Val1 value"),
-      clEnumValN(Val1, "bits-val2", "The Val2 value")));
+static cl::bits<Enum>
+    ExampleBits(cl::desc("An example cl::bits to ensure it compiles"),
+                cl::values(clEnumValN(Val1, "bits-val1", "The Val1 value"),
+                           clEnumValN(Val1, "bits-val2", "The Val2 value")));
 
 TEST(CommandLineTest, ConsumeAfterOnePositional) {
   cl::ResetCommandLineParser();
@@ -2523,6 +2522,414 @@ TEST(CommandLineTest, HelpWithEmptyCategory) {
       []() { cl::PrintHelpMessage(/*Hidden=*/true, /*Categorized=*/true); });
   EXPECT_EQ(std::string::npos, Output.find("First Category"))
       << "An empty category should not be printed";
+
+  cl::ResetCommandLineParser();
+}
+
+// Program B: a cl::ScopedContext gives one invocation its own command-line
+// state. These are the properties a multicall binary depends on.
+//
+// The model the tests below pin down: an option registered while no context is
+// pushed is process-wide, because that is where library cl::opt globals land --
+// their constructors run at load, before any tool can push anything. An option
+// registered inside a context belongs to that context alone, and no other
+// context ever sees it.
+
+TEST(CommandLineTest, GeneralCategoryOutlivesScopedContexts) {
+  const cl::OptionCategory *ProcessCategory = &cl::getGeneralCategory();
+  {
+    cl::ScopedContext Outer;
+    const cl::OptionCategory *OuterCategory = &cl::getGeneralCategory();
+    EXPECT_EQ(ProcessCategory, OuterCategory);
+    {
+      cl::ScopedContext Inner;
+      EXPECT_EQ(OuterCategory, &cl::getGeneralCategory());
+    }
+    EXPECT_EQ(OuterCategory, &cl::getGeneralCategory());
+  }
+  EXPECT_EQ(ProcessCategory, &cl::getGeneralCategory());
+}
+
+TEST(CommandLineTest, EmptyTokenBindingMasksTheOuterContext) {
+  cl::ScopedContext Outer;
+  {
+    cl::ContextToken OuterToken = cl::ContextToken::capture();
+    EXPECT_TRUE(OuterToken);
+  }
+  {
+    cl::ScopedContextTokenBinding NoContext{cl::ContextToken()};
+    cl::ContextToken Masked = cl::ContextToken::capture();
+    EXPECT_FALSE(Masked);
+  }
+  {
+    cl::ContextToken Restored = cl::ContextToken::capture();
+    EXPECT_TRUE(Restored);
+  }
+}
+
+TEST(CommandLineTest, ThreadWithoutTokenUsesProcessDefault) {
+  cl::ResetCommandLineParser();
+
+  StackOption<int> ProcessOption("process-thread-option");
+  {
+    cl::ScopedContext Context;
+    StackOption<int> InvocationOption("invocation-thread-option");
+
+    bool SawProcessOption = false;
+    bool SawInvocationOption = true;
+    std::thread Worker([&] {
+      const auto &Options = cl::getRegisteredOptions();
+      SawProcessOption = Options.contains("process-thread-option");
+      SawInvocationOption = Options.contains("invocation-thread-option");
+    });
+    Worker.join();
+
+    EXPECT_TRUE(SawProcessOption);
+    EXPECT_FALSE(SawInvocationOption);
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, SignalOptionsAreInvocationScopedAndTokenBound) {
+  {
+    cl::ScopedContext Context;
+    const auto &Options = cl::getRegisteredOptions();
+    EXPECT_TRUE(Options.contains("disable-symbolication"));
+    EXPECT_TRUE(Options.contains("crash-diagnostics-dir"));
+
+    const char *Args[] = {"tool", "--disable-symbolication",
+                          "--crash-diagnostics-dir=first-dir"};
+    ASSERT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+
+    bool Disable = false;
+    StringRef Directory;
+    ASSERT_TRUE(getCurrentSignalOptions(Disable, Directory));
+    EXPECT_TRUE(Disable);
+    EXPECT_EQ("first-dir", Directory);
+
+    bool TokenlessHadInvocationSettings = true;
+    std::thread Tokenless([&] {
+      bool WorkerDisable = false;
+      StringRef WorkerDirectory;
+      TokenlessHadInvocationSettings =
+          getCurrentSignalOptions(WorkerDisable, WorkerDirectory);
+    });
+    Tokenless.join();
+    EXPECT_FALSE(TokenlessHadInvocationSettings);
+
+    cl::ContextToken Token = cl::ContextToken::capture();
+    bool BoundHadInvocationSettings = false;
+    bool BoundDisable = false;
+    std::string BoundDirectory;
+    std::thread Bound(
+        [Token = std::move(Token), &BoundHadInvocationSettings, &BoundDisable,
+         &BoundDirectory]() mutable {
+          cl::ScopedContextTokenBinding Binding(std::move(Token));
+          StringRef Directory;
+          BoundHadInvocationSettings =
+              getCurrentSignalOptions(BoundDisable, Directory);
+          BoundDirectory = Directory.str();
+        });
+    Bound.join();
+    EXPECT_TRUE(BoundHadInvocationSettings);
+    EXPECT_TRUE(BoundDisable);
+    EXPECT_EQ("first-dir", BoundDirectory);
+  }
+
+  // A later invocation starts from the defaults, rather than inheriting the
+  // prior invocation's published signal-handler state.
+  cl::ScopedContext Context;
+  bool Disable = true;
+  StringRef Directory = "stale";
+  ASSERT_TRUE(getCurrentSignalOptions(Disable, Directory));
+  EXPECT_FALSE(Disable);
+  EXPECT_TRUE(Directory.empty());
+}
+
+TEST(CommandLineTest, OutstandingTokenPreventsContextClosing) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#else
+  EXPECT_DEATH(
+      {
+        cl::ScopedContext Context;
+        cl::ContextToken QueuedWork = cl::ContextToken::capture();
+        (void)QueuedWork;
+        Context.beginClosing();
+      },
+      "outstanding task leases");
+#endif
+}
+
+TEST(CommandLineTest, ClosingContextRejectsNewTokenCapture) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#else
+  EXPECT_DEATH(
+      {
+        cl::ScopedContext Context;
+        Context.beginClosing();
+        (void)cl::ContextToken::capture();
+      },
+      "capturing a closing command-line context");
+#endif
+}
+
+TEST(CommandLineTest, ScopedContextInheritsProcessWideOptions) {
+  cl::ResetCommandLineParser();
+
+  // Stands in for a library global such as -x86-asm-syntax: registered during
+  // dynamic initialization, so a folded tool has to be able to use it.
+  StackOption<std::string> Library("library-opt");
+
+  {
+    cl::ScopedContext Ctx;
+    ASSERT_EQ(1u, cl::getRegisteredOptions().count("library-opt"));
+
+    const char *Args[] = {"tool", "--library-opt=v"};
+    EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+    EXPECT_EQ("v", Library);
+  }
+
+  // Popping resets what the invocation parsed, and leaves the registration.
+  EXPECT_EQ(1u, cl::getRegisteredOptions().count("library-opt"));
+  EXPECT_EQ("", Library);
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ScopedContextIsolatesItsOwnRegistrations) {
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext Ctx;
+    StackOption<int> Inner("inner-only");
+    EXPECT_EQ(1u, cl::getRegisteredOptions().count("inner-only"));
+  }
+
+  // A context's own registrations do not leak out of it, which is what keeps
+  // one folded tool's options off another's --help.
+  EXPECT_EQ(0u, cl::getRegisteredOptions().count("inner-only"));
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ScopedContextAllowsCollidingNames) {
+  cl::ResetCommandLineParser();
+
+  // The same option name in two invocations. Registering both in one context is
+  // fatal ("Option 'x' registered more than once!"), which is the whole reason
+  // llvm-profdata and llvm-pdbutil cannot be folded together today.
+  {
+    cl::ScopedContext Ctx;
+    StackOption<int> First("collide", cl::desc("first"));
+    auto &Map = cl::getRegisteredOptions();
+    ASSERT_EQ(1u, Map.count("collide"));
+    EXPECT_EQ(&First, Map["collide"]);
+  }
+  {
+    cl::ScopedContext Ctx;
+    StackOption<int> Second("collide", cl::desc("second"));
+    auto &Map = cl::getRegisteredOptions();
+    ASSERT_EQ(1u, Map.count("collide"));
+    EXPECT_EQ(&Second, Map["collide"]);
+  }
+  EXPECT_EQ(0u, cl::getRegisteredOptions().count("collide"));
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ScopedContextNests) {
+  cl::ResetCommandLineParser();
+
+  StackOption<int> ProcessWide("ctx-process-wide");
+  {
+    cl::ScopedContext CtxB;
+    StackOption<int> B("ctx-b");
+    {
+      cl::ScopedContext CtxC;
+      StackOption<int> C("ctx-c");
+      // The inner context inherits the process, not its enclosing context: an
+      // option belonging to B must not become visible to C.
+      EXPECT_EQ(1u, cl::getRegisteredOptions().count("ctx-process-wide"));
+      EXPECT_EQ(1u, cl::getRegisteredOptions().count("ctx-c"));
+      EXPECT_EQ(0u, cl::getRegisteredOptions().count("ctx-b"));
+    }
+    EXPECT_EQ(1u, cl::getRegisteredOptions().count("ctx-b"));
+    EXPECT_EQ(0u, cl::getRegisteredOptions().count("ctx-c"));
+  }
+  EXPECT_EQ(1u, cl::getRegisteredOptions().count("ctx-process-wide"));
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ScopedContextPushedAfterDefaultContextParse) {
+  cl::ResetCommandLineParser();
+
+  // A context pushed after the default context has already parsed -- so with
+  // --help and friends, and a category, registered out there to inherit.
+  {
+    StackOption<int> PreContext("pre-context");
+    const char *Args[] = {"tool", "--pre-context=1"};
+    EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+    EXPECT_EQ(1, PreContext);
+  }
+  {
+    cl::ScopedContext Ctx;
+    StackOption<int> Own("own");
+    const char *Args[] = {"tool", "--own=2"};
+    EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+    EXPECT_EQ(2, Own);
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, OptionDestroyedInsideContextUnregisters) {
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext Ctx;
+
+    // Stands in for one of Support's ManagedStatic-owned options (-debug,
+    // -time-passes, ...). llvm_shutdown() destroys those from inside a tool's
+    // main, so while the context runTool() pushed is still on the stack. A
+    // plain cl::opt rather than a StackOption, so that ~Option is what has to
+    // do the unregistering.
+    auto *Transient = new cl::opt<int>("transient");
+    ASSERT_EQ(1u, cl::getRegisteredOptions().count("transient"));
+    delete Transient;
+
+    // Otherwise the context's own teardown walks a freed pointer.
+    EXPECT_EQ(0u, cl::getRegisteredOptions().count("transient"));
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, InheritedOptionDestructionUnregistersEveryContext) {
+  cl::ResetCommandLineParser();
+
+  auto ProcessOption = std::make_unique<cl::opt<int>>(
+      "inherited-transient", cl::sub(cl::SubCommand::getAll()));
+  {
+    cl::ScopedContext Outer;
+    {
+      cl::ScopedContext Inner;
+      ASSERT_EQ(1u, cl::getRegisteredOptions().count("inherited-transient"));
+      ProcessOption.reset();
+      EXPECT_EQ(0u, cl::getRegisteredOptions().count("inherited-transient"));
+    }
+
+    // The process option was inherited by both explicit contexts. Destroying
+    // it in the inner one must not leave the outer parser holding its pointer.
+    EXPECT_EQ(0u, cl::getRegisteredOptions().count("inherited-transient"));
+  }
+  EXPECT_EQ(0u, cl::getRegisteredOptions().count("inherited-transient"));
+
+  cl::ResetCommandLineParser();
+}
+
+// cl::getRegisteredSubcommands() hands back an iterator_range, which gmock's
+// container matchers cannot inspect.
+static bool isRegistered(const cl::SubCommand *Sub) {
+  return llvm::is_contained(cl::getRegisteredSubcommands(), Sub);
+}
+
+TEST(CommandLineTest, ScopedContextHasItsOwnSubCommands) {
+  cl::ResetCommandLineParser();
+
+  // Subcommands are the case that leaks with no collision at all: printHelp
+  // lists every registered subcommand, which is how llvm-pdbutil's nine
+  // subcommands ended up on clang-offload-bundler --help.
+  StackSubCommand OuterSub("merge", "outer merge");
+  EXPECT_TRUE(isRegistered(&OuterSub));
+
+  {
+    cl::ScopedContext Ctx;
+    EXPECT_FALSE(isRegistered(&OuterSub));
+
+    // A same-named subcommand in another context is not a duplicate -- today
+    // registering both is an assertion failure in registerSubCommand().
+    StackSubCommand InnerSub("merge", "inner merge");
+    EXPECT_TRUE(isRegistered(&InnerSub));
+    EXPECT_FALSE(isRegistered(&OuterSub));
+  }
+
+  EXPECT_TRUE(isRegistered(&OuterSub));
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, DestroyedSubCommandDetachesBeforeParserReset) {
+  cl::ResetCommandLineParser();
+
+  cl::ScopedContext Ctx;
+  StackOption<int> AllOption("subcommand-all-option",
+                             cl::sub(cl::SubCommand::getAll()));
+  const cl::SubCommand *TransientAddress = nullptr;
+  {
+    // The subcommand is destroyed before an older option and before the
+    // context. Both paths subsequently walk the registered subcommands.
+    cl::SubCommand Transient("transient-subcommand");
+    TransientAddress = &Transient;
+    EXPECT_TRUE(isRegistered(&Transient));
+    EXPECT_EQ(1u, Transient.OptionsMap.count("subcommand-all-option"));
+  }
+  EXPECT_FALSE(isRegistered(TransientAddress));
+}
+
+TEST(CommandLineTest, ScopedContextDetachesOptionSubs) {
+  cl::ResetCommandLineParser();
+
+  // An option registered with cl::sub(getAll()) stores a raw SubCommand* into
+  // the context. If popping the context left that pointer behind, the option --
+  // which outlives every context -- would dangle, and the next invocation would
+  // be a use-after-free rather than a clean re-registration.
+  // Heap-allocated so that it outlives the context, the way a real cl::opt
+  // global does.
+  std::unique_ptr<StackOption<int>> Escapee;
+  {
+    cl::ScopedContext Ctx;
+    Escapee = std::make_unique<StackOption<int>>(
+        "all-subs", cl::sub(cl::SubCommand::getAll()));
+    EXPECT_FALSE(Escapee->Subs.empty());
+  }
+  EXPECT_TRUE(Escapee->Subs.empty())
+      << "popping a context must scrub its SubCommands out of Option::Subs";
+  // Destroying it now must not touch the dead context.
+  Escapee.reset();
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ScopedContextParsesIndependently) {
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext Ctx;
+    StackOption<std::string> Opt("tool-opt");
+    const char *Args[] = {"tool", "--tool-opt=value"};
+    EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+    EXPECT_EQ("value", Opt);
+  }
+
+  {
+    // A second invocation with the same option name: no collision, and it does
+    // not see the previous context's parsed value.
+    cl::ScopedContext Ctx;
+    StackOption<std::string> Opt("tool-opt");
+    const char *Args[] = {"tool"};
+    EXPECT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+    EXPECT_EQ("", Opt);
+  }
 
   cl::ResetCommandLineParser();
 }

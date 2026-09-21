@@ -75,6 +75,30 @@ public:
   LLVM_ABI void destroy() const;
 };
 
+/// Common base for statics whose instance belongs to the command-line
+/// invocation that first accesses it.
+///
+/// Unlike ManagedStatic, this object contains no process-wide cached pointer.
+/// The current invocation owns the pointer, destruction callback, and reverse
+/// construction-order list. This keeps nested and concurrent invocations from
+/// sharing settings or tearing down each other's state.
+class ContextManagedStaticBase {
+protected:
+  LLVM_ABI void *RegisterContextManagedStatic(size_t Size, void *(*Creator)(),
+                                              void (*Deleter)(void *)) const;
+  LLVM_ABI void *LookupContextManagedStatic() const;
+  LLVM_ABI void *ClaimContextManagedStatic() const;
+
+public:
+  constexpr ContextManagedStaticBase() = default;
+
+  bool isConstructed() const { return LookupContextManagedStatic() != nullptr; }
+
+  /// Destroy this static in the current invocation. Context teardown normally
+  /// performs this automatically in reverse construction order.
+  LLVM_ABI void destroy() const;
+};
+
 /// ManagedStatic - This transparently changes the behavior of global statics to
 /// be lazily constructed on demand (good for reducing startup times of dynamic
 /// libraries that link in LLVM components) and for making destruction be
@@ -110,6 +134,36 @@ public:
   C *claim() {
     return static_cast<C *>(Ptr.exchange(nullptr));
   }
+};
+
+/// A context-keyed sibling of ManagedStatic.
+///
+/// Each explicit cl::ScopedContext, and the process default context used when
+/// no explicit invocation is active, lazily creates its own C. Instances are
+/// safe to access from a propagated worker context and are destroyed with the
+/// owning context in reverse construction order.
+template <class C, class Creator = object_creator<C>,
+          class Deleter = object_deleter<C>>
+class ContextManagedStatic : public ContextManagedStaticBase {
+public:
+  C &operator*() {
+    void *Ptr =
+        RegisterContextManagedStatic(sizeof(C), Creator::call, Deleter::call);
+    return *static_cast<C *>(Ptr);
+  }
+
+  C *operator->() { return &**this; }
+
+  const C &operator*() const {
+    void *Ptr =
+        RegisterContextManagedStatic(sizeof(C), Creator::call, Deleter::call);
+    return *static_cast<C *>(Ptr);
+  }
+
+  const C *operator->() const { return &**this; }
+
+  /// Extract the current invocation's instance. The caller assumes ownership.
+  C *claim() { return static_cast<C *>(ClaimContextManagedStatic()); }
 };
 
 /// llvm_shutdown - Deallocate and destroy all ManagedStatic variables.

@@ -22,10 +22,12 @@
 #include "llvm/Option/Option.h"
 #include "llvm/Support/AdvisoryLock.h"
 #include "llvm/Support/CrashRecoveryContext.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/TargetParser/Host.h"
 #include <mutex>
 #include <thread>
+#include <utility>
 
 using namespace clang;
 using namespace dependencies;
@@ -517,9 +519,16 @@ public:
   /// Registers the module compilation, unless this instance is about to be
   /// destroyed.
   void add(llvm::unique_function<void()> Compile) {
+    llvm::ToolExecutionContext Context = llvm::ToolExecutionContext::capture();
     std::lock_guard<std::mutex> Lock(Mutex);
     if (!Stop)
-      Compiles.emplace_back(std::move(Compile));
+      Compiles.emplace_back([Compile = std::move(Compile),
+                             Context = std::move(Context)]() mutable {
+        llvm::ToolExecutionContext LocalContext =
+            std::exchange(Context, llvm::ToolExecutionContext());
+        llvm::ScopedToolExecutionContext Binding(std::move(LocalContext));
+        Compile();
+      });
   }
 
   ~AsyncModuleCompiles() {

@@ -9,6 +9,7 @@
 #include "llvm/Support/ProgramStack.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ToolExecutionContext.h"
 
 #ifdef LLVM_ON_UNIX
 # include <sys/resource.h> // for getrlimit
@@ -21,6 +22,7 @@
 #include "llvm/Support/thread.h"
 
 #include <cstdlib>
+#include <utility>
 
 using namespace llvm;
 
@@ -55,7 +57,14 @@ unsigned llvm::getDefaultStackSize() {
 }
 
 void llvm::runOnNewStack(unsigned StackSize, function_ref<void()> Fn) {
+  ToolExecutionContext Context = ToolExecutionContext::capture();
   llvm::thread Thread(
-      StackSize == 0 ? std::nullopt : std::optional<unsigned>(StackSize), Fn);
+      StackSize == 0 ? std::nullopt : std::optional<unsigned>(StackSize),
+      [Fn, Context = std::move(Context)]() mutable {
+        ToolExecutionContext LocalContext =
+            std::exchange(Context, ToolExecutionContext());
+        ScopedToolExecutionContext Binding(std::move(LocalContext));
+        Fn();
+      });
   Thread.join();
 }

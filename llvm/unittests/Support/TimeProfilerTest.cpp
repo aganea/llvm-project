@@ -14,6 +14,7 @@
 //  - suppression of contributions to total entries for nested entries
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "gtest/gtest.h"
 
@@ -94,6 +95,39 @@ TEST(TimeProfiler, Instant_Not_Added_Smoke) {
   std::string json = teardownProfiler();
   ASSERT_TRUE(json.find(R"("name":"instant event")") == std::string::npos);
   ASSERT_TRUE(json.find(R"("detail":"instant detail")") == std::string::npos);
+}
+
+TEST(TimeProfiler, ReleasesExclusiveInvocationLeaseOnCleanup) {
+  cl::ScopedContext Context;
+  setupProfiler();
+  (void)teardownProfiler();
+}
+
+TEST(TimeProfiler, RejectsConcurrentInvocationContexts) {
+#if GTEST_HAS_DEATH_TEST
+  EXPECT_DEATH(
+      {
+        cl::ScopedContext FirstContext;
+        cl::ScopedContext SecondContext;
+        setupProfiler();
+      },
+      "time trace profiler.*multiple tool invocations");
+#else
+  GTEST_SKIP() << "death tests are unavailable";
+#endif
+}
+
+TEST(TimeProfiler, BlocksAnotherInvocationUntilCleanup) {
+#if GTEST_HAS_DEATH_TEST
+  EXPECT_DEATH(
+      {
+        setupProfiler();
+        cl::ScopedContext Context;
+      },
+      "cannot start a tool invocation.*exclusive process service");
+#else
+  GTEST_SKIP() << "death tests are unavailable";
+#endif
 }
 
 } // namespace

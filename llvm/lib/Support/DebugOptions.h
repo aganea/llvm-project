@@ -14,7 +14,14 @@
 #ifndef LLVM_SUPPORT_DEBUGOPTIONS_H
 #define LLVM_SUPPORT_DEBUGOPTIONS_H
 
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Compiler.h"
+
 namespace llvm {
+
+namespace cl {
+class Option;
+} // namespace cl
 
 // These are invoked internally before parsing command line options.
 // This enables lazy-initialization of all the globals in libSupport, instead
@@ -22,6 +29,16 @@ namespace llvm {
 void initDebugCounterOptions();
 void initGraphWriterOptions();
 void initSignalsOptions();
+/// Returns true for command-line controls of process-wide crash/signal state.
+/// Invocation contexts own equivalent options, so these process-default
+/// objects must not also be inherited into them.
+bool isProcessWideSignalsOption(const cl::Option *Option);
+/// Reads the signal settings for the explicitly bound invocation without
+/// taking locks or lazily constructing command-line state. Returns false when
+/// this thread has no explicit context, in which case Signals.cpp uses its
+/// process-default settings.
+LLVM_ABI bool getCurrentSignalOptions(bool &DisableSymbolication,
+                                      StringRef &CrashDiagnosticsDirectory);
 void initStatisticOptions();
 void initTimerOptions();
 void initWithColorOptions();

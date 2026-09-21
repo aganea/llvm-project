@@ -39,7 +39,7 @@ struct CreateSeed {
   }
 };
 } // namespace
-static ManagedStatic<cl::opt<uint64_t>, CreateSeed> Seed;
+static ContextManagedStatic<cl::opt<uint64_t>, CreateSeed> Seed;
 void llvm::initRandomSeedOptions() { *Seed; }
 
 RandomNumberGenerator::RandomNumberGenerator(StringRef Salt) {

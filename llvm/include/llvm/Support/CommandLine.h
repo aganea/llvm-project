@@ -28,6 +28,7 @@
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/VirtualFileSystemFwd.h"
 #include "llvm/Support/raw_ostream.h"
@@ -48,6 +49,11 @@ class ElementCount;
 /// This namespace contains all of the command line option processing machinery.
 /// It is intentionally a short name to make qualified usage concise.
 namespace cl {
+
+/// Implements the cl::location lifetime invariant. Declared before
+/// opt_storage so its template definition can perform the check.
+LLVM_ABI bool hasCompatibleInvocationLifetime(const void *OptionStorage,
+                                              const void *LocationStorage);
 
 //===----------------------------------------------------------------------===//
 // Command line option processing entry point.
@@ -182,8 +188,7 @@ private:
   LLVM_ABI void registerCategory();
 
 public:
-  OptionCategory(StringRef const Name,
-                 StringRef const Description = "")
+  OptionCategory(StringRef const Name, StringRef const Description = "")
       : Name(Name), Description(Description) {
     registerCategory();
   }
@@ -209,9 +214,10 @@ protected:
 public:
   SubCommand(StringRef Name, StringRef Description = "")
       : Name(Name), Description(Description) {
-        registerSubCommand();
+    registerSubCommand();
   }
   SubCommand() = default;
+  LLVM_ABI ~SubCommand();
 
   // Get the special subcommand representing no subcommand.
   LLVM_ABI static SubCommand &getTopLevel();
@@ -246,6 +252,9 @@ public:
 //
 class LLVM_ABI Option {
   friend class alias;
+
+  static constexpr uint32_t ConstructedMagic = 0xC10C0A11u;
+  uint32_t Magic;
 
   // Overriden by subclasses to handle the value passed into an argument. Should
   // return true if there was an error processing the argument and the program
@@ -329,8 +338,16 @@ protected:
   explicit Option(enum NumOccurrencesFlag OccurrencesFlag,
                   enum OptionHidden Hidden);
 
+  void assertFullyConstructed() const {
+    assert(Magic == ConstructedMagic &&
+           "command-line option read before its lifecycle initializer ran");
+  }
+
 public:
-  virtual ~Option() = default;
+  // Out of line, and not defaulted: an option that dies while a
+  // cl::ScopedContext is on the stack has to unregister itself, or the
+  // context's maps are left holding a freed pointer. See the definition.
+  virtual ~Option();
 
   // Register this argument with the commandline system.
   //
@@ -377,12 +394,16 @@ public:
   virtual bool addOccurrence(unsigned pos, StringRef ArgName, StringRef Value);
 
   // Prints option name followed by message.  Always returns true.
-  bool error(const Twine &Message, StringRef ArgName = StringRef(), raw_ostream &Errs = llvm::errs());
+  bool error(const Twine &Message, StringRef ArgName = StringRef(),
+             raw_ostream &Errs = llvm::errs());
   bool error(const Twine &Message, raw_ostream &Errs) {
     return error(Message, StringRef(), Errs);
   }
 
-  inline int getNumOccurrences() const { return NumOccurrences; }
+  inline int getNumOccurrences() const {
+    assertFullyConstructed();
+    return NumOccurrences;
+  }
   void reset();
 };
 
@@ -430,8 +451,7 @@ template <class Ty> initializer<Ty> init(const Ty &Val) {
   return initializer<Ty>(Val);
 }
 
-template <class Ty>
-list_initializer<Ty> list_init(ArrayRef<Ty> Vals) {
+template <class Ty> list_initializer<Ty> list_init(ArrayRef<Ty> Vals) {
   return list_initializer<Ty>(Vals);
 }
 
@@ -494,7 +514,8 @@ template <typename R, typename C, typename... Args>
 struct callback_traits<R (C::*)(Args...) const> {
   using result_type = R;
   using arg_type = std::tuple_element_t<0, std::tuple<Args...>>;
-  static_assert(sizeof...(Args) == 1, "callback function must have one and only one parameter");
+  static_assert(sizeof...(Args) == 1,
+                "callback function must have one and only one parameter");
   static_assert(std::is_same_v<result_type, void>,
                 "callback return type must be void");
   static_assert(std::is_lvalue_reference_v<arg_type> &&
@@ -520,7 +541,7 @@ struct LLVM_ABI GenericOptionValue {
 
 protected:
   GenericOptionValue() = default;
-  GenericOptionValue(const GenericOptionValue&) = default;
+  GenericOptionValue(const GenericOptionValue &) = default;
   GenericOptionValue &operator=(const GenericOptionValue &) = default;
   ~GenericOptionValue() = default;
 
@@ -561,7 +582,7 @@ template <class DataType> class OptionValueCopy : public GenericOptionValue {
   bool Valid = false;
 
 protected:
-  OptionValueCopy(const OptionValueCopy&) = default;
+  OptionValueCopy(const OptionValueCopy &) = default;
   OptionValueCopy &operator=(const OptionValueCopy &) = default;
   ~OptionValueCopy() = default;
 
@@ -599,7 +620,7 @@ struct OptionValueBase<DataType, false> : OptionValueCopy<DataType> {
 
 protected:
   OptionValueBase() = default;
-  OptionValueBase(const OptionValueBase&) = default;
+  OptionValueBase(const OptionValueBase &) = default;
   OptionValueBase &operator=(const OptionValueBase &) = default;
   ~OptionValueBase() = default;
 };
@@ -1089,8 +1110,8 @@ public:
 extern template class LLVM_TEMPLATE_ABI basic_parser<unsigned long long>;
 
 template <>
-class LLVM_ABI parser<unsigned long long>
-    : public basic_parser<unsigned long long> {
+class LLVM_ABI
+    parser<unsigned long long> : public basic_parser<unsigned long long> {
 public:
   parser(Option &O) : basic_parser(O) {}
 
@@ -1310,7 +1331,7 @@ template <unsigned n> struct applicator<const char[n]> {
     O.setArgStr(Str);
   }
 };
-template <> struct applicator<StringRef > {
+template <> struct applicator<StringRef> {
   template <class Opt> static void opt(StringRef Str, Opt &O) {
     O.setArgStr(Str);
   }
@@ -1344,7 +1365,7 @@ template <> struct applicator<MiscFlags> {
 
 // Apply modifiers to an option in a type safe way.
 template <class Opt, class Mod, class... Mods>
-void apply(Opt *O, const Mod &M, const Mods &... Ms) {
+void apply(Opt *O, const Mod &M, const Mods &...Ms) {
   applicator<Mod>::opt(M, *O);
   apply(O, Ms...);
 }
@@ -1375,6 +1396,10 @@ public:
   bool setLocation(Option &O, DataType &L) {
     if (Location)
       return O.error("cl::location(x) specified more than once!");
+    if (!hasCompatibleInvocationLifetime(this, &L))
+      report_fatal_error(
+          "cl::location storage must have the same invocation lifetime as "
+          "its option");
     Location = &L;
     Default = L;
     return false;
@@ -1395,8 +1420,6 @@ public:
     check_location();
     return *Location;
   }
-
-  operator DataType() const { return this->getValue(); }
 
   const OptionValue<DataType> &getDefault() const { return Default; }
 };
@@ -1444,21 +1467,29 @@ public:
   DataType getValue() const { return Value; }
 
   const OptionValue<DataType> &getDefault() const { return Default; }
-
-  operator DataType() const { return getValue(); }
-
-  // If the datatype is a pointer, support -> on it.
-  DataType operator->() const { return Value; }
 };
 
 //===----------------------------------------------------------------------===//
 // A scalar command line option.
 //
+template <class Derived, class DataType, bool Enable> class opt_conversion {};
+
+template <class Derived, class DataType>
+class opt_conversion<Derived, DataType, true> {
+public:
+  operator DataType() const {
+    return static_cast<const Derived *>(this)->getValue();
+  }
+};
+
 template <class DataType, bool ExternalStorage = false,
           class ParserClass = parser<DataType>>
 class opt
     : public Option,
-      public opt_storage<DataType, ExternalStorage, std::is_class_v<DataType>> {
+      public opt_storage<DataType, ExternalStorage, std::is_class_v<DataType>>,
+      public opt_conversion<opt<DataType, ExternalStorage, ParserClass>,
+                            DataType,
+                            !std::is_class_v<DataType> || ExternalStorage> {
   ParserClass Parser;
 
   bool handleOccurrence(unsigned pos, StringRef ArgName,
@@ -1518,6 +1549,23 @@ public:
   opt(const opt &) = delete;
   opt &operator=(const opt &) = delete;
 
+  decltype(auto) getValue() {
+    this->assertFullyConstructed();
+    return opt_storage<DataType, ExternalStorage,
+                       std::is_class_v<DataType>>::getValue();
+  }
+  decltype(auto) getValue() const {
+    this->assertFullyConstructed();
+    return opt_storage<DataType, ExternalStorage,
+                       std::is_class_v<DataType>>::getValue();
+  }
+
+  template <typename T = DataType,
+            std::enable_if_t<std::is_pointer_v<T>, int> = 0>
+  T operator->() const {
+    return getValue();
+  }
+
   // setInitialValue - Used by the cl::init modifier...
   void setInitialValue(const DataType &V) { this->setValue(V, true); }
 
@@ -1538,7 +1586,7 @@ public:
   }
 
   template <class... Mods>
-  explicit opt(const Mods &... Ms)
+  explicit opt(const Mods &...Ms)
       : Option(llvm::cl::Optional, NotHidden), Parser(*this) {
     apply(this, Ms...);
     done();
@@ -1575,20 +1623,33 @@ template <class DataType, class StorageClass> class list_storage {
   std::vector<OptionValue<DataType>> Default =
       std::vector<OptionValue<DataType>>();
   bool DefaultAssigned = false;
+  const Option *Owner = nullptr;
+
+  void assertOwnerConstructed() const {
+    assert(Owner &&
+           "command-line list read before its lifecycle initializer ran");
+    (void)Owner->getNumOccurrences();
+  }
 
 public:
   list_storage() = default;
+  explicit list_storage(const Option &O) : Owner(&O) {}
 
-  void clear() {}
+  void clear() { assertOwnerConstructed(); }
 
   bool setLocation(Option &O, StorageClass &L) {
     if (Location)
       return O.error("cl::location(x) specified more than once!");
+    if (!hasCompatibleInvocationLifetime(this, &L))
+      report_fatal_error(
+          "cl::location storage must have the same invocation lifetime as "
+          "its option");
     Location = &L;
     return false;
   }
 
   template <class T> void addValue(const T &V, bool initial = false) {
+    assertOwnerConstructed();
     assert(Location != nullptr &&
            "cl::location(...) not specified for a command "
            "line option with external storage!");
@@ -1598,12 +1659,22 @@ public:
   }
 
   const std::vector<OptionValue<DataType>> &getDefault() const {
+    assertOwnerConstructed();
     return Default;
   }
 
-  void assignDefault() { DefaultAssigned = true; }
-  void overwriteDefault() { DefaultAssigned = false; }
-  bool isDefaultAssigned() { return DefaultAssigned; }
+  void assignDefault() {
+    assertOwnerConstructed();
+    DefaultAssigned = true;
+  }
+  void overwriteDefault() {
+    assertOwnerConstructed();
+    DefaultAssigned = false;
+  }
+  bool isDefaultAssigned() {
+    assertOwnerConstructed();
+    return DefaultAssigned;
+  }
 };
 
 // Define how to hold a class type object, such as a string.
@@ -1618,82 +1689,164 @@ template <class DataType> class list_storage<DataType, bool> {
   std::vector<DataType> Storage;
   std::vector<OptionValue<DataType>> Default;
   bool DefaultAssigned = false;
+  const Option *Owner = nullptr;
+
+  void assertOwnerConstructed() const {
+    assert(Owner &&
+           "command-line list read before its lifecycle initializer ran");
+    (void)Owner->getNumOccurrences();
+  }
 
 public:
+  list_storage() = default;
+  explicit list_storage(const Option &O) : Owner(&O) {}
+
   using iterator = typename std::vector<DataType>::iterator;
 
-  iterator begin() { return Storage.begin(); }
-  iterator end() { return Storage.end(); }
+  iterator begin() {
+    assertOwnerConstructed();
+    return Storage.begin();
+  }
+  iterator end() {
+    assertOwnerConstructed();
+    return Storage.end();
+  }
 
   using const_iterator = typename std::vector<DataType>::const_iterator;
 
-  const_iterator begin() const { return Storage.begin(); }
-  const_iterator end() const { return Storage.end(); }
+  const_iterator begin() const {
+    assertOwnerConstructed();
+    return Storage.begin();
+  }
+  const_iterator end() const {
+    assertOwnerConstructed();
+    return Storage.end();
+  }
 
   using size_type = typename std::vector<DataType>::size_type;
 
-  size_type size() const { return Storage.size(); }
+  size_type size() const {
+    assertOwnerConstructed();
+    return Storage.size();
+  }
 
-  bool empty() const { return Storage.empty(); }
+  bool empty() const {
+    assertOwnerConstructed();
+    return Storage.empty();
+  }
 
-  void push_back(const DataType &value) { Storage.push_back(value); }
-  void push_back(DataType &&value) { Storage.push_back(value); }
+  void push_back(const DataType &value) {
+    assertOwnerConstructed();
+    Storage.push_back(value);
+  }
+  void push_back(DataType &&value) {
+    assertOwnerConstructed();
+    Storage.push_back(value);
+  }
 
   using reference = typename std::vector<DataType>::reference;
   using const_reference = typename std::vector<DataType>::const_reference;
 
-  reference operator[](size_type pos) { return Storage[pos]; }
-  const_reference operator[](size_type pos) const { return Storage[pos]; }
+  reference operator[](size_type pos) {
+    assertOwnerConstructed();
+    return Storage[pos];
+  }
+  const_reference operator[](size_type pos) const {
+    assertOwnerConstructed();
+    return Storage[pos];
+  }
 
   void clear() {
+    assertOwnerConstructed();
     Storage.clear();
   }
 
-  iterator erase(const_iterator pos) { return Storage.erase(pos); }
+  iterator erase(const_iterator pos) {
+    assertOwnerConstructed();
+    return Storage.erase(pos);
+  }
   iterator erase(const_iterator first, const_iterator last) {
+    assertOwnerConstructed();
     return Storage.erase(first, last);
   }
 
-  iterator erase(iterator pos) { return Storage.erase(pos); }
+  iterator erase(iterator pos) {
+    assertOwnerConstructed();
+    return Storage.erase(pos);
+  }
   iterator erase(iterator first, iterator last) {
+    assertOwnerConstructed();
     return Storage.erase(first, last);
   }
 
   iterator insert(const_iterator pos, const DataType &value) {
+    assertOwnerConstructed();
     return Storage.insert(pos, value);
   }
   iterator insert(const_iterator pos, DataType &&value) {
+    assertOwnerConstructed();
     return Storage.insert(pos, value);
   }
 
   iterator insert(iterator pos, const DataType &value) {
+    assertOwnerConstructed();
     return Storage.insert(pos, value);
   }
   iterator insert(iterator pos, DataType &&value) {
+    assertOwnerConstructed();
     return Storage.insert(pos, value);
   }
 
-  reference front() { return Storage.front(); }
-  const_reference front() const { return Storage.front(); }
+  reference front() {
+    assertOwnerConstructed();
+    return Storage.front();
+  }
+  const_reference front() const {
+    assertOwnerConstructed();
+    return Storage.front();
+  }
 
-  operator std::vector<DataType> &() { return Storage; }
-  operator ArrayRef<DataType>() const { return Storage; }
-  std::vector<DataType> *operator&() { return &Storage; }
-  const std::vector<DataType> *operator&() const { return &Storage; }
+  operator std::vector<DataType> &() {
+    assertOwnerConstructed();
+    return Storage;
+  }
+  operator ArrayRef<DataType>() const {
+    assertOwnerConstructed();
+    return Storage;
+  }
+  std::vector<DataType> *operator&() {
+    assertOwnerConstructed();
+    return &Storage;
+  }
+  const std::vector<DataType> *operator&() const {
+    assertOwnerConstructed();
+    return &Storage;
+  }
 
   template <class T> void addValue(const T &V, bool initial = false) {
+    assertOwnerConstructed();
     Storage.push_back(V);
     if (initial)
       Default.push_back(OptionValue<DataType>(V));
   }
 
   const std::vector<OptionValue<DataType>> &getDefault() const {
+    assertOwnerConstructed();
     return Default;
   }
 
-  void assignDefault() { DefaultAssigned = true; }
-  void overwriteDefault() { DefaultAssigned = false; }
-  bool isDefaultAssigned() { return DefaultAssigned; }
+  void assignDefault() {
+    assertOwnerConstructed();
+    DefaultAssigned = true;
+  }
+  void overwriteDefault() {
+    assertOwnerConstructed();
+    DefaultAssigned = false;
+  }
+  bool isDefaultAssigned() {
+    assertOwnerConstructed();
+    return DefaultAssigned;
+  }
 };
 
 //===----------------------------------------------------------------------===//
@@ -1783,8 +1936,10 @@ public:
   }
 
   template <class... Mods>
-  explicit list(const Mods &... Ms)
-      : Option(ZeroOrMore, NotHidden), Parser(*this) {
+  explicit list(const Mods &...Ms)
+      : Option(ZeroOrMore, NotHidden), list_storage<DataType, StorageClass>(
+                                           static_cast<const Option &>(*this)),
+        Parser(*this) {
     apply(this, Ms...);
     done();
   }
@@ -1804,6 +1959,13 @@ public:
 //
 template <class DataType, class StorageClass> class bits_storage {
   unsigned *Location = nullptr; // Where to store the bits...
+  const Option *Owner = nullptr;
+
+  void assertOwnerConstructed() const {
+    assert(Owner &&
+           "command-line bits read before its lifecycle initializer ran");
+    (void)Owner->getNumOccurrences();
+  }
 
   template <class T> static unsigned Bit(const T &V) {
     unsigned BitPos = static_cast<unsigned>(V);
@@ -1814,29 +1976,40 @@ template <class DataType, class StorageClass> class bits_storage {
 
 public:
   bits_storage() = default;
+  explicit bits_storage(const Option &O) : Owner(&O) {}
 
   bool setLocation(Option &O, unsigned &L) {
     if (Location)
       return O.error("cl::location(x) specified more than once!");
+    if (!hasCompatibleInvocationLifetime(this, &L))
+      report_fatal_error(
+          "cl::location storage must have the same invocation lifetime as "
+          "its option");
     Location = &L;
     return false;
   }
 
   template <class T> void addValue(const T &V) {
+    assertOwnerConstructed();
     assert(Location != nullptr &&
            "cl::location(...) not specified for a command "
            "line option with external storage!");
     *Location |= Bit(V);
   }
 
-  unsigned getBits() { return *Location; }
+  unsigned getBits() {
+    assertOwnerConstructed();
+    return *Location;
+  }
 
   void clear() {
+    assertOwnerConstructed();
     if (Location)
       *Location = 0;
   }
 
   template <class T> bool isSet(const T &V) {
+    assertOwnerConstructed();
     return (*Location & Bit(V)) != 0;
   }
 };
@@ -1846,6 +2019,13 @@ public:
 //
 template <class DataType> class bits_storage<DataType, bool> {
   unsigned Bits{0}; // Where to store the bits...
+  const Option *Owner = nullptr;
+
+  void assertOwnerConstructed() const {
+    assert(Owner &&
+           "command-line bits read before its lifecycle initializer ran");
+    (void)Owner->getNumOccurrences();
+  }
 
   template <class T> static unsigned Bit(const T &V) {
     unsigned BitPos = static_cast<unsigned>(V);
@@ -1855,13 +2035,28 @@ template <class DataType> class bits_storage<DataType, bool> {
   }
 
 public:
-  template <class T> void addValue(const T &V) { Bits |= Bit(V); }
+  bits_storage() = default;
+  explicit bits_storage(const Option &O) : Owner(&O) {}
 
-  unsigned getBits() { return Bits; }
+  template <class T> void addValue(const T &V) {
+    assertOwnerConstructed();
+    Bits |= Bit(V);
+  }
 
-  void clear() { Bits = 0; }
+  unsigned getBits() {
+    assertOwnerConstructed();
+    return Bits;
+  }
 
-  template <class T> bool isSet(const T &V) { return (Bits & Bit(V)) != 0; }
+  void clear() {
+    assertOwnerConstructed();
+    Bits = 0;
+  }
+
+  template <class T> bool isSet(const T &V) {
+    assertOwnerConstructed();
+    return (Bits & Bit(V)) != 0;
+  }
 };
 
 //===----------------------------------------------------------------------===//
@@ -1928,8 +2123,10 @@ public:
   }
 
   template <class... Mods>
-  explicit bits(const Mods &... Ms)
-      : Option(ZeroOrMore, NotHidden), Parser(*this) {
+  explicit bits(const Mods &...Ms)
+      : Option(ZeroOrMore, NotHidden),
+        bits_storage<DataType, Storage>(static_cast<const Option &>(*this)),
+        Parser(*this) {
     apply(this, Ms...);
     done();
   }
@@ -1979,7 +2176,8 @@ class LLVM_ABI alias : public Option {
     if (!AliasFor)
       error("cl::alias must have an cl::aliasopt(option) specified!");
     if (!Subs.empty())
-      error("cl::alias must not have cl::sub(), aliased option's cl::sub() will be used!");
+      error("cl::alias must not have cl::sub(), aliased option's cl::sub() "
+            "will be used!");
     Subs = AliasFor->Subs;
     Categories = AliasFor->Categories;
     addArgument();
@@ -1997,7 +2195,7 @@ public:
   }
 
   template <class... Mods>
-  explicit alias(const Mods &... Ms)
+  explicit alias(const Mods &...Ms)
       : Option(Optional, Hidden), AliasFor(nullptr) {
     apply(this, Ms...);
     done();
@@ -2327,6 +2525,115 @@ LLVM_ABI void ResetCommandLineParser();
 
 /// Parses `Arg` into the option handler `Handler`.
 LLVM_ABI bool ProvidePositionalOption(Option *Handler, StringRef Arg, int i);
+
+/// Gives one invocation its own command-line state: its own parser, its own
+/// top-level and "all" subcommands, and its own copy of the options
+/// CommandLine.cpp itself declares. Options registering while this is on the
+/// stack register here, and no other context ever sees them.
+///
+/// Options registered while no context was on the stack are process-wide and
+/// stay visible: that is where every library's `cl::opt` global lands, since
+/// its constructor runs at load. So an invocation sees the process plus itself,
+/// and never another invocation -- which is the whole point.
+///
+/// This is what lets a multicall binary host several `cl::`-based tools: two
+/// tools may declare the same option name, and one tool's options stay off
+/// another tool's --help. It only helps in combination with per-invocation
+/// global lowering (`-fstatic-arena=<lifecycle-id>`), because an option
+/// constructed during process startup is by definition process-wide. Arena
+/// lifecycle lowering decides *whether* a constructor runs; this decides
+/// *where* it registers.
+///
+/// With no ScopedContext on the stack there is a lazily created
+/// process-lifetime default, so existing tools, unit tests and out-of-tree
+/// users behave exactly as before at the cost of one pointer load.
+/// A thread with no installed token continues to use that default even while
+/// another thread owns an explicit context. Such a thread cannot see
+/// invocation-local option values; work that needs them must install a token.
+///
+/// Nesting is a stack, but not a lookup chain: in A -> B -> C, C sees the
+/// process and itself, never B.
+///
+/// The ambient pointer is thread-local. Work that migrates between threads must
+/// capture a ContextToken with the task and install it while the task runs.
+/// LLVM's standard task dispatch paths do this automatically. The token owns a
+/// lifetime lease immediately, including while work is queued, and closing a
+/// context fails unless every task lease has returned. A coroutine that retains
+/// command-line state across suspension is unsupported: its resume point is
+/// chosen by the awaiter rather than by one of those dispatch paths.
+class LLVM_ABI ContextToken {
+public:
+  ContextToken() = default;
+  ContextToken(const ContextToken &Other);
+  ContextToken(ContextToken &&Other) noexcept;
+  ContextToken &operator=(const ContextToken &Other);
+  ContextToken &operator=(ContextToken &&Other) noexcept;
+  ~ContextToken();
+
+  /// Captures the explicit context current on this thread. The process-wide
+  /// default context is represented by an empty token.
+  static ContextToken capture();
+
+  explicit operator bool() const { return Ctx != nullptr; }
+
+private:
+  explicit ContextToken(void *Ctx);
+  void reset();
+
+  void *Ctx = nullptr;
+
+  friend class ScopedContextTokenBinding;
+};
+
+/// Installs a captured command-line context in this thread and restores the
+/// previous one on destruction. Bindings form a strict stack. The binding owns
+/// the token's lease; an empty token explicitly masks an enclosing context.
+class LLVM_ABI ScopedContextTokenBinding {
+public:
+  explicit ScopedContextTokenBinding(ContextToken Token);
+  ~ScopedContextTokenBinding();
+
+  ScopedContextTokenBinding(const ScopedContextTokenBinding &) = delete;
+  ScopedContextTokenBinding &
+  operator=(const ScopedContextTokenBinding &) = delete;
+
+private:
+  ContextToken Token;
+  void *Installed = nullptr;
+  void *Previous = nullptr;
+  bool IsInstalled = false;
+};
+
+class LLVM_ABI ScopedContext {
+  void *Ctx;
+
+public:
+  ScopedContext();
+  ~ScopedContext();
+  ScopedContext(const ScopedContext &) = delete;
+  ScopedContext &operator=(const ScopedContext &) = delete;
+
+  /// Stops new token captures/installations and verifies that all task leases
+  /// have returned. Teardown calls this automatically if needed; arena-bearing
+  /// invocation owners call it before running arena destructors.
+  void beginClosing();
+};
+
+/// Returns a stable identity for the command-line context current on this
+/// thread. It is valid only for that context's lifetime and is intended for
+/// context-keyed Support facilities, not for dereferencing by clients.
+LLVM_ABI const void *getCurrentContextIdentity();
+
+/// Returns true while more than one explicit tool invocation is alive. This is
+/// a process-wide registration-policy query; it does not change the default
+/// context fallback for threads without an installed token.
+LLVM_ABI bool hasConcurrentContexts();
+
+/// Returns true when \p Ptr is owned by the explicit invocation current on
+/// this thread, either in its StaticArena or by one of its
+/// ContextManagedStatic instances. Process-default storage is not invocation
+/// owned.
+LLVM_ABI bool isCurrentInvocationOwned(const void *Ptr);
 
 } // end namespace cl
 

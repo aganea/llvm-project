@@ -44,7 +44,7 @@ struct CreateViewBackground {
   }
 };
 } // namespace
-static ManagedStatic<cl::opt<bool>, CreateViewBackground> ViewBackground;
+static ContextManagedStatic<cl::opt<bool>, CreateViewBackground> ViewBackground;
 #endif
 
 namespace {
@@ -65,9 +65,10 @@ struct CreateNoOpenDAGViewer {
   }
 };
 } // namespace
-static ManagedStatic<cl::opt<std::string>, CreateDAGGraphWriteLocation>
+static ContextManagedStatic<cl::opt<std::string>, CreateDAGGraphWriteLocation>
     DAGGraphWriteLocation;
-static ManagedStatic<cl::opt<bool>, CreateNoOpenDAGViewer> NoOpenDAGViewer;
+static ContextManagedStatic<cl::opt<bool>, CreateNoOpenDAGViewer>
+    NoOpenDAGViewer;
 
 void llvm::initGraphWriterOptions() {
 #ifdef __APPLE__

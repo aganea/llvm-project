@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ProgramStack.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Process.h"
 #include "gtest/gtest.h"
 
@@ -36,6 +37,22 @@ TEST(ProgramStackTest, runOnNewStack) {
   EXPECT_GT(StackDistance, llvm::sys::Process::getPageSizeEstimate());
   runOnNewStack(0, function_ref<void(int &)>(func2), A);
   EXPECT_EQ(A, 5);
+}
+
+TEST(ProgramStackTest, PropagatesCommandLineContext) {
+  cl::ScopedContext Context;
+  bool SawInvocationOption = false;
+  {
+    cl::opt<int> InvocationOption("program-stack-invocation-option",
+                                  cl::init(7));
+    runOnNewStack(0, [&] {
+      auto &Options = cl::getRegisteredOptions();
+      SawInvocationOption = Options.lookup("program-stack-invocation-option") ==
+                            &InvocationOption;
+    });
+  }
+  EXPECT_TRUE(SawInvocationOption);
+  Context.beginClosing();
 }
 
 #endif /*if LLVM_ENABLE_THREADS */

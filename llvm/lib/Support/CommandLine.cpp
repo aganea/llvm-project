@@ -24,6 +24,7 @@
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -39,15 +40,27 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/TypeSize.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 using namespace llvm;
 using namespace cl;
+
+namespace llvm::detail {
+void registerExplicitInvocationContext();
+void beginExplicitInvocationContextTeardown();
+void finishExplicitInvocationContextTeardown();
+bool hasConcurrentExplicitInvocationContexts();
+} // namespace llvm::detail
 
 #define DEBUG_TYPE "commandline"
 
@@ -153,15 +166,22 @@ using OptionsMapTy = DenseMap<StringRef, Option *>;
 
 namespace {
 
+// Both defined further down: the context, next to the ambient pointer that
+// resolves it, and the parser's own options next to the options they hold.
+struct CommandLineContext;
+struct CommandLineCommonOptions;
+
 class PrintArg {
   StringRef ArgName;
   size_t Pad;
+
 public:
-  PrintArg(StringRef ArgName, size_t Pad = DefaultPad) : ArgName(ArgName), Pad(Pad) {}
+  PrintArg(StringRef ArgName, size_t Pad = DefaultPad)
+      : ArgName(ArgName), Pad(Pad) {}
   friend raw_ostream &operator<<(raw_ostream &OS, const PrintArg &);
 };
 
-raw_ostream &operator<<(raw_ostream &OS, const PrintArg& Arg) {
+raw_ostream &operator<<(raw_ostream &OS, const PrintArg &Arg) {
   OS << argPrefix(Arg.ArgName, Arg.Pad) << Arg.ArgName;
   return OS;
 }
@@ -179,7 +199,7 @@ public:
   // This collects Options added with the cl::DefaultOption flag. Since they can
   // be overridden, they are not added to the appropriate SubCommands until
   // ParseCommandLineOptions actually runs.
-  SmallVector<Option*, 4> DefaultOptions;
+  SmallVector<Option *, 4> DefaultOptions;
 
   // This collects the different option categories that have been registered.
   SmallPtrSet<OptionCategory *, 16> RegisteredOptionCategories;
@@ -187,7 +207,37 @@ public:
   // This collects the different subcommands that have been registered.
   SmallPtrSet<SubCommand *, 4> RegisteredSubCommands;
 
+  // Registers the top-level subcommand of whichever context owns this parser.
+  // The parser and that SubCommand are mutually dependent, so the context
+  // installs itself as current *before* creating the parser -- see
+  // clContext()/globalParser() below -- which is what lets this keep resolving
+  // through SubCommand::getTopLevel() rather than needing a back-pointer.
   CommandLineParser() { registerSubCommand(&SubCommand::getTopLevel()); }
+
+  // Erases \p TopLevel and \p All from the Subs set of every option registered
+  // with them. Option objects outlive any context (they are process-lifetime
+  // globals) but Option::Subs holds raw SubCommand pointers, so without this a
+  // popped context leaves dangling pointers behind and the next invocation is a
+  // use-after-free. This is also why snapshot/restore of the mutable data
+  // region cannot replace a real context teardown.
+  void detachOptionsFrom(SubCommand &Sub) {
+    for (auto &E : Sub.OptionsMap)
+      E.second->Subs.erase(&Sub);
+    for (Option *O : Sub.PositionalOpts)
+      O->Subs.erase(&Sub);
+    if (Sub.ConsumeAfterOpt)
+      Sub.ConsumeAfterOpt->Subs.erase(&Sub);
+  }
+
+  void detachOptionsFrom(SubCommand &TopLevel, SubCommand &All) {
+    detachOptionsFrom(TopLevel);
+    detachOptionsFrom(All);
+  }
+
+  // Copies the registrations of \p From into \p To, which this parser owns.
+  // Defined out of line, below CommandLineContext. See the definition for why
+  // a pushed context needs to start as an overlay rather than empty.
+  void inheritFrom(CommandLineContext &From, CommandLineContext &To);
 
   void ResetAllOptionOccurrences();
 
@@ -302,6 +352,31 @@ public:
     forEachSubCommand(*O, [&](SubCommand &SC) { removeOption(O, &SC); });
   }
 
+  // Option::~Option() runs after the derived type has already been destroyed,
+  // so it cannot call getExtraOptionNames() or otherwise dispatch virtually.
+  // Remove every occurrence by pointer instead. This also handles options
+  // structurally inherited from the process parser: their Option::Subs still
+  // names the process context's subcommands, not this parser's subcommands.
+  void removeOptionEverywhere(Option *O, SubCommand &All) {
+    auto RemoveFromSubCommand = [O](SubCommand &Sub) {
+      SmallVector<StringRef, 4> Names;
+      for (const auto &Entry : Sub.OptionsMap)
+        if (Entry.second == O)
+          Names.push_back(Entry.first);
+      for (StringRef Name : Names)
+        Sub.OptionsMap.erase(Name);
+
+      llvm::erase(Sub.PositionalOpts, O);
+      if (Sub.ConsumeAfterOpt == O)
+        Sub.ConsumeAfterOpt = nullptr;
+    };
+
+    for (SubCommand *Sub : RegisteredSubCommands)
+      RemoveFromSubCommand(*Sub);
+    RemoveFromSubCommand(All);
+    llvm::erase(DefaultOptions, O);
+  }
+
   bool hasOptions(const SubCommand &Sub) const {
     return (!Sub.OptionsMap.empty() || !Sub.PositionalOpts.empty() ||
             nullptr != Sub.ConsumeAfterOpt);
@@ -344,8 +419,8 @@ public:
   void registerCategory(OptionCategory *cat) {
     assert(count_if(RegisteredOptionCategories,
                     [cat](const OptionCategory *Category) {
-             return cat->getName() == Category->getName();
-           }) == 0 &&
+                      return cat->getName() == Category->getName();
+                    }) == 0 &&
            "Duplicate option categories");
 
     RegisteredOptionCategories.insert(cat);
@@ -374,7 +449,10 @@ public:
   }
 
   void unregisterSubCommand(SubCommand *sub) {
+    detachOptionsFrom(*sub);
     RegisteredSubCommands.erase(sub);
+    if (ActiveSubCommand == sub)
+      ActiveSubCommand = nullptr;
   }
 
   iterator_range<SmallPtrSet<SubCommand *, 4>::iterator>
@@ -390,8 +468,21 @@ public:
 
     MoreHelp.clear();
     RegisteredOptionCategories.clear();
+    // Option objects keep their category pointers across a parser reset. Keep
+    // the process-lifetime default category registered with the fresh parser
+    // state so those pointers remain valid for categorized help.
+    RegisteredOptionCategories.insert(&getGeneralCategory());
 
     ResetAllOptionOccurrences();
+    // Named SubCommand objects can outlive a test/reset. Empty their
+    // containers and scrub their addresses from Option::Subs before dropping
+    // the registry, so their eventual destructors never inspect stale option
+    // pointers.
+    for (SubCommand *Sub : RegisteredSubCommands)
+      if (Sub != &SubCommand::getTopLevel()) {
+        detachOptionsFrom(*Sub);
+        Sub->reset();
+      }
     RegisteredSubCommands.clear();
 
     SubCommand::getTopLevel().reset();
@@ -417,14 +508,303 @@ private:
 
 } // namespace
 
-// The global parser is kept as a block-scope static so that option
-// constructors running during dynamic initialization of other translation
-// units never reference a namespace-scope global whose initialization order
-// is unspecified. The ManagedStatic keeps construction lazy and destruction
-// tied to llvm_shutdown().
+namespace {
+/// All of the command-line state that belongs to one invocation rather than to
+/// the process.
+///
+/// Member order matters: CommandLineParser's constructor registers the
+/// top-level subcommand, so TopLevel and All have to exist first. The parser
+/// and the common options are created lazily by the accessors below rather
+/// than here, so that PushedCtx already points at this context by the time
+/// CommandLineParser() reaches SubCommand::getTopLevel(). That is what lets
+/// every existing globalParser() and SubCommand::getTopLevel() call site --
+/// including the default arguments in the public header, which bind at the
+/// call site and so pick up the current context -- keep working verbatim.
+struct CommandLineContext {
+  enum class State : uint8_t { Live, Closing };
+
+  SubCommand TopLevel;
+  SubCommand All;
+  std::once_flag ParserOnce;
+  std::unique_ptr<CommandLineParser> Parser;
+  std::atomic<CommandLineParser *> PublishedParser{nullptr};
+  std::once_flag CommonOptsOnce;
+  std::unique_ptr<CommandLineCommonOptions> CommonOpts;
+  std::atomic<CommandLineCommonOptions *> PublishedCommonOpts{nullptr};
+  CommandLineContext *Prev = nullptr;
+
+  // The owner itself is one lease. Every ContextToken owns one more from the
+  // instant work is captured until the task wrapper has completely returned.
+  std::mutex LifecycleMutex;
+  State LifecycleState = State::Live;
+  size_t Leases = 1;
+
+  struct ContextManagedStaticEntry {
+    const ContextManagedStaticBase *Key;
+    void *Ptr;
+    size_t Size;
+    void (*Deleter)(void *);
+  };
+
+  // One lock serializes first construction and any cl:: registration performed
+  // by a context-managed object's constructor. It is recursive because one
+  // such constructor may legitimately access another ContextManagedStatic.
+  std::recursive_mutex ContextStaticsMutex;
+  SmallVector<ContextManagedStaticEntry, 8> ContextStatics;
+
+  void *getContextStatic(const ContextManagedStaticBase *Key, size_t Size,
+                         void *(*Creator)(), void (*Deleter)(void *));
+  void *lookupContextStatic(const ContextManagedStaticBase *Key);
+  void *claimContextStatic(const ContextManagedStaticBase *Key);
+  void destroyContextStatic(const ContextManagedStaticBase *Key);
+  void destroyContextStatics();
+  bool ownsContextStaticAddress(const void *Ptr);
+
+  CommandLineParser *getParserIfConstructed() const {
+    return PublishedParser.load(std::memory_order_acquire);
+  }
+  CommandLineCommonOptions *getCommonOptionsIfConstructed() const {
+    return PublishedCommonOpts.load(std::memory_order_acquire);
+  }
+
+  CommandLineContext();
+  // Out of line: CommonOpts points at a type that is still incomplete here.
+  ~CommandLineContext();
+};
+} // namespace
+
+// The context is invocation/task-keyed rather than worker-thread-keyed: task
+// dispatch captures a lifetime-checked token and installs it around execution.
+static LLVM_THREAD_LOCAL CommandLineContext *PushedCtx = nullptr;
+
+struct PendingContextStaticChecks {
+  CommandLineContext *Context;
+  PendingContextStaticChecks *Previous;
+  SmallVector<std::pair<const void *, const void *>, 2> Checks;
+};
+
+// A ContextManagedStatic creator returns its allocation only after running the
+// object's constructor. cl::location is installed inside that constructor, so
+// neither address can be classified against the allocation range until the
+// creator returns. Defer every such pair and validate it as soon as the exact
+// returned range has been registered.
+static LLVM_THREAD_LOCAL PendingContextStaticChecks *PendingContextChecks =
+    nullptr;
+
+class ScopedPendingContextStaticChecks {
+  PendingContextStaticChecks State;
+
+public:
+  explicit ScopedPendingContextStaticChecks(CommandLineContext *Context)
+      : State{Context, PendingContextChecks, {}} {
+    PendingContextChecks = &State;
+  }
+
+  ~ScopedPendingContextStaticChecks() { PendingContextChecks = State.Previous; }
+
+  void validate();
+};
+
+/// The context that owns everything registered while no cl::ScopedContext is on
+/// the stack -- which means everything registered by a dynamic initializer, so
+/// every library's cl::opt globals. Standalone tools, unit tests and
+/// out-of-tree users never leave it: for them this is exactly today's
+/// behaviour, at the cost of one pointer load.
+///
+/// It is a block-scope static so that option constructors running during
+/// dynamic initialization of other translation units never reference a
+/// namespace-scope global whose initialization order is unspecified. The
+/// ManagedStatic keeps construction lazy and destruction tied to
+/// llvm_shutdown().
+///
+/// Resolved through the ManagedStatic on every access rather than cached:
+/// llvm_shutdown() destroys it, and callers do come back afterwards
+/// (llvm::InitLLVM's destructor shuts down, and unit tests build a local
+/// InitLLVM), so a cached pointer would dangle. The four separate
+/// ManagedStatics this replaced re-created themselves for the same reason.
+static ManagedStatic<CommandLineContext> &defaultContextStorage() {
+  static ManagedStatic<CommandLineContext> DefaultCtx;
+  return DefaultCtx;
+}
+
+static CommandLineContext &defaultContext() { return *defaultContextStorage(); }
+
+static CommandLineContext &clContext() {
+  if (PushedCtx)
+    return *PushedCtx;
+  return defaultContext();
+}
+
+void *
+CommandLineContext::lookupContextStatic(const ContextManagedStaticBase *Key) {
+  std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+  for (const ContextManagedStaticEntry &Entry : reverse(ContextStatics))
+    if (Entry.Key == Key)
+      return Entry.Ptr;
+  return nullptr;
+}
+
+void *CommandLineContext::getContextStatic(const ContextManagedStaticBase *Key,
+                                           size_t Size, void *(*Creator)(),
+                                           void (*Deleter)(void *)) {
+  assert(Key && Size && Creator && Deleter);
+  std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+  for (const ContextManagedStaticEntry &Entry : reverse(ContextStatics))
+    if (Entry.Key == Key)
+      return Entry.Ptr;
+
+  {
+    std::lock_guard<std::mutex> LifecycleLock(LifecycleMutex);
+    if (LifecycleState != State::Live)
+      report_fatal_error(
+          "constructing a ContextManagedStatic in a closing invocation");
+  }
+
+  ScopedPendingContextStaticChecks Pending(this);
+  void *Ptr = Creator();
+  if (!Ptr)
+    report_fatal_error("ContextManagedStatic creator returned null");
+  ContextStatics.push_back({Key, Ptr, Size, Deleter});
+  Pending.validate();
+  return Ptr;
+}
+
+void *
+CommandLineContext::claimContextStatic(const ContextManagedStaticBase *Key) {
+  std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+  auto It = find_if(reverse(ContextStatics),
+                    [Key](const ContextManagedStaticEntry &Entry) {
+                      return Entry.Key == Key;
+                    });
+  if (It == ContextStatics.rend())
+    return nullptr;
+  void *Ptr = It->Ptr;
+  ContextStatics.erase(std::next(It).base());
+  return Ptr;
+}
+
+void CommandLineContext::destroyContextStatic(
+    const ContextManagedStaticBase *Key) {
+  ContextManagedStaticEntry Entry;
+  {
+    std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+    auto It = find_if(reverse(ContextStatics),
+                      [Key](const ContextManagedStaticEntry &Candidate) {
+                        return Candidate.Key == Key;
+                      });
+    assert(It != ContextStatics.rend() &&
+           "ContextManagedStatic is not constructed in this invocation");
+    Entry = *It;
+  }
+
+  // Match ManagedStatic: keep the instance published while its destructor is
+  // running. Destructors may legitimately query their own singleton (for
+  // example, StatisticInfo prints through the public statistics API).
+  Entry.Deleter(Entry.Ptr);
+
+  std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+  auto It = find_if(
+      reverse(ContextStatics), [&](const ContextManagedStaticEntry &Candidate) {
+        return Candidate.Key == Entry.Key && Candidate.Ptr == Entry.Ptr;
+      });
+  assert(It != ContextStatics.rend() &&
+         "ContextManagedStatic removed while its destructor was running");
+  ContextStatics.erase(std::next(It).base());
+}
+
+void CommandLineContext::destroyContextStatics() {
+  for (;;) {
+    ContextManagedStaticEntry Entry;
+    {
+      std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+      if (ContextStatics.empty())
+        return;
+      Entry = ContextStatics.back();
+    }
+
+    // Keep the current entry visible until its deleter returns. Teardown is
+    // single-threaded and the closing state rejects new entries, so the back
+    // entry must remain stable throughout the callback.
+    Entry.Deleter(Entry.Ptr);
+
+    std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+    assert(!ContextStatics.empty() && ContextStatics.back().Key == Entry.Key &&
+           ContextStatics.back().Ptr == Entry.Ptr &&
+           "ContextManagedStatic teardown order changed in a destructor");
+    ContextStatics.pop_back();
+  }
+}
+
+bool CommandLineContext::ownsContextStaticAddress(const void *Ptr) {
+  if (!Ptr)
+    return false;
+  const uintptr_t Address = reinterpret_cast<uintptr_t>(Ptr);
+  std::lock_guard<std::recursive_mutex> Lock(ContextStaticsMutex);
+  for (const ContextManagedStaticEntry &Entry : ContextStatics) {
+    const uintptr_t Begin = reinterpret_cast<uintptr_t>(Entry.Ptr);
+    if (Address >= Begin && Address - Begin < Entry.Size)
+      return true;
+  }
+  return false;
+}
+
+void *ContextManagedStaticBase::RegisterContextManagedStatic(
+    size_t Size, void *(*Creator)(), void (*Deleter)(void *)) const {
+  return clContext().getContextStatic(this, Size, Creator, Deleter);
+}
+
+void *ContextManagedStaticBase::LookupContextManagedStatic() const {
+  return clContext().lookupContextStatic(this);
+}
+
+void *ContextManagedStaticBase::ClaimContextManagedStatic() const {
+  return clContext().claimContextStatic(this);
+}
+
+void ContextManagedStaticBase::destroy() const {
+  clContext().destroyContextStatic(this);
+}
+
+bool cl::isCurrentInvocationOwned(const void *Ptr) {
+  if (isInCurrentStaticArena(Ptr))
+    return true;
+  return PushedCtx && PushedCtx->ownsContextStaticAddress(Ptr);
+}
+
+bool cl::hasCompatibleInvocationLifetime(const void *OptionStorage,
+                                         const void *LocationStorage) {
+  // This is an arena-lifetime canary, not a claim that every
+  // ContextManagedStatic value is isolated. A ScopedContext is also useful for
+  // serialized re-entry, and ordinary Support options may coexist with an
+  // unrelated bound arena. Preserve that B1 fallback when neither physical
+  // endpoint is arena-resident.
+  if (!isInCurrentStaticArena(OptionStorage) &&
+      !isInCurrentStaticArena(LocationStorage))
+    return true;
+  if (PendingContextChecks && PendingContextChecks->Context == PushedCtx) {
+    PendingContextChecks->Checks.emplace_back(OptionStorage, LocationStorage);
+    return true;
+  }
+  return isCurrentInvocationOwned(OptionStorage) ==
+         isCurrentInvocationOwned(LocationStorage);
+}
+
+void ScopedPendingContextStaticChecks::validate() {
+  for (auto [OptionStorage, LocationStorage] : State.Checks)
+    if (cl::isCurrentInvocationOwned(OptionStorage) !=
+        cl::isCurrentInvocationOwned(LocationStorage))
+      report_fatal_error(
+          "cl::location storage must have the same invocation lifetime as "
+          "its option");
+}
+
 static CommandLineParser &globalParser() {
-  static ManagedStatic<CommandLineParser> GlobalParser;
-  return *GlobalParser;
+  CommandLineContext &Ctx = clContext();
+  std::call_once(Ctx.ParserOnce, [&Ctx] {
+    Ctx.Parser = std::make_unique<CommandLineParser>();
+    Ctx.PublishedParser.store(Ctx.Parser.get(), std::memory_order_release);
+  });
+  return *Ctx.getParserIfConstructed();
 }
 
 template <typename T, T TrueVal, T FalseVal>
@@ -453,10 +833,45 @@ extrahelp::extrahelp(StringRef Help) : morehelp(Help) {
 }
 
 Option::Option(NumOccurrencesFlag OccurrencesFlag, OptionHidden Hidden)
-    : NumOccurrences(0), Occurrences(OccurrencesFlag), Value(0),
-      HiddenFlag(Hidden), Formatting(NormalFormatting), Misc(0),
+    : Magic(ConstructedMagic), NumOccurrences(0), Occurrences(OccurrencesFlag),
+      Value(0), HiddenFlag(Hidden), Formatting(NormalFormatting), Misc(0),
       FullyInitialized(false), Position(0) {
   Categories.push_back(&getGeneralCategory());
+}
+
+// Normally a no-op: cl::opt objects are process-lifetime globals that outlive
+// every parser, which is why this can be defaulted upstream.
+//
+// The exception is an option owned by a ManagedStatic -- Debug.cpp's `-debug`,
+// Timer.cpp's `-time-passes` and the handful like them. A tool's
+// llvm::InitLLVM destructor calls llvm_shutdown() from inside main, so those
+// die while the cl::ScopedContext that runTool() pushed is still on the stack.
+// Left registered, they would leave that context's maps holding freed pointers
+// for its own teardown to walk -- which is a use-after-free that shows up as a
+// crash on exit in whichever tool happens to reuse the memory.
+//
+// A process option may also have been structurally inherited by every context
+// on this thread's nesting stack. Conversely, an option created in an explicit
+// context must not make teardown resurrect the process-default context. Scrub
+// every already-constructed parser that can contain the option, including the
+// process default when it still exists.
+//
+// The derived object is already gone here, so this cannot use ArgStr or
+// getExtraOptionNames(). removeOptionEverywhere() removes entries by pointer
+// and is therefore also correct for literal options and options registered for
+// all subcommands.
+Option::~Option() {
+  for (CommandLineContext *Ctx = PushedCtx; Ctx; Ctx = Ctx->Prev)
+    if (CommandLineParser *Parser = Ctx->getParserIfConstructed())
+      Parser->removeOptionEverywhere(this, Ctx->All);
+
+  ManagedStatic<CommandLineContext> &DefaultCtx = defaultContextStorage();
+  if (DefaultCtx.isConstructed()) {
+    CommandLineContext &Ctx = *DefaultCtx;
+    if (CommandLineParser *Parser = Ctx.getParserIfConstructed())
+      Parser->removeOptionEverywhere(this, Ctx.All);
+  }
+  Magic = 0;
 }
 
 void Option::addArgument() {
@@ -497,24 +912,38 @@ void OptionCategory::registerCategory() {
   globalParser().registerCategory(this);
 }
 
-// A special subcommand representing no subcommand. It is kept as a
-// block-scope static because it is referenced from cl::opt constructors,
-// which run dynamically in an arbitrary order across translation units;
-// block-scope statics are initialized on first use and therefore have no
-// initialization-order hazard.
-SubCommand &SubCommand::getTopLevel() {
-  static ManagedStatic<SubCommand> TopLevelSubCommand;
-  return *TopLevelSubCommand;
-}
+// A special subcommand representing no subcommand. It lives in the current
+// invocation context, so that options registered while a cl::ScopedContext is
+// on the stack are visible only there.
+SubCommand &SubCommand::getTopLevel() { return clContext().TopLevel; }
 
 // A special subcommand that can be used to put an option into all subcommands.
-SubCommand &SubCommand::getAll() {
-  static ManagedStatic<SubCommand> AllSubCommands;
-  return *AllSubCommands;
-}
+SubCommand &SubCommand::getAll() { return clContext().All; }
 
 void SubCommand::registerSubCommand() {
   globalParser().registerSubCommand(this);
+}
+
+SubCommand::~SubCommand() {
+  // Registered subcommands are normally process-lifetime globals, but an
+  // arena gives them an invocation lifetime. Do not leave the parser pointing
+  // at their destroyed option maps, and do not resurrect the process parser
+  // during static destruction merely to unregister one.
+  for (CommandLineContext *Ctx = PushedCtx; Ctx; Ctx = Ctx->Prev)
+    if (CommandLineParser *Parser = Ctx->getParserIfConstructed())
+      Parser->unregisterSubCommand(this);
+
+  ManagedStatic<CommandLineContext> &DefaultCtx = defaultContextStorage();
+  if (DefaultCtx.isConstructed()) {
+    CommandLineContext &Ctx = *DefaultCtx;
+    // These two context members were never independently registered. During
+    // default-context destruction they also outlive their parser, whose
+    // published pointer is intentionally only a construction fast path.
+    if (this == &Ctx.TopLevel || this == &Ctx.All)
+      return;
+    if (CommandLineParser *Parser = Ctx.getParserIfConstructed())
+      Parser->unregisterSubCommand(this);
+  }
 }
 
 void SubCommand::unregisterSubCommand() {
@@ -807,9 +1236,7 @@ static bool isWhitespace(char C) {
   return C == ' ' || C == '\t' || C == '\r' || C == '\n';
 }
 
-static bool isWhitespaceOrNull(char C) {
-  return isWhitespace(C) || C == '\0';
-}
+static bool isWhitespaceOrNull(char C) { return isWhitespace(C) || C == '\0'; }
 
 static bool isQuote(char C) { return C == '\"' || C == '\''; }
 
@@ -1545,7 +1972,7 @@ bool CommandLineParser::ParseCommandLineOptions(
   auto &PositionalOpts = ChosenSubCommand->PositionalOpts;
   auto &OptionsMap = ChosenSubCommand->OptionsMap;
 
-  for (auto *O: DefaultOptions) {
+  for (auto *O : DefaultOptions) {
     addOption(O, true);
   }
 
@@ -1716,22 +2143,22 @@ bool CommandLineParser::ParseCommandLineOptions(
       if ((Handler->getMiscFlags() & PositionalEatsArgs) && !Value.empty()) {
         Handler->error("This argument does not take a value.\n"
                        "\tInstead, it consumes any positional arguments until "
-                       "the next recognized option.", *Errs);
+                       "the next recognized option.",
+                       *Errs);
         ErrorParsing = true;
       }
       ActivePositionalArg = Handler;
-    }
-    else
+    } else
       ErrorParsing |= ProvideOption(Handler, ArgName, Value, argc, argv, i);
   }
 
   // Check and handle positional arguments now...
   if (NumPositionalRequired > PositionalVals.size()) {
-      *Errs << ProgramName
-             << ": Not enough positional command line arguments specified!\n"
-             << "Must specify at least " << NumPositionalRequired
-             << " positional argument" << (NumPositionalRequired > 1 ? "s" : "")
-             << ": See: " << argv[0] << " --help\n";
+    *Errs << ProgramName
+          << ": Not enough positional command line arguments specified!\n"
+          << "Must specify at least " << NumPositionalRequired
+          << " positional argument" << (NumPositionalRequired > 1 ? "s" : "")
+          << ": See: " << argv[0] << " --help\n";
 
     ErrorParsing = true;
   } else if (!HasUnlimitedPositionals &&
@@ -1874,9 +2301,7 @@ static StringRef getValueStr(const Option &O, StringRef DefaultMsg) {
 //
 
 // Return the width of the option tag for printing...
-size_t alias::getOptionWidth() const {
-  return argPlusPrefixesSize(ArgStr);
-}
+size_t alias::getOptionWidth() const { return argPlusPrefixesSize(ArgStr); }
 
 void Option::printHelpStr(StringRef HelpStr, size_t Indent,
                           size_t FirstLineIndentedBy) {
@@ -2127,8 +2552,7 @@ static bool shouldPrintOption(StringRef Name, StringRef Description,
 // Return the width of the option tag for printing...
 size_t generic_parser_base::getOptionWidth(const Option &O) const {
   if (O.hasArgStr()) {
-    size_t Size =
-        argPlusPrefixesSize(O.ArgStr) + EqValue.size();
+    size_t Size = argPlusPrefixesSize(O.ArgStr) + EqValue.size();
     for (unsigned i = 0, e = getNumOptions(); i != e; ++i) {
       StringRef Name = getOption(i);
       if (!shouldPrintOption(Name, getDescription(i), O))
@@ -2166,8 +2590,7 @@ void generic_parser_base::printOptionInfo(const Option &O,
 
     outs() << PrintArg(O.ArgStr) << EqValue;
     Option::printHelpStr(O.HelpStr, GlobalWidth,
-                         EqValue.size() +
-                             argPlusPrefixesSize(O.ArgStr));
+                         EqValue.size() + argPlusPrefixesSize(O.ArgStr));
     for (unsigned i = 0, e = getNumOptions(); i != e; ++i) {
       StringRef OptionName = getOption(i);
       StringRef Description = getDescription(i);
@@ -2508,8 +2931,20 @@ protected:
     for (const auto &I : Opts) {
       Option *Opt = I.second;
       for (OptionCategory *Cat : Opt->Categories) {
-        assert(llvm::is_contained(SortedCategories, Cat) &&
-               "Option has an unregistered category");
+        // Process-wide options are inherited by each invocation without
+        // mutating the option object. Its category pointer therefore still
+        // names the default context's object, while this parser owns the
+        // same-named invocation category. Canonicalize by name so categorized
+        // help neither follows the foreign pointer after teardown nor rejects
+        // an otherwise valid inherited option.
+        if (!llvm::is_contained(SortedCategories, Cat)) {
+          auto It = llvm::find_if(SortedCategories, [&](OptionCategory *C) {
+            return C->getName() == Cat->getName();
+          });
+          assert(It != SortedCategories.end() &&
+                 "Option has an unregistered category");
+          Cat = *It;
+        }
         CategorizedOptions[Cat].push_back(Opt);
       }
     }
@@ -2560,23 +2995,23 @@ public:
 #if defined(__GNUC__)
 // GCC and GCC-compatible compilers define __OPTIMIZE__ when optimizations are
 // enabled.
-# if defined(__OPTIMIZE__)
-#  define LLVM_IS_DEBUG_BUILD 0
-# else
-#  define LLVM_IS_DEBUG_BUILD 1
-# endif
+#if defined(__OPTIMIZE__)
+#define LLVM_IS_DEBUG_BUILD 0
+#else
+#define LLVM_IS_DEBUG_BUILD 1
+#endif
 #elif defined(_MSC_VER)
 // MSVC doesn't have a predefined macro indicating if optimizations are enabled.
 // Use _DEBUG instead. This macro actually corresponds to the choice between
 // debug and release CRTs, but it is a reasonable proxy.
-# if defined(_DEBUG)
-#  define LLVM_IS_DEBUG_BUILD 1
-# else
-#  define LLVM_IS_DEBUG_BUILD 0
-# endif
+#if defined(_DEBUG)
+#define LLVM_IS_DEBUG_BUILD 1
+#else
+#define LLVM_IS_DEBUG_BUILD 0
+#endif
 #else
 // Otherwise, for an unknown compiler, assume this is an optimized build.
-# define LLVM_IS_DEBUG_BUILD 0
+#define LLVM_IS_DEBUG_BUILD 0
 #endif
 
 namespace {
@@ -2608,6 +3043,61 @@ public:
     }
   }
   void operator=(bool OptionWasSpecified);
+};
+
+/// Signal-handler-visible options need invocation lifetime, but a signal must
+/// not race a read of cl::opt's ordinary bool or std::string storage. Publish
+/// lock-free snapshots instead. String snapshots are retained for the whole
+/// context lifetime, so a signal that loaded one can finish using it even if a
+/// later occurrence publishes another value.
+struct SignalContextOptions {
+  std::atomic<bool> PublishedDisableSymbolication{false};
+  const std::string EmptyCrashDiagnosticsDirectory;
+  SmallVector<std::unique_ptr<const std::string>, 1>
+      CrashDiagnosticsDirectorySnapshots;
+  std::atomic<const std::string *> PublishedCrashDiagnosticsDirectory{
+      nullptr};
+
+  cl::opt<bool> DisableSymbolication{
+      "disable-symbolication",
+      cl::desc("Disable symbolizing crash backtraces."), cl::Hidden,
+      cl::callback([this](const bool &Value) {
+        PublishedDisableSymbolication.store(Value, std::memory_order_release);
+      })};
+
+  cl::opt<std::string> CrashDiagnosticsDirectory{
+      "crash-diagnostics-dir", cl::value_desc("directory"),
+      cl::desc("Directory for crash diagnostic files."), cl::Hidden,
+      cl::callback([this](const std::string &Value) {
+        publishCrashDiagnosticsDirectory(Value);
+      })};
+
+  void publishCrashDiagnosticsDirectory(StringRef Value) {
+    auto Snapshot = std::make_unique<const std::string>(Value.str());
+    const std::string *Published = Snapshot.get();
+    CrashDiagnosticsDirectorySnapshots.push_back(std::move(Snapshot));
+    PublishedCrashDiagnosticsDirectory.store(Published,
+                                              std::memory_order_release);
+  }
+
+  void resetPublishedValues() {
+    PublishedDisableSymbolication.store(false, std::memory_order_release);
+    PublishedCrashDiagnosticsDirectory.store(
+        &EmptyCrashDiagnosticsDirectory, std::memory_order_release);
+  }
+
+  SignalContextOptions() { resetPublishedValues(); }
+
+  bool owns(const Option *O) const {
+    return O == &DisableSymbolication || O == &CrashDiagnosticsDirectory;
+  }
+
+  void read(bool &Disable, StringRef &Directory) const {
+    Disable = PublishedDisableSymbolication.load(std::memory_order_acquire);
+    const std::string *Snapshot =
+        PublishedCrashDiagnosticsDirectory.load(std::memory_order_acquire);
+    Directory = Snapshot ? StringRef(*Snapshot) : StringRef();
+  }
 };
 
 struct CommandLineCommonOptions {
@@ -2698,15 +3188,296 @@ struct CommandLineCommonOptions {
       "version", cl::desc("Display the version of this program"),
       cl::location(VersionPrinterInstance), cl::ValueDisallowed,
       cl::cat(GenericCategory)};
+
+  // Standalone users retain Signals.cpp's process-default options. Every
+  // explicit invocation gets its own copies instead, so parsed crash settings
+  // cannot leak into the next or a concurrently running tool.
+  std::unique_ptr<SignalContextOptions> SignalOptions;
+
+  CommandLineCommonOptions() {
+    if (PushedCtx)
+      SignalOptions = std::make_unique<SignalContextOptions>();
+  }
+
+  // True for the options declared right above. Each context builds its own set
+  // of them -- they print that context's option list and hold that context's
+  // choices -- so they are the one thing a nested context must not inherit
+  // from its parent; doing so would make the same name register twice.
+  bool owns(const Option *O) const {
+    return O == &HLOp || O == &HLHOp || O == &HOp || O == &HOpA || O == &HHOp ||
+           O == &PrintOptions || O == &PrintAllOptions || O == &VersOp ||
+           (SignalOptions && SignalOptions->owns(O));
+  }
 };
 } // End anonymous namespace
 
-// Lazy-initialized global instance of options controlling the command-line
-// parser and general handling.
-static ManagedStatic<CommandLineCommonOptions> CommonOptions;
+bool llvm::getCurrentSignalOptions(bool &DisableSymbolication,
+                                   StringRef &CrashDiagnosticsDirectory) {
+  // This path may run in a signal handler. In particular, do not call
+  // commonOptions(): lazy construction takes locks and allocates.
+  CommandLineContext *Context = PushedCtx;
+  if (!Context)
+    return false;
+  CommandLineCommonOptions *Common = Context->getCommonOptionsIfConstructed();
+  if (!Common || !Common->SignalOptions)
+    return false;
+  Common->SignalOptions->read(DisableSymbolication,
+                              CrashDiagnosticsDirectory);
+  return true;
+}
+
+CommandLineContext::CommandLineContext() = default;
+CommandLineContext::~CommandLineContext() { destroyContextStatics(); }
+
+// The options that CommandLine.cpp itself declares -- --help, --version and
+// friends. They belong to the invocation, not to the process: they are settings
+// and accumulators ("what this invocation chose"), not a registry of what
+// exists, so each context gets its own.
+static CommandLineCommonOptions &commonOptions() {
+  CommandLineContext &Ctx = clContext();
+  std::call_once(Ctx.CommonOptsOnce, [&Ctx] {
+    Ctx.CommonOpts = std::make_unique<CommandLineCommonOptions>();
+    Ctx.PublishedCommonOpts.store(Ctx.CommonOpts.get(),
+                                  std::memory_order_release);
+  });
+  return *Ctx.getCommonOptionsIfConstructed();
+}
+
+namespace {
+// A pushed context starts as an overlay on the process-wide registrations --
+// those made while no context was on the stack -- rather than as an empty
+// slate.
+//
+// Library-owned cl::opt globals -- `-x86-asm-syntax`, `-print-after-all`,
+// `-time-passes`, the thousands of them -- are ordinary dynamic initializers.
+// They run at process load, long before any tool pushes a context, so they can
+// only ever register in one place: the default context. Without this, a folded
+// tool would see none of them, and `clang -mllvm -foo`, `llc -bar` and lld's
+// `-mllvm` would all report an unknown argument.
+//
+// Registrations are copied structurally, by key, rather than replayed through
+// addOption(): that preserves the literal options a cl::values() parser
+// installs, which live in the map under names the Option itself does not know.
+//
+// Option::Subs is deliberately left alone. Options are process-lifetime
+// objects shared between contexts; copying a pointer makes an option visible
+// here, it does not hand this context ownership. Teardown therefore only has
+// to drop this context's own containers.
+//
+// llvm-driver's per-invocation-globals mode moves the participating tool and
+// library initializers into lifecycle ranges, so those registrations are made
+// directly in the pushed context. Inheritance remains necessary for ordinary
+// folded tools and embedders whose process-lifetime options still initialize
+// the default context. If every registration eventually becomes explicitly
+// invocation-scoped, this copy naturally becomes a no-op.
+//
+// \p From is always the default context, so what is copied is never another
+// tool's registrations, only the process's own.
+void CommandLineParser::inheritFrom(CommandLineContext &From,
+                                    CommandLineContext &To) {
+  CommandLineParser *FromParser = From.getParserIfConstructed();
+  if (!FromParser)
+    return; // Nothing has ever registered outside a context.
+
+  const CommandLineCommonOptions *FromCommon =
+      From.getCommonOptionsIfConstructed();
+  auto Skip = [&](const Option *O) {
+    return isProcessWideSignalsOption(O) ||
+           (FromCommon && FromCommon->owns(O)) ||
+           From.ownsContextStaticAddress(O);
+  };
+
+  for (auto [F, T] : {std::pair(&From.TopLevel, &To.TopLevel),
+                      std::pair(&From.All, &To.All)}) {
+    for (auto &E : F->OptionsMap)
+      if (!Skip(E.second))
+        T->OptionsMap.insert(E); // Ours wins if the key is already taken.
+    for (Option *O : F->PositionalOpts)
+      if (!Skip(O))
+        T->PositionalOpts.push_back(O);
+    if (!T->ConsumeAfterOpt && F->ConsumeAfterOpt && !Skip(F->ConsumeAfterOpt))
+      T->ConsumeAfterOpt = F->ConsumeAfterOpt;
+  }
+
+  for (Option *O : FromParser->DefaultOptions)
+    if (!Skip(O))
+      DefaultOptions.push_back(O);
+
+  llvm::append_range(MoreHelp, FromParser->MoreHelp);
+
+  // Categories are identified by name and registerCategory() asserts that a
+  // name is registered once, so insert directly and let this context's own
+  // categories -- notably its "Generic Options" -- stand.
+  for (OptionCategory *C : From.Parser->RegisteredOptionCategories)
+    if (none_of(RegisteredOptionCategories, [&](const OptionCategory *E) {
+          return E->getName() == C->getName();
+        }))
+      RegisteredOptionCategories.insert(C);
+
+  // Subcommands are deliberately not inherited: they are what a folded tool
+  // must not see from other tools, and no library declares one.
+}
+} // End anonymous namespace
+
+cl::ScopedContext::ScopedContext() {
+  // Construct the process-default signal options before installing an explicit
+  // context. Explicit contexts create their own copies in commonOptions(), but
+  // tokenless signal-handler threads still need stable fallback registrations
+  // and policy rather than whichever invocation happened to parse first.
+  if (!PushedCtx)
+    initSignalsOptions();
+
+  auto *C = new CommandLineContext();
+  C->Prev = PushedCtx;
+  // Reserve this context under the same policy lock used by exclusive process
+  // services. Whichever side wins the race makes the other fail closed.
+  llvm::detail::registerExplicitInvocationContext();
+  // Install before anything can construct the parser, so that the parser's
+  // constructor resolves SubCommand::getTopLevel() to this context's.
+  PushedCtx = C;
+  Ctx = C;
+
+  // Built before inheriting, not lazily afterwards, so that "this context's own
+  // wins" is a rule rather than a function of who happens to touch
+  // commonOptions() first. Concretely: if the default context has ever built
+  // its own copy of these -- any parse or --help outside a context does that --
+  // then inheriting first would copy in its "Generic Options" category and its
+  // --version, and registering ours afterwards would hit registerCategory()'s
+  // duplicate-name assertion. No tool reaches that order today (nothing parses
+  // before runTool() pushes), and the unit tests cannot reproduce it either,
+  // because reset() empties the category set while leaving the options that
+  // registered it alive. It is one line to simply not depend on that.
+  (void)commonOptions();
+
+  // Always the default context, never an enclosing pushed one: what a context
+  // inherits is the process's dynamic initializers, and nesting must not let
+  // one tool's options reach another's.
+  globalParser().inheritFrom(defaultContext(), *C);
+}
+
+cl::ContextToken::ContextToken(void *OpaqueCtx) : Ctx(OpaqueCtx) {
+  if (!Ctx)
+    return;
+  auto *C = static_cast<CommandLineContext *>(Ctx);
+  std::lock_guard<std::mutex> Lock(C->LifecycleMutex);
+  if (C->LifecycleState != CommandLineContext::State::Live)
+    report_fatal_error("capturing a closing command-line context");
+  ++C->Leases;
+}
+
+cl::ContextToken::ContextToken(const ContextToken &Other)
+    : ContextToken(Other.Ctx) {}
+
+cl::ContextToken::ContextToken(ContextToken &&Other) noexcept
+    : Ctx(std::exchange(Other.Ctx, nullptr)) {}
+
+cl::ContextToken &cl::ContextToken::operator=(const ContextToken &Other) {
+  if (this == &Other)
+    return *this;
+  ContextToken Replacement(Other);
+  *this = std::move(Replacement);
+  return *this;
+}
+
+cl::ContextToken &cl::ContextToken::operator=(ContextToken &&Other) noexcept {
+  if (this == &Other)
+    return *this;
+  reset();
+  Ctx = std::exchange(Other.Ctx, nullptr);
+  return *this;
+}
+
+cl::ContextToken::~ContextToken() { reset(); }
+
+cl::ContextToken cl::ContextToken::capture() { return ContextToken(PushedCtx); }
+
+void cl::ContextToken::reset() {
+  if (!Ctx)
+    return;
+  auto *C = static_cast<CommandLineContext *>(std::exchange(Ctx, nullptr));
+  std::lock_guard<std::mutex> Lock(C->LifecycleMutex);
+  if (C->Leases <= 1)
+    report_fatal_error("command-line context task lease underflow");
+  --C->Leases;
+}
+
+cl::ScopedContextTokenBinding::ScopedContextTokenBinding(ContextToken Token)
+    : Token(std::move(Token)) {
+  auto *C = static_cast<CommandLineContext *>(this->Token.Ctx);
+  if (C) {
+    std::lock_guard<std::mutex> Lock(C->LifecycleMutex);
+    if (C->LifecycleState != CommandLineContext::State::Live)
+      report_fatal_error("installing a closing command-line context");
+  }
+  Installed = C;
+  Previous = PushedCtx;
+  PushedCtx = C;
+  IsInstalled = true;
+}
+
+cl::ScopedContextTokenBinding::~ScopedContextTokenBinding() {
+  if (!IsInstalled)
+    return;
+  if (PushedCtx != static_cast<CommandLineContext *>(Installed))
+    report_fatal_error(
+        "command-line context token bindings destroyed out of order");
+  PushedCtx = static_cast<CommandLineContext *>(Previous);
+}
+
+void cl::ScopedContext::beginClosing() {
+  auto *C = static_cast<CommandLineContext *>(Ctx);
+  if (PushedCtx != C)
+    report_fatal_error("command-line context closed out of stack order");
+  std::lock_guard<std::mutex> Lock(C->LifecycleMutex);
+  if (C->LifecycleState == CommandLineContext::State::Closing)
+    return;
+  if (C->Leases != 1)
+    report_fatal_error(
+        "command-line context closed with outstanding task leases");
+  C->LifecycleState = CommandLineContext::State::Closing;
+}
+
+cl::ScopedContext::~ScopedContext() {
+  auto *C = static_cast<CommandLineContext *>(Ctx);
+  if (PushedCtx != C)
+    report_fatal_error("cl::ScopedContext destroyed out of stack order");
+  // Prevent an exclusive service from being acquired after the pre-teardown
+  // check but before this context has finished releasing its state.
+  llvm::detail::beginExplicitInvocationContextTeardown();
+  beginClosing();
+
+  // Context-keyed options unregister themselves while this context and parser
+  // are still current. Other context-owned accumulators follow the same strict
+  // reverse construction order.
+  C->destroyContextStatics();
+
+  if (CommandLineParser *Parser = C->getParserIfConstructed()) {
+    // Option objects outlive every context, but Option::Subs holds raw
+    // SubCommand pointers into this one. Scrub them before the SubCommands die,
+    // then clear the occurrences so the next invocation starts from defaults.
+    Parser->detachOptionsFrom(C->TopLevel, C->All);
+    Parser->reset();
+  }
+
+  // Only now, once reset() has emptied the maps: it walks every option still
+  // registered here, so destroying the parser's own options any earlier would
+  // leave that walk following freed pointers.
+  C->PublishedCommonOpts.store(nullptr, std::memory_order_release);
+  C->CommonOpts.reset();
+
+  PushedCtx = C->Prev;
+  delete C;
+  llvm::detail::finishExplicitInvocationContextTeardown();
+}
+
+const void *cl::getCurrentContextIdentity() { return &clContext(); }
+
+bool cl::hasConcurrentContexts() {
+  return llvm::detail::hasConcurrentExplicitInvocationContexts();
+}
 
 static void initCommonOptions() {
-  *CommonOptions;
+  (void)commonOptions();
   initDebugCounterOptions();
   initGraphWriterOptions();
   initSignalsOptions();
@@ -2718,20 +3489,28 @@ static void initCommonOptions() {
 }
 
 OptionCategory &cl::getGeneralCategory() {
-  // Initialise the general option category.
-  static OptionCategory GeneralCategory{"General options"};
-  return GeneralCategory;
+  // Every Option caches this address, including process-lifetime options that
+  // are inherited by many invocation contexts. The category therefore has to
+  // be process-lifetime as well. Wrap the subobject in a distinct holder type:
+  // the static-arena allowlist selects variables whose declared type is
+  // OptionCategory, while this immutable infrastructure category must never be
+  // relocated into (and then destroyed with) one invocation's arena.
+  struct ProcessGeneralCategory {
+    OptionCategory Value{"General options"};
+  };
+  static ProcessGeneralCategory General;
+  return General.Value;
 }
 
 void VersionPrinter::operator=(bool OptionWasSpecified) {
   if (!OptionWasSpecified)
     return;
 
-  if (CommonOptions->OverrideVersionPrinter != nullptr) {
-    CommonOptions->OverrideVersionPrinter(outs());
+  if (commonOptions().OverrideVersionPrinter != nullptr) {
+    commonOptions().OverrideVersionPrinter(outs());
     exit(0);
   }
-  print(CommonOptions->ExtraVersionPrinters);
+  print(commonOptions().ExtraVersionPrinters);
 
   exit(0);
 }
@@ -2746,7 +3525,7 @@ void HelpPrinterWrapper::operator=(bool Value) {
   if (globalParser().RegisteredOptionCategories.size() > 1) {
     // unhide --help-list option so user can have uncategorized output if they
     // want it.
-    CommonOptions->HLOp.setHiddenFlag(NotHidden);
+    commonOptions().HLOp.setHiddenFlag(NotHidden);
 
     CategorizedPrinter = true; // Invoke categorized printer
   } else {
@@ -2758,7 +3537,7 @@ void HelpPrinterWrapper::operator=(bool Value) {
 void cl::PrintOptionValues() { globalParser().printOptionValues(); }
 
 void CommandLineParser::printOptionValues() {
-  if (!CommonOptions->PrintOptions && !CommonOptions->PrintAllOptions)
+  if (!commonOptions().PrintOptions && !commonOptions().PrintAllOptions)
     return;
 
   SmallVector<std::pair<const char *, Option *>, 128> Opts;
@@ -2770,19 +3549,19 @@ void CommandLineParser::printOptionValues() {
     MaxArgLen = std::max(MaxArgLen, Opt.second->getOptionWidth());
 
   for (const auto &Opt : Opts)
-    Opt.second->printOptionValue(MaxArgLen, CommonOptions->PrintAllOptions);
+    Opt.second->printOptionValue(MaxArgLen, commonOptions().PrintAllOptions);
 }
 
 // Utility function for printing the help message.
 void cl::PrintHelpMessage(bool Hidden, bool Categorized) {
   if (!Hidden && !Categorized)
-    CommonOptions->UncategorizedNormalPrinter.printHelp();
+    commonOptions().UncategorizedNormalPrinter.printHelp();
   else if (!Hidden && Categorized)
-    CommonOptions->CategorizedNormalPrinter.printHelp();
+    commonOptions().CategorizedNormalPrinter.printHelp();
   else if (Hidden && !Categorized)
-    CommonOptions->UncategorizedHiddenPrinter.printHelp();
+    commonOptions().UncategorizedHiddenPrinter.printHelp();
   else
-    CommonOptions->CategorizedHiddenPrinter.printHelp();
+    commonOptions().CategorizedHiddenPrinter.printHelp();
 }
 
 ArrayRef<StringRef> cl::getCompilerBuildConfig() {
@@ -2836,15 +3615,16 @@ void cl::printBuildConfig(raw_ostream &OS) {
 
 /// Utility function for printing version number.
 void cl::PrintVersionMessage() {
-  CommonOptions->VersionPrinterInstance.print(CommonOptions->ExtraVersionPrinters);
+  commonOptions().VersionPrinterInstance.print(
+      commonOptions().ExtraVersionPrinters);
 }
 
 void cl::SetVersionPrinter(VersionPrinterTy func) {
-  CommonOptions->OverrideVersionPrinter = func;
+  commonOptions().OverrideVersionPrinter = func;
 }
 
 void cl::AddExtraVersionPrinter(VersionPrinterTy func) {
-  CommonOptions->ExtraVersionPrinters.push_back(func);
+  commonOptions().ExtraVersionPrinters.push_back(func);
 }
 
 OptionsMapTy &cl::getRegisteredOptions(SubCommand &Sub) {
@@ -2865,7 +3645,7 @@ void cl::HideUnrelatedOptions(cl::OptionCategory &Category, SubCommand &Sub) {
   for (auto &I : Sub.OptionsMap) {
     bool Unrelated = true;
     for (auto &Cat : I.second->Categories) {
-      if (Cat == &Category || Cat == &CommonOptions->GenericCategory)
+      if (Cat == &Category || Cat == &commonOptions().GenericCategory)
         Unrelated = false;
     }
     if (Unrelated)
@@ -2880,7 +3660,7 @@ void cl::HideUnrelatedOptions(ArrayRef<const cl::OptionCategory *> Categories,
     bool Unrelated = true;
     for (auto &Cat : I.second->Categories) {
       if (is_contained(Categories, Cat) ||
-          Cat == &CommonOptions->GenericCategory)
+          Cat == &commonOptions().GenericCategory)
         Unrelated = false;
     }
     if (Unrelated)
@@ -2891,6 +3671,10 @@ void cl::HideUnrelatedOptions(ArrayRef<const cl::OptionCategory *> Categories,
 void cl::ResetCommandLineParser() { globalParser().reset(); }
 void cl::ResetAllOptionOccurrences() {
   globalParser().ResetAllOptionOccurrences();
+  if (CommandLineCommonOptions *Common =
+          clContext().getCommonOptionsIfConstructed())
+    if (Common->SignalOptions)
+      Common->SignalOptions->resetPublishedValues();
 }
 
 void LLVMParseCommandLineOptions(int argc, const char *const *argv,

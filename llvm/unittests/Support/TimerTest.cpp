@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Timer.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #if _WIN32
@@ -14,6 +16,8 @@
 #else
 #include <time.h>
 #endif
+
+#include <memory>
 
 using namespace llvm;
 
@@ -80,6 +84,46 @@ TEST(Timer, TimerGroupTimerDestructed) {
     testing::internal::CaptureStderr();
   }
   EXPECT_FALSE(testing::internal::GetCapturedStderr().empty());
+}
+
+TEST(Timer, TimerGroupsAreInvocationLocal) {
+  std::string OuterOutput;
+  cl::ScopedContext OuterContext;
+  TimerGroup OuterGroup("outer", "outer timer group", false);
+  Timer OuterTimer("outer-timer", "outer timer", OuterGroup);
+  OuterTimer.startTimer();
+  OuterTimer.stopTimer();
+
+  {
+    std::string InnerOutput;
+    cl::ScopedContext InnerContext;
+    TimerGroup InnerGroup("inner", "inner timer group", false);
+    Timer InnerTimer("inner-timer", "inner timer", InnerGroup);
+    InnerTimer.startTimer();
+    InnerTimer.stopTimer();
+
+    raw_string_ostream OS(InnerOutput);
+    TimerGroup::printAll(OS);
+    EXPECT_NE(InnerOutput.find("inner timer group"), std::string::npos);
+    EXPECT_EQ(InnerOutput.find("outer timer group"), std::string::npos);
+  }
+
+  raw_string_ostream OS(OuterOutput);
+  TimerGroup::printAll(OS);
+  EXPECT_NE(OuterOutput.find("outer timer group"), std::string::npos);
+  EXPECT_EQ(OuterOutput.find("inner timer group"), std::string::npos);
+}
+
+TEST(Timer, TimerGroupCanOutliveInvocationState) {
+  std::unique_ptr<TimerGroup> Group;
+  {
+    cl::ScopedContext Context;
+    Group = std::make_unique<TimerGroup>("survivor", "surviving group", false);
+  }
+
+  // Process-lifetime TimerGroups are destroyed after llvm_shutdown(). Their
+  // list and lock state must therefore remain alive until the last group.
+  Group.reset();
 }
 
 } // namespace

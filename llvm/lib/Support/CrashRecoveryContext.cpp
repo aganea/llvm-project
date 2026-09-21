@@ -11,10 +11,13 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ExitCodes.h"
 #include "llvm/Support/Signals.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/thread.h"
+#include <atomic>
 #include <cassert>
 #include <mutex>
 #include <setjmp.h>
+#include <utility>
 #ifdef __APPLE__
 #include <sys/resource.h>
 #endif
@@ -89,7 +92,7 @@ std::mutex &getCrashRecoveryContextMutex() {
   return CrashRecoveryContextMutex;
 }
 
-static bool gCrashRecoveryEnabled = false;
+static std::atomic<bool> gCrashRecoveryEnabled{false};
 
 static LLVM_THREAD_LOCAL const CrashRecoveryContext *IsRecoveringFromCrash;
 
@@ -131,7 +134,7 @@ bool CrashRecoveryContext::isRecoveringFromCrash() {
 }
 
 CrashRecoveryContext *CrashRecoveryContext::GetCurrent() {
-  if (!gCrashRecoveryEnabled)
+  if (!gCrashRecoveryEnabled.load(std::memory_order_relaxed))
     return nullptr;
 
   const CrashRecoveryContextImpl *CRCI = CurrentContext;
@@ -144,17 +147,17 @@ CrashRecoveryContext *CrashRecoveryContext::GetCurrent() {
 void CrashRecoveryContext::Enable(bool NeedsPOSIXUtilitySignalHandling) {
   std::lock_guard<std::mutex> L(getCrashRecoveryContextMutex());
   // FIXME: Shouldn't this be a refcount or something?
-  if (gCrashRecoveryEnabled)
+  if (gCrashRecoveryEnabled.load(std::memory_order_relaxed))
     return;
-  gCrashRecoveryEnabled = true;
+  gCrashRecoveryEnabled.store(true, std::memory_order_relaxed);
   installExceptionOrSignalHandlers(NeedsPOSIXUtilitySignalHandling);
 }
 
 void CrashRecoveryContext::Disable() {
   std::lock_guard<std::mutex> L(getCrashRecoveryContextMutex());
-  if (!gCrashRecoveryEnabled)
+  if (!gCrashRecoveryEnabled.load(std::memory_order_relaxed))
     return;
-  gCrashRecoveryEnabled = false;
+  gCrashRecoveryEnabled.store(false, std::memory_order_relaxed);
   uninstallExceptionOrSignalHandlers();
 }
 
@@ -230,7 +233,7 @@ static int ExceptionFilter(_EXCEPTION_POINTERS *Except) {
 __attribute__((optnone))
 #endif
 bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
-  if (!gCrashRecoveryEnabled) {
+  if (!gCrashRecoveryEnabled.load(std::memory_order_relaxed)) {
     Fn();
     return true;
   }
@@ -373,7 +376,7 @@ static void CrashRecoverySignalHandler(int Signal) {
     // not take a lock, and a lock with static storage duration may already be
     // destroyed by the time a signal is delivered during exit(). Racing with
     // another thread here doesn't matter.
-    gCrashRecoveryEnabled = false;
+    gCrashRecoveryEnabled.store(false, std::memory_order_relaxed);
     uninstallExceptionOrSignalHandlers();
     raise(Signal);
 
@@ -430,7 +433,7 @@ static void uninstallExceptionOrSignalHandlers() {
 
 bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
   // If crash recovery is disabled, do nothing.
-  if (gCrashRecoveryEnabled) {
+  if (gCrashRecoveryEnabled.load(std::memory_order_relaxed)) {
     assert(!Impl && "Crash recovery context already initialized!");
     CrashRecoveryContextImpl *CRCI = new CrashRecoveryContextImpl(this);
     Impl = CRCI;
@@ -515,12 +518,15 @@ struct RunSafelyOnThreadInfo {
   CrashRecoveryContext *CRC;
   bool UseBackgroundPriority;
   bool Result;
+  ToolExecutionContext ExecutionContext;
 };
 } // namespace
 
 static void RunSafelyOnThread_Dispatch(void *UserData) {
   RunSafelyOnThreadInfo *Info =
     reinterpret_cast<RunSafelyOnThreadInfo*>(UserData);
+
+  ScopedToolExecutionContext Context(std::move(Info->ExecutionContext));
 
   if (Info->UseBackgroundPriority)
     setThreadBackgroundPriority();
@@ -530,7 +536,8 @@ static void RunSafelyOnThread_Dispatch(void *UserData) {
 bool CrashRecoveryContext::RunSafelyOnThread(function_ref<void()> Fn,
                                              unsigned RequestedStackSize) {
   bool UseBackgroundPriority = hasThreadBackgroundPriority();
-  RunSafelyOnThreadInfo Info = { Fn, this, UseBackgroundPriority, false };
+  RunSafelyOnThreadInfo Info = {Fn, this, UseBackgroundPriority, false,
+                                ToolExecutionContext::capture()};
   llvm::thread Thread(RequestedStackSize == 0
                           ? std::nullopt
                           : std::optional<unsigned>(RequestedStackSize),

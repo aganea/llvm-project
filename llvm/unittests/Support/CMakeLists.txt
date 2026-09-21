@@ -62,6 +62,7 @@ add_llvm_unittest(SupportTests
   LEB128Test.cpp
   LineIteratorTest.cpp
   LockFileManagerTest.cpp
+  LLVMDriverTest.cpp
   MatchersTest.cpp
   MD5Test.cpp
   ManagedStatic.cpp
@@ -77,6 +78,7 @@ add_llvm_unittest(SupportTests
   Path.cpp
   PerThreadBumpPtrAllocatorTest.cpp
   ProcessTest.cpp
+  ProcessWideRegistryTest.cpp
   ProgramTest.cpp
   ProgramStackTest.cpp
   IntegerInclusiveIntervalTest.cpp
@@ -92,6 +94,7 @@ add_llvm_unittest(SupportTests
   SipHashTest.cpp
   SourceMgrTest.cpp
   SpecialCaseListTest.cpp
+  StaticArenaTest.cpp
   SuffixTreeTest.cpp
   SwapByteOrderTest.cpp
   TarWriterTest.cpp
@@ -134,6 +137,33 @@ add_llvm_unittest(SupportTests
 add_subdirectory(LSP)
 
 target_link_libraries(SupportTests PRIVATE LLVMTestingSupport)
+
+# A separate executable is required to exercise the no-record section case;
+# StaticArenaTest.cpp deliberately contributes records to SupportTests.
+add_llvm_unittest(StaticArenaEmptyTests
+  PARTIAL_SOURCES_INTENDED
+  StaticArenaEmptyTest.cpp
+  )
+target_link_libraries(StaticArenaEmptyTests PRIVATE LLVMTestingSupport)
+
+# These remain separate so each executable has one intentional record-section
+# shape and one process-wide layout state.
+add_llvm_unittest(StaticArenaDeathTests
+  PARTIAL_SOURCES_INTENDED
+  StaticArenaDeathTest.cpp
+  )
+target_link_libraries(StaticArenaDeathTests PRIVATE LLVMTestingSupport)
+
+add_llvm_unittest(StaticArenaInvalidRecordTests
+  PARTIAL_SOURCES_INTENDED
+  StaticArenaInvalidRecordTest.cpp
+  )
+target_link_libraries(StaticArenaInvalidRecordTests PRIVATE LLVMTestingSupport)
+
+add_llvm_unittest(StaticArenaDuplicateTests
+  StaticArenaDuplicateTest.cpp
+  )
+target_link_libraries(StaticArenaDuplicateTests PRIVATE LLVMTestingSupport)
 
 # Disable all warning for AlignOfTest.cpp,
 # as it does things intentionally, and there is no reliable way of

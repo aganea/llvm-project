@@ -60,15 +60,41 @@ struct CreateCrashDiagnosticsDir {
         cl::location(*CrashDiagnosticsDirectory), cl::Hidden);
   }
 };
+
+ManagedStatic<cl::opt<bool, true>, CreateDisableSymbolication>
+    DisableSymbolication;
+ManagedStatic<cl::opt<std::string, true>, CreateCrashDiagnosticsDir>
+    CrashDiagnosticsDir;
 } // namespace
 void llvm::initSignalsOptions() {
-  static ManagedStatic<cl::opt<bool, true>, CreateDisableSymbolication>
-      DisableSymbolication;
-  static ManagedStatic<cl::opt<std::string, true>, CreateCrashDiagnosticsDir>
-      CrashDiagnosticsDir;
   *DisableSymbolication;
   *CrashDiagnosticsDir;
 }
+
+bool llvm::isProcessWideSignalsOption(const cl::Option *Option) {
+  return (DisableSymbolication.isConstructed() &&
+          Option == &*DisableSymbolication) ||
+         (CrashDiagnosticsDir.isConstructed() &&
+          Option == &*CrashDiagnosticsDir);
+}
+
+static bool isSymbolicationDisabledByOption() {
+  bool Disable = false;
+  StringRef IgnoredDirectory;
+  if (getCurrentSignalOptions(Disable, IgnoredDirectory))
+    return Disable;
+  return DisableSymbolicationFlag;
+}
+
+#ifdef _WIN32
+static StringRef getCrashDiagnosticsDirectory() {
+  bool IgnoredDisable = false;
+  StringRef Directory;
+  if (getCurrentSignalOptions(IgnoredDisable, Directory))
+    return Directory;
+  return *CrashDiagnosticsDirectory;
+}
+#endif
 
 constexpr char DisableSymbolizationEnv[] = "LLVM_DISABLE_SYMBOLIZATION";
 constexpr char LLVMSymbolizerPathEnv[] = "LLVM_SYMBOLIZER_PATH";
@@ -262,7 +288,7 @@ ErrorOr<std::string> getLLVMSymbolizerPath(StringRef Argv0 = {}) {
 LLVM_ATTRIBUTE_USED
 static bool printSymbolizedStackTrace(StringRef Argv0, void **StackTrace,
                                       int Depth, llvm::raw_ostream &OS) {
-  if (DisableSymbolicationFlag || getenv(DisableSymbolizationEnv))
+  if (isSymbolicationDisabledByOption() || getenv(DisableSymbolizationEnv))
     return false;
 
   // Don't recursively invoke the llvm-symbolizer binary.
@@ -299,7 +325,8 @@ static bool printSymbolizedStackTrace(StringRef Argv0, void **StackTrace,
 #if LLVM_ENABLE_DEBUGLOC_TRACKING_ORIGIN
 void sys::symbolizeAddresses(AddressSet &Addresses,
                              SymbolizedAddressMap &SymbolizedAddresses) {
-  assert(!DisableSymbolicationFlag && !getenv(DisableSymbolizationEnv) &&
+  assert(!isSymbolicationDisabledByOption() &&
+         !getenv(DisableSymbolizationEnv) &&
          "Debugify origin stacktraces require symbolization to be enabled.");
 
   // This function deals with temporary files for the purposes of symbolization

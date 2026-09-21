@@ -63,7 +63,7 @@ using namespace llvm;
 #define DEBUG_TYPE "codegenaction"
 
 namespace {
-llvm::ManagedStatic<llvm::sys::SmartMutex<true>> TimePassesMutex;
+llvm::ContextManagedStatic<llvm::sys::SmartMutex<true>> TimePassesMutex;
 }
 
 namespace clang {

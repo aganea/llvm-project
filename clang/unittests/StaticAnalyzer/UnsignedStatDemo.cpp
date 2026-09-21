@@ -19,7 +19,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 #include <optional>
 
@@ -146,5 +148,19 @@ TEST(UnsignedStat, ExplicitlySetUnsignedStatistic) {
 
   ASSERT_TRUE(FunctionStats.count("func_none()"));
   EXPECT_EQ(FunctionStats["func_none()"], ""); // Not set, should be empty
+}
+
+TEST(UnsignedStat, RegistryIsPerCommandLineContext) {
+  auto GetHeaderForStat = [](llvm::StringLiteral Name) {
+    llvm::cl::ScopedContext Context;
+    UnsignedEPStat Stat(Name);
+    std::string CSV;
+    llvm::raw_string_ostream OS(CSV);
+    EntryPointStat::dumpStatsAsCSV(OS);
+    return OS.str();
+  };
+
+  EXPECT_EQ(GetHeaderForStat("First"), "USR,File,DebugName,First\n");
+  EXPECT_EQ(GetHeaderForStat("Second"), "USR,File,DebugName,Second\n");
 }
 } // namespace

@@ -17,6 +17,7 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/WindowsError.h"
 #include <io.h>
+#include <mutex>
 #include <signal.h>
 #include <stdio.h>
 
@@ -160,7 +161,7 @@ static std::atomic<void (*)()> OneShotPipeSignalFunction(nullptr);
 // (such as CTRL/C) occurs.  This causes concurrency issues with the above
 // globals which this critical section addresses.
 static CRITICAL_SECTION CriticalSection;
-static bool CriticalSectionInitialized = false;
+static std::once_flag CriticalSectionOnce;
 
 static StringRef Argv0;
 
@@ -374,16 +375,21 @@ extern "C" void HandleAbort(int Sig) {
 }
 
 static void InitializeThreading() {
-  if (CriticalSectionInitialized)
-    return;
-
-  // Now's the time to create the critical section. This is the first time
-  // through here, and there's only one thread.
-  InitializeCriticalSection(&CriticalSection);
-  CriticalSectionInitialized = true;
+  std::call_once(CriticalSectionOnce,
+                 [] { InitializeCriticalSection(&CriticalSection); });
 }
 
 static void RegisterHandler() {
+  InitializeThreading();
+
+  // RegisterHandler returns with the critical section held. Resolve DbgHelp
+  // and install the process handlers under that lock so concurrent output-file
+  // registrations cannot rewrite the function table or race initialization.
+  EnterCriticalSection(&CriticalSection);
+
+  if (RegisteredUnhandledExceptionFilter)
+    return;
+
   // If we cannot load up the APIs (which would be unexpected as they should
   // exist on every version of Windows we support), we will bail out since
   // there would be nothing to report.
@@ -391,17 +397,6 @@ static void RegisterHandler() {
     assert(false && "These APIs should always be available");
     return;
   }
-
-  if (RegisteredUnhandledExceptionFilter) {
-    EnterCriticalSection(&CriticalSection);
-    return;
-  }
-
-  InitializeThreading();
-
-  // Enter it immediately.  Now if someone hits CTRL/C, the console handler
-  // can't proceed until the globals are updated.
-  EnterCriticalSection(&CriticalSection);
 
   RegisteredUnhandledExceptionFilter = true;
   OldFilter = SetUnhandledExceptionFilter(LLVMUnhandledExceptionFilter);
@@ -418,6 +413,7 @@ bool sys::RemoveFileOnSignal(StringRef Filename, std::string *ErrMsg) {
   if (CleanupExecuted) {
     if (ErrMsg)
       *ErrMsg = "Process terminating -- cannot register for removal";
+    LeaveCriticalSection(&CriticalSection);
     return true;
   }
 
@@ -437,10 +433,12 @@ bool sys::RemoveFileOnSignal(StringRef Filename, std::string *ErrMsg) {
 
 // The public API
 void sys::DontRemoveFileOnSignal(StringRef Filename) {
-  if (FilesToRemove == NULL)
-    return;
-
   RegisterHandler();
+
+  if (FilesToRemove == NULL) {
+    LeaveCriticalSection(&CriticalSection);
+    return;
+  }
 
   std::vector<std::string>::reverse_iterator I =
       find(reverse(*FilesToRemove), Filename);
@@ -558,10 +556,12 @@ void llvm::sys::AddSignalHandler(sys::SignalHandlerCallback FnPtr, void *Cookie,
 }
 
 static void Cleanup(bool ExecuteSignalHandlers) {
-  if (CleanupExecuted)
-    return;
-
   EnterCriticalSection(&CriticalSection);
+
+  if (CleanupExecuted) {
+    LeaveCriticalSection(&CriticalSection);
+    return;
+  }
 
   // Prevent other thread from registering new files and directories for
   // removal, should we be executing because of the console handler callback.
@@ -752,7 +752,7 @@ WriteWindowsDumpFile(PMINIDUMP_EXCEPTION_INFORMATION ExceptionInfo) {
   // (GetDumpFolder will return false either if the key is NULL or if there is
   // no valid DumpFolder value at its location).
   bool ExplicitDumpDirectorySet = true;
-  SmallString<MAX_PATH> DumpDirectory(*CrashDiagnosticsDirectory);
+  SmallString<MAX_PATH> DumpDirectory(getCrashDiagnosticsDirectory());
   if (DumpDirectory.empty())
     if (!GetDumpFolder(AppSpecificKey, DumpDirectory))
       if (!GetDumpFolder(DefaultLocalDumpsKey, DumpDirectory))

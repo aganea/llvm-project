@@ -20,6 +20,7 @@
 #include "llvm/Support/Jobserver.h"
 #include "llvm/Support/RWMutex.h"
 #include "llvm/Support/Threading.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/thread.h"
 
 #include <future>
@@ -28,6 +29,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 namespace llvm {
@@ -112,7 +114,24 @@ private:
   template <typename ResTy>
   std::shared_future<ResTy> asyncImpl(llvm::unique_function<ResTy()> Task,
                                       ThreadPoolTaskGroup *Group) {
-    auto Future = std::async(std::launch::deferred, std::move(Task)).share();
+    ToolExecutionContext Context = ToolExecutionContext::capture();
+    auto WrappedTask = [Task = std::move(Task),
+                        Context = std::move(Context)]() mutable -> ResTy {
+      // Empty the callable's captured token before the future is made ready;
+      // retaining it in a completed shared state would keep the invocation
+      // leased merely because a caller retained its shared_future.
+      ToolExecutionContext LocalContext =
+          std::exchange(Context, ToolExecutionContext());
+      ScopedToolExecutionContext Binding(std::move(LocalContext));
+      if constexpr (std::is_void_v<ResTy>) {
+        Task();
+        return;
+      } else {
+        return Task();
+      }
+    };
+    auto Future =
+        std::async(std::launch::deferred, std::move(WrappedTask)).share();
     asyncEnqueue([Future]() { Future.wait(); }, Group);
     return Future;
   }

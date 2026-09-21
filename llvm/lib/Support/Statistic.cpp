@@ -38,29 +38,34 @@
 #include <cstring>
 using namespace llvm;
 
-/// -stats - Command line option to cause transformations to emit stats about
-/// what they did.
-///
-static bool EnableStats;
-static bool StatsAsJSON;
-static bool Enabled;
-static bool PrintOnExit;
+namespace {
+struct StatisticSettings {
+  bool Enabled = false;
+  bool PrintOnExit = false;
 
-void llvm::initStatisticOptions() {
-  static cl::opt<bool, true> registerEnableStats{
+  // Keep option values with their owning command-line context. In particular,
+  // StatisticInfo is destroyed after an invocation's StaticArena has already
+  // been finalized, so its destructor must not resolve arena-backed globals.
+  bool CommandLineEnabled = false;
+  bool StatsAsJSON = false;
+  cl::opt<bool, true> EnableStatsOption{
       "stats",
       cl::desc(
           "Enable statistics output from program (available with Asserts)"),
-      cl::location(EnableStats), cl::Hidden};
-  static cl::opt<bool, true> registerStatsAsJson{
+      cl::location(CommandLineEnabled), cl::Hidden};
+  cl::opt<bool, true> StatsAsJSONOption{
       "stats-json", cl::desc("Display statistics as json data"),
       cl::location(StatsAsJSON), cl::Hidden};
-}
+};
+static ContextManagedStatic<StatisticSettings> Settings;
+} // namespace
+
+void llvm::initStatisticOptions() { (void)*Settings; }
 
 namespace {
-/// This class is used in a ManagedStatic so that it is created on demand (when
-/// the first statistic is bumped) and destroyed only when llvm_shutdown is
-/// called. We print statistics from the destructor.
+/// This class is used in a ContextManagedStatic so that it is created on demand
+/// (when the first statistic is bumped) and destroyed with its owning command
+/// line context. We print statistics from the destructor.
 /// This class is also used to look up statistic values from applications that
 /// use LLVM.
 class StatisticInfo {
@@ -72,6 +77,7 @@ class StatisticInfo {
 
   /// Sort statistics by debugtype,name,description.
   void sort();
+
 public:
   using const_iterator = std::vector<TrackingStatistic *>::const_iterator;
 
@@ -82,28 +88,23 @@ public:
 
   const_iterator begin() const { return Stats.begin(); }
   const_iterator end() const { return Stats.end(); }
-  iterator_range<const_iterator> statistics() const {
-    return {begin(), end()};
-  }
+  iterator_range<const_iterator> statistics() const { return {begin(), end()}; }
 
   void reset();
 };
 } // end anonymous namespace
 
-static ManagedStatic<StatisticInfo> StatInfo;
-static ManagedStatic<sys::SmartMutex<true> > StatLock;
+static ContextManagedStatic<StatisticInfo> StatInfo;
+static ContextManagedStatic<sys::SmartMutex<true>> StatLock;
 
 /// RegisterStatistic - The first time a statistic is bumped, this method is
 /// called.
 void TrackingStatistic::RegisterStatistic() {
   // If stats are enabled, inform StatInfo that this statistic should be
   // printed.
-  // llvm_shutdown calls destructors while holding the ManagedStatic mutex.
-  // These destructors end up calling PrintStatistics, which takes StatLock.
-  // Since dereferencing StatInfo and StatLock can require taking the
-  // ManagedStatic mutex, doing so with StatLock held would lead to a lock
-  // order inversion. To avoid that, we dereference the ManagedStatics first,
-  // and only take StatLock afterwards.
+  // Context teardown can end up calling PrintStatistics, which takes StatLock.
+  // Dereference the context statics before taking StatLock so first
+  // construction never inverts that lock ordering.
   if (!Initialized.load(std::memory_order_relaxed)) {
     sys::SmartMutex<true> &Lock = *StatLock;
     StatisticInfo &SI = *StatInfo;
@@ -111,7 +112,7 @@ void TrackingStatistic::RegisterStatistic() {
     // Check Initialized again after acquiring the lock.
     if (Initialized.load(std::memory_order_relaxed))
       return;
-    if (EnableStats || Enabled)
+    if (Settings->CommandLineEnabled || Settings->Enabled)
       SI.addStatistic(this);
 
     // Remember we have been registered.
@@ -120,6 +121,13 @@ void TrackingStatistic::RegisterStatistic() {
 }
 
 StatisticInfo::StatisticInfo() {
+  // These are used by the destructor. Construct them before this instance is
+  // published so reverse-order context teardown keeps both alive until the
+  // destructor returns. StatisticInfo can otherwise be created by an API call
+  // before command-line parsing constructs Settings.
+  (void)*Settings;
+  (void)*StatLock;
+
   // Ensure that necessary timer global objects are created first so they are
   // destructed after us.
   TimerGroup::constructForStatistics();
@@ -127,16 +135,18 @@ StatisticInfo::StatisticInfo() {
 
 // Print information when destroyed, iff command line option is specified.
 StatisticInfo::~StatisticInfo() {
-  if (EnableStats || PrintOnExit)
+  if (Settings->CommandLineEnabled || Settings->PrintOnExit)
     llvm::PrintStatistics();
 }
 
 void llvm::EnableStatistics(bool DoPrintOnExit) {
-  Enabled = true;
-  PrintOnExit = DoPrintOnExit;
+  Settings->Enabled = true;
+  Settings->PrintOnExit = DoPrintOnExit;
 }
 
-bool llvm::AreStatisticsEnabled() { return Enabled || EnableStats; }
+bool llvm::AreStatisticsEnabled() {
+  return Settings->Enabled || Settings->CommandLineEnabled;
+}
 
 void StatisticInfo::sort() {
   llvm::stable_sort(
@@ -196,7 +206,7 @@ void llvm::PrintStatistics(raw_ostream &OS) {
     OS << format("%*" PRIu64 " %-*s - %s\n", MaxValLen, Stat->getValue(),
                  MaxDebugTypeLen, Stat->getDebugType(), Stat->getDesc());
 
-  OS << '\n';  // Flush the output stream.
+  OS << '\n'; // Flush the output stream.
   OS.flush();
 }
 
@@ -215,8 +225,8 @@ void llvm::PrintStatisticsJSON(raw_ostream &OS) {
            "Statistic group/type name is simple.");
     assert(yaml::needsQuotes(Stat->getName()) == yaml::QuotingType::None &&
            "Statistic name is simple");
-    OS << "\t\"" << Stat->getDebugType() << '.' << Stat->getName() << "\": "
-       << Stat->getValue();
+    OS << "\t\"" << Stat->getDebugType() << '.' << Stat->getName()
+       << "\": " << Stat->getValue();
     delim = ",\n";
   }
   // Print timers.
@@ -232,11 +242,12 @@ void llvm::PrintStatistics() {
   StatisticInfo &Stats = *StatInfo;
 
   // Statistics not enabled?
-  if (Stats.Stats.empty()) return;
+  if (Stats.Stats.empty())
+    return;
 
   // Get the stream to write to.
   std::unique_ptr<raw_ostream> OutStream = CreateInfoOutputFile();
-  if (StatsAsJSON)
+  if (Settings->StatsAsJSON)
     PrintStatisticsJSON(*OutStream);
   else
     PrintStatistics(*OutStream);
@@ -245,7 +256,7 @@ void llvm::PrintStatistics() {
   // Check if the -stats option is set instead of checking
   // !Stats.Stats.empty().  In release builds, Statistics operators
   // do nothing, so stats are never Registered.
-  if (EnableStats) {
+  if (Settings->CommandLineEnabled) {
     // Get the stream to write to.
     std::unique_ptr<raw_ostream> OutStream = CreateInfoOutputFile();
     (*OutStream) << "Statistics are disabled.  "
@@ -263,6 +274,4 @@ std::vector<std::pair<StringRef, uint64_t>> llvm::GetStatistics() {
   return ReturnStats;
 }
 
-void llvm::ResetStatistics() {
-  StatInfo->reset();
-}
+void llvm::ResetStatistics() { StatInfo->reset(); }

@@ -230,6 +230,7 @@ add_llvm_component_library(LLVMSupport
   Driver.cpp
   Locale.cpp
   LockFileManager.cpp
+  LLVMDriver.cpp
   ManagedStatic.cpp
   MathExtras.cpp
   MemAlloc.cpp
@@ -248,6 +249,7 @@ add_llvm_component_library(LLVMSupport
   Parallel.cpp
   PluginLoader.cpp
   PrettyStackTrace.cpp
+  ProcessWideRegistry.cpp
   RandomNumberGenerator.cpp
   IntegerInclusiveInterval.cpp
   Regex.cpp
@@ -281,6 +283,7 @@ add_llvm_component_library(LLVMSupport
   ThreadPool.cpp
   TimeProfiler.cpp
   Timer.cpp
+  ToolExecutionContext.cpp
   ToolOutputFile.cpp
   TrieRawHashMap.cpp
   Twine.cpp

@@ -30,7 +30,8 @@ struct CreateUseColor {
   }
 };
 } // namespace
-static ManagedStatic<cl::opt<cl::boolOrDefault>, CreateUseColor> UseColor;
+static ContextManagedStatic<cl::opt<cl::boolOrDefault>, CreateUseColor>
+    UseColor;
 void llvm::initWithColorOptions() { *UseColor; }
 
 static bool DefaultAutoDetectFunction(const raw_ostream &OS) {
@@ -39,8 +40,8 @@ static bool DefaultAutoDetectFunction(const raw_ostream &OS) {
              : *UseColor == cl::boolOrDefault::BOU_TRUE;
 }
 
-WithColor::AutoDetectFunctionType WithColor::AutoDetectFunction =
-    DefaultAutoDetectFunction;
+std::atomic<WithColor::AutoDetectFunctionType> WithColor::AutoDetectFunction{
+    DefaultAutoDetectFunction};
 
 WithColor::WithColor(raw_ostream &OS, HighlightColor Color, ColorMode Mode)
     : OS(OS), Mode(Mode) {
@@ -136,7 +137,7 @@ bool WithColor::colorsEnabled() {
   case ColorMode::Disable:
     return false;
   case ColorMode::Auto:
-    return AutoDetectFunction(OS);
+    return AutoDetectFunction.load(std::memory_order_relaxed)(OS);
   }
   llvm_unreachable("All cases handled above.");
 }
@@ -174,5 +175,5 @@ WithColor::AutoDetectFunctionType WithColor::defaultAutoDetectFunction() {
 
 void WithColor::setAutoDetectFunction(
     AutoDetectFunctionType NewAutoDetectFunction) {
-  AutoDetectFunction = NewAutoDetectFunction;
+  AutoDetectFunction.store(NewAutoDetectFunction, std::memory_order_relaxed);
 }

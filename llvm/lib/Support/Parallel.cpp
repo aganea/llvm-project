@@ -12,13 +12,16 @@
 #include "llvm/Support/ExponentialBackoff.h"
 #include "llvm/Support/Jobserver.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/Threading.h"
+#include "llvm/Support/ToolExecutionContext.h"
 
 #include <atomic>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
@@ -196,21 +199,27 @@ private:
 } // namespace
 
 static ThreadPoolExecutor *getDefaultExecutor() {
-#ifdef _WIN32
-  // The ManagedStatic enables the ThreadPoolExecutor to be stopped via
-  // llvm_shutdown() on Windows. This is important to avoid various race
-  // conditions at process exit that can cause crashes or deadlocks.
+  if (hasCurrentStaticArena()) {
+    // Folded tools own a pool per invocation. The matching arena-backed
+    // strategy is parsed before first use, and context teardown joins the pool
+    // before releasing that option state.
+    static ContextManagedStatic<ThreadPoolExecutor,
+                                ThreadPoolExecutor::Creator>
+        InvocationExec;
+    return &*InvocationExec;
+  }
 
+#ifdef _WIN32
+  // Preserve the historical standalone lifetime. Stopping the executor from
+  // llvm_shutdown() avoids process-exit races on Windows.
   static ManagedStatic<ThreadPoolExecutor, ThreadPoolExecutor::Creator,
                        ThreadPoolExecutor::Deleter>
       ManagedExec;
   static std::unique_ptr<ThreadPoolExecutor> Exec(&(*ManagedExec));
   return Exec.get();
 #else
-  // ManagedStatic is not desired on other platforms. When `Exec` is destroyed
-  // by llvm_shutdown(), worker threads will clean up and invoke TLS
-  // destructors. This can lead to race conditions if other threads attempt to
-  // access TLS objects that have already been destroyed.
+  // On other platforms the process-lifetime executor intentionally survives
+  // llvm_shutdown(), avoiding TLS teardown races with worker threads.
   static ThreadPoolExecutor Exec(strategy);
   return &Exec;
 #endif
@@ -245,7 +254,15 @@ void TaskGroup::spawn(std::function<void()> F) {
 #if LLVM_ENABLE_THREADS
   if (Parallel) {
     L.inc();
-    getDefaultExecutor()->add(std::move(F), L);
+    ToolExecutionContext Context = ToolExecutionContext::capture();
+    getDefaultExecutor()->add(
+        [F = std::move(F), Context = std::move(Context)]() mutable {
+          ToolExecutionContext LocalContext =
+              std::exchange(Context, ToolExecutionContext());
+          ScopedToolExecutionContext Binding(std::move(LocalContext));
+          F();
+        },
+        L);
     return;
   }
 #endif

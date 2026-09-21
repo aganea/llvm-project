@@ -11,6 +11,7 @@
 
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
 
 namespace llvm {
 
@@ -147,7 +148,10 @@ private:
   raw_ostream &OS;
   ColorMode Mode;
 
-  static AutoDetectFunctionType AutoDetectFunction;
+  // This callback is a process-wide service hook. Readers may run in
+  // concurrent tool invocations, and replacing the hook is an atomic policy
+  // change whose last store wins.
+  static std::atomic<AutoDetectFunctionType> AutoDetectFunction;
 };
 
 } // end namespace llvm

@@ -58,6 +58,20 @@ public:
   LLVM_ABI ErrorOr<int> callTool(ArrayRef<const char *> Args) const;
 };
 
+using LLVMDriverToolMain = int (*)(int, char **, const ToolContext &);
+
+/// Run one folded tool with a fresh command-line context and, when
+/// \p InitLifecycle is non-null, a fresh static arena.
+///
+/// The lifecycle callback runs only after both contexts are installed. On
+/// return, the command-line context begins closing, arena destructors run while
+/// its parser is still alive, and command-line state is then destroyed while
+/// finalized arena storage remains bound. The outer arena binding is restored
+/// before storage is released. Nested calls restore their enclosing invocation.
+LLVM_ABI int runLLVMDriverTool(void (*InitLifecycle)(), LLVMDriverToolMain Main,
+                               int Argc, char **Argv,
+                               const ToolContext &Context);
+
 /// Owns LLVM process initialization and an in-process tool registry.
 ///
 /// A long-lived host constructs one session and uses it for every embedded
