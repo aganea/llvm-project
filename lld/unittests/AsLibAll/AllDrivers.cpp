@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/Common/Driver.h"
+#include "llvm/Support/Driver.h"
 #include "gmock/gmock.h"
 
 LLD_HAS_DRIVER(coff)
@@ -18,6 +19,8 @@ LLD_HAS_DRIVER(elf)
 LLD_HAS_DRIVER(mingw)
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(wasm)
+
+int lld_main(int argc, char **argv, const llvm::ToolContext &);
 
 static bool lldInvoke(std::vector<const char *> args) {
   args.push_back("--version");
@@ -32,4 +35,20 @@ TEST(AsLib, AllDrivers) {
   EXPECT_TRUE(lldInvoke({"ld", "-m", "i386pe"})); // MinGW
   EXPECT_TRUE(lldInvoke({"lld-link"}));
   EXPECT_TRUE(lldInvoke({"wasm-ld"}));
+}
+
+static void noOpLifecycle() {}
+
+static int invokeFoldedLld() {
+  char Arg0[] = "ld.lld";
+  char Arg1[] = "--version";
+  char *Args[] = {Arg0, Arg1};
+  llvm::ToolContext Context{Arg0, nullptr, false};
+  return llvm::runLLVMDriverTool(noOpLifecycle, lld_main, std::size(Args), Args,
+                                 Context);
+}
+
+TEST(AsLib, FoldedEntryReturnsAndCanRunAgain) {
+  EXPECT_EQ(0, invokeFoldedLld());
+  EXPECT_EQ(0, invokeFoldedLld());
 }

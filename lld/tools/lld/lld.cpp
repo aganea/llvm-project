@@ -37,6 +37,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/PluginLoader.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cstdlib>
@@ -86,6 +87,17 @@ int lld_main(int argc, char **argv, const llvm::ToolContext &) {
   // Not running in lit tests, just take the shortest codepath with global
   // exception handling and no memory cleanup on exit.
   if (!inTestVerbosity()) {
+    // A folded invocation belongs to a long-lived host. Return through LLD's
+    // existing re-entrant library path so the linker's context is destroyed
+    // before llvm-driver tears down this invocation's arena. Standalone lld
+    // keeps the process-exit fast path below.
+    if (hasCurrentStaticArena()) {
+      lld::Result r =
+          lldMain(args, llvm::outs(), llvm::errs(), LLD_ALL_DRIVERS);
+      if (!r.canRunAgain)
+        exitLld(r.retCode);
+      return r.retCode;
+    }
     int r =
         lld::unsafeLldMain(args, llvm::outs(), llvm::errs(), LLD_ALL_DRIVERS,
                            /*exitEarly=*/true);

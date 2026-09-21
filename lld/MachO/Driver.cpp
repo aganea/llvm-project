@@ -52,6 +52,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/PackedVersion.h"
@@ -59,6 +60,8 @@
 #if !_WIN32
 #include <sys/mman.h>
 #endif
+
+#include <utility>
 
 using namespace llvm;
 using namespace llvm::MachO;
@@ -294,41 +297,85 @@ using DeferredFiles = std::vector<DeferredFile>;
 #if LLVM_ENABLE_THREADS
 class SerialBackgroundWorkQueue {
   std::deque<std::function<void()>> queue;
-  std::thread *running;
+  std::unique_ptr<std::thread> running;
+  std::mutex lifecycleMutex;
   std::mutex mutex;
+  std::atomic_bool stopAllWork = false;
 
 public:
-  std::atomic_bool stopAllWork = false;
+  ~SerialBackgroundWorkQueue() { cancelAndJoin(); }
+
+  bool shouldStop() const { return stopAllWork; }
+
   void queueWork(std::function<void()> work) {
-    mutex.lock();
-    if (running && queue.empty()) {
-      mutex.unlock();
-      running->join();
-      mutex.lock();
-      delete running;
-      running = nullptr;
+    if (work) {
+      ToolExecutionContext context = ToolExecutionContext::capture();
+      work = [work = std::move(work), context = std::move(context)]() mutable {
+        ToolExecutionContext localContext =
+            std::exchange(context, ToolExecutionContext());
+        ScopedToolExecutionContext binding(std::move(localContext));
+        work();
+      };
     }
 
-    if (work) {
+    // Keep worker ownership stable while joining without holding the queue
+    // mutex. This also serializes queueing against cancelAndJoin().
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex);
+    if (stopAllWork)
+      return;
+
+    std::unique_ptr<std::thread> finishedWorker;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (running && queue.empty())
+        finishedWorker = std::move(running);
+    }
+    if (finishedWorker)
+      finishedWorker->join();
+
+    if (!work)
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mutex);
       queue.emplace_back(std::move(work));
       if (!running)
-        running = new std::thread([&]() {
+        running = std::make_unique<std::thread>([this]() {
           while (!stopAllWork) {
-            mutex.lock();
-            if (queue.empty()) {
-              mutex.unlock();
-              break;
+            std::function<void()> work;
+            {
+              std::lock_guard<std::mutex> lock(mutex);
+              if (stopAllWork || queue.empty())
+                break;
+              work = std::move(queue.front());
             }
-            auto work = std::move(queue.front());
-            mutex.unlock();
             work();
-            mutex.lock();
-            queue.pop_front();
-            mutex.unlock();
+            {
+              std::lock_guard<std::mutex> lock(mutex);
+              queue.pop_front();
+            }
           }
         });
     }
-    mutex.unlock();
+  }
+
+  void cancelAndJoin() {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex);
+    stopAllWork = true;
+
+    std::unique_ptr<std::thread> worker;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      worker = std::move(running);
+    }
+    if (worker)
+      worker->join();
+
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      queue.clear();
+    }
+    stopAllWork = false;
   }
 };
 
@@ -359,7 +406,7 @@ void multiThreadedPageInBackground(DeferredFiles &deferred) {
 #if _WIN32
     // Reference all file's mmap'd pages to load them into memory.
     for (const char *page = buff.data(), *end = page + buff.size();
-         page < end && !pageInQueue.stopAllWork; page += pageSize) {
+         page < end && !pageInQueue.shouldStop(); page += pageSize) {
       [[maybe_unused]] volatile char t = *page;
       (void)t;
     }
@@ -378,7 +425,7 @@ void multiThreadedPageInBackground(DeferredFiles &deferred) {
     llvm::parallel::TaskGroup taskGroup;
     for (int w = 0; w < config->readWorkers; w++)
       taskGroup.spawn([&index, &preloadDeferredFile, &deferred]() {
-        while (!pageInQueue.stopAllWork) {
+        while (!pageInQueue.shouldStop()) {
           size_t localIndex = index.fetch_add(1);
           if (localIndex >= deferred.size())
             break;
@@ -1508,7 +1555,7 @@ static void createFiles(const InputArgList &args) {
     if (!archiveContents.empty())
       multiThreadedPageIn(archiveContents);
 
-    pageInQueue.stopAllWork = true;
+    pageInQueue.cancelAndJoin();
   }
 #endif
 }
@@ -1768,6 +1815,13 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
 
   ctx->e.initialize(stdoutOS, stderrOS, exitEarly, disableOutput);
   ctx->e.cleanupCallback = []() {
+#if LLVM_ENABLE_THREADS
+    // A fatal error can bypass createFiles()'s normal join point.  Quiesce the
+    // prefetch worker while its input buffers and invocation context are still
+    // alive; the arena cannot begin closing while the worker's context token
+    // remains outstanding.
+    pageInQueue.cancelAndJoin();
+#endif
     resolvedFrameworks.clear();
     resolvedLibraries.clear();
     cachedReads.clear();

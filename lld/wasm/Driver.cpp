@@ -12,6 +12,7 @@
 #include "InputElement.h"
 #include "MarkLive.h"
 #include "SymbolTable.h"
+#include "SyntheticSections.h"
 #include "Writer.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -65,11 +66,16 @@ void Ctx::reset() {
   syntheticFunctions.clear();
   syntheticGlobals.clear();
   syntheticTables.clear();
+  syntheticInputSegments.clear();
   whyExtractRecords.clear();
   isPic = false;
   legacyFunctionTable = false;
   emitBssSegments = false;
   sym = WasmSym{};
+  out = OutStruct{};
+  symtab = nullptr;
+  tar.reset();
+  BitcodeFile::doneLTO = false;
 }
 
 namespace {

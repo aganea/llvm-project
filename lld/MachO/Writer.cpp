@@ -29,10 +29,12 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/thread.h"
 #include "llvm/Support/xxhash.h"
 
 #include <algorithm>
+#include <utility>
 
 using namespace llvm;
 using namespace llvm::MachO;
@@ -1403,7 +1405,12 @@ template <class LP> void Writer::run() {
   createLoadCommands<LP>();
   finalizeAddresses();
 
-  llvm::thread mapFileWriter([&] {
+  ToolExecutionContext mapFileContext = ToolExecutionContext::capture();
+  llvm::thread mapFileWriter([&,
+                              context = std::move(mapFileContext)]() mutable {
+    ToolExecutionContext localContext =
+        std::exchange(context, ToolExecutionContext());
+    ScopedToolExecutionContext binding(std::move(localContext));
     if (LLVM_ENABLE_THREADS && config->timeTraceEnabled)
       timeTraceProfilerInitialize(config->timeTraceGranularity, "writeMapFile");
     writeMapFile();

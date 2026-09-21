@@ -4,6 +4,7 @@
 
 add_lld_unittests(LLDAsLibAllTests
   AllDrivers.cpp
+  ${LLD_SOURCE_DIR}/tools/lld/lld.cpp
 )
 
 target_link_libraries(LLDAsLibAllTests
