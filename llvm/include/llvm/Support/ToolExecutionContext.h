@@ -20,6 +20,12 @@ namespace llvm {
 /// Capture owns independent command-line and arena task leases immediately, so
 /// queued work keeps both control blocks live. Copies acquire their own leases.
 /// A standalone process with no explicit invocation produces an empty context.
+///
+/// A coroutine or fiber scheduler can store a captured context with a work
+/// item and install ScopedToolExecutionContext around each resume or switch.
+/// The scoped binding must live in the dispatcher frame so suspension returns
+/// through its destructor. A stackful owner that yields instead needs an empty
+/// scoped binding across the yield to mask its context from the dispatcher.
 class LLVM_ABI ToolExecutionContext {
 public:
   ToolExecutionContext() = default;

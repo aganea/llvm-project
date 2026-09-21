@@ -2370,6 +2370,53 @@ The multicall driver uses the following lifetime and concurrency policy:
   reports that it cannot run again, and `llvm-debuginfod` is a long-running,
   non-returning service rather than a repeatable folded invocation.
 
+Coroutine and fiber libraries must make their resumption boundaries explicit.
+For child work, capture the tool context once and bind a copy around every
+activation from the dispatcher frame:
+
+```cpp
+struct ResumableWork {
+  std::coroutine_handle<> Handle;
+  llvm::ToolExecutionContext Context =
+      llvm::ToolExecutionContext::capture();
+
+  void resume() {
+    llvm::ScopedToolExecutionContext Binding(Context);
+    Handle.resume();
+  }
+};
+```
+
+The stored context is a lifetime lease, so the invocation cannot finish until
+the coroutine is completed or cancelled and its frame destroyed. Destruction
+must use the same binding when coroutine-local destructors may access
+invocation state. Symmetric transfer to work carrying another context and raw
+`coroutine_handle::resume()` calls bypass this boundary and are unsupported.
+
+A stackful Win32 fiber can suspend an entire tool stack cooperatively by masking
+the owner context while the neutral dispatcher runs:
+
+```cpp
+void yieldToDispatcher(void *DispatcherFiber) {
+  llvm::ScopedToolExecutionContext Hide{llvm::ToolExecutionContext()};
+  SwitchToFiber(DispatcherFiber);
+}
+```
+
+When that fiber is resumed, destruction of `Hide` restores its owner context.
+Every yield must use this path, fibers must initially stay on one dispatcher
+thread, and cancellation must resume the fiber to unwind its C++ scopes rather
+than deleting a suspended live tool stack. These are scheduler contracts; they
+do not require additional Clang lowering. Transparent arbitrary switching
+would require a broader execution-local runtime or compiler integration.
+
+`ToolExecutionContext` currently propagates the static arena and command-line
+context. This is sufficient for the state isolated by this feature, but it does
+not make every LLVM OS-thread-local facility fiber-aware. Pretty-stack traces,
+crash recovery, time profiling, stack-boundary tracking, allocator caches, and
+similar facilities need a separate audit before a host runs arbitrary complete
+tool invocations as interleaved fibers.
+
 Version 1 has the following constraints:
 
 - Arena-producing objects must all be linked into one main COFF or ELF
@@ -2390,8 +2437,9 @@ Version 1 has the following constraints:
 - Switching a thread's arena binding is valid only at task or invocation
   boundaries where no pointer into the previous arena remains live. A task
   that migrates to another thread must install the complete captured tool
-  execution context. Retaining arena pointers across coroutine suspension is
-  unsupported.
+  execution context. A suspended coroutine may retain arena pointers only while
+  its stored context lease remains live and every activation reinstalls that
+  same context as described above.
 - Debug builds use a canary to catch many reads of a selected `cl::opt` before
   its arena lifecycle initializer has run, but this is not a complete check. In
   particular, class-valued options with internal storage inherit the value type

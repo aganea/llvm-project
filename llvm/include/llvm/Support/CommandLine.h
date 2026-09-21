@@ -2559,8 +2559,9 @@ LLVM_ABI bool ProvidePositionalOption(Option *Handler, StringRef Arg, int i);
 /// LLVM's standard task dispatch paths do this automatically. The token owns a
 /// lifetime lease immediately, including while work is queued, and closing a
 /// context fails unless every task lease has returned. A coroutine that retains
-/// command-line state across suspension is unsupported: its resume point is
-/// chosen by the awaiter rather than by one of those dispatch paths.
+/// command-line state across suspension must store a captured context and have
+/// its scheduler install that context around every resume. The binding belongs
+/// in the scheduler frame, not across a suspension in the coroutine itself.
 class LLVM_ABI ContextToken {
 public:
   ContextToken() = default;

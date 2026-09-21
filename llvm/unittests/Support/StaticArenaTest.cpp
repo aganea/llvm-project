@@ -12,6 +12,9 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/ToolExecutionContext.h"
+#if defined(_WIN32)
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
 #include "gtest/gtest.h"
 
 #include <algorithm>
@@ -98,6 +101,48 @@ static void finishArena(StaticArena &Arena) {
   Arena.beginClosing();
   Arena.runDestructors();
 }
+
+#if defined(_WIN32)
+struct FiberContextTestState {
+  void *DispatcherFiber = nullptr;
+  unsigned Visits = 0;
+  bool Finished = false;
+};
+
+static VOID WINAPI runFiberContextTest(void *OpaqueState) {
+  auto &State = *static_cast<FiberContextTestState *>(OpaqueState);
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  {
+    ScopedStaticArenaBinding ArenaOwner(*Arena);
+    cl::ScopedContext CommandLineOwner;
+    void *ExpectedArenaAddress = __llvm_arena_addr_v1(&TemplateRecord);
+    const void *ExpectedCommandLineContext = cl::getCurrentContextIdentity();
+
+    for (unsigned I = 0; I != 2; ++I) {
+      EXPECT_EQ(ExpectedArenaAddress, __llvm_arena_addr_v1(&TemplateRecord));
+      EXPECT_EQ(ExpectedCommandLineContext, cl::getCurrentContextIdentity());
+      ++State.Visits;
+
+      // Mask the owner bindings while the neutral dispatcher runs. This scope
+      // intentionally spans the switch on the worker fiber's stack; returning
+      // from SwitchToFiber destroys it and restores the owner bindings.
+      ScopedToolExecutionContext HideOwner{ToolExecutionContext()};
+      EXPECT_FALSE(hasCurrentStaticArena());
+      EXPECT_NE(ExpectedCommandLineContext, cl::getCurrentContextIdentity());
+      SwitchToFiber(State.DispatcherFiber);
+    }
+
+    CommandLineOwner.beginClosing();
+    finishArena(*Arena);
+  }
+  Arena.reset();
+
+  State.Finished = true;
+  SwitchToFiber(State.DispatcherFiber);
+  ADD_FAILURE() << "the completed test fiber was resumed again";
+  SwitchToFiber(State.DispatcherFiber);
+}
+#endif
 
 TEST(StaticArenaTest, ConcurrentFirstCreationPublishesOneLayout) {
 #if !LLVM_ENABLE_THREADS
@@ -451,6 +496,103 @@ TEST(StaticArenaTest, ToolExecutionContextPropagatesArenaAndCommandLine) {
       EXPECT_EQ(0u, cl::getRegisteredOptions().count("arena-option"));
     }
   }
+#endif
+}
+
+TEST(StaticArenaTest, ResumableSlicesRestoreTheDispatcherContext) {
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  std::unique_ptr<StaticArena> WorkArena = StaticArena::create();
+  std::unique_ptr<StaticArena> DispatcherArena = StaticArena::create();
+  ToolExecutionContext SuspendedWork;
+
+  {
+    ScopedStaticArenaBinding WorkOwner(*WorkArena);
+    cl::ScopedContext WorkCommandLine;
+    void *WorkAddress = __llvm_arena_addr_v1(&TemplateRecord);
+    const void *WorkCommandLineIdentity = cl::getCurrentContextIdentity();
+    SuspendedWork = ToolExecutionContext::capture();
+
+    {
+      ScopedStaticArenaBinding DispatcherOwner(*DispatcherArena);
+      cl::ScopedContext DispatcherCommandLine;
+      void *DispatcherAddress = __llvm_arena_addr_v1(&TemplateRecord);
+      const void *DispatcherCommandLineIdentity =
+          cl::getCurrentContextIdentity();
+      EXPECT_NE(WorkAddress, DispatcherAddress);
+      EXPECT_NE(WorkCommandLineIdentity, DispatcherCommandLineIdentity);
+
+      // A coroutine scheduler uses this exact shape around handle.resume().
+      // The binding is on the dispatcher stack, so a suspension returns
+      // through its destructor and restores the dispatcher's context.
+      auto ResumeOneSlice = [&] {
+        ScopedToolExecutionContext Binding(SuspendedWork);
+        EXPECT_EQ(WorkAddress, __llvm_arena_addr_v1(&TemplateRecord));
+        EXPECT_EQ(WorkCommandLineIdentity, cl::getCurrentContextIdentity());
+      };
+
+      ResumeOneSlice();
+      EXPECT_EQ(DispatcherAddress, __llvm_arena_addr_v1(&TemplateRecord));
+      EXPECT_EQ(DispatcherCommandLineIdentity, cl::getCurrentContextIdentity());
+      ResumeOneSlice();
+      EXPECT_EQ(DispatcherAddress, __llvm_arena_addr_v1(&TemplateRecord));
+      EXPECT_EQ(DispatcherCommandLineIdentity, cl::getCurrentContextIdentity());
+
+      SuspendedWork = ToolExecutionContext();
+      DispatcherCommandLine.beginClosing();
+      finishArena(*DispatcherArena);
+    }
+
+    WorkCommandLine.beginClosing();
+    finishArena(*WorkArena);
+  }
+#endif
+}
+
+TEST(StaticArenaTest, WindowsFiberMasksOwnerContextWhileSuspended) {
+#if !defined(_WIN32)
+  GTEST_SKIP() << "Win32 fibers are unavailable";
+#elif LLVM_ADDRESS_SANITIZER_BUILD
+  GTEST_SKIP() << "raw fiber switches need AddressSanitizer fiber hooks";
+#else
+  const bool ConvertedThread = !IsThreadAFiber();
+  void *DispatcherFiber =
+      ConvertedThread ? ConvertThreadToFiber(nullptr) : GetCurrentFiber();
+  if (!DispatcherFiber)
+    GTEST_SKIP() << "could not convert the test thread to a fiber";
+
+  FiberContextTestState State;
+  State.DispatcherFiber = DispatcherFiber;
+  void *WorkerFiber = CreateFiber(0, runFiberContextTest, &State);
+  if (!WorkerFiber) {
+    if (ConvertedThread)
+      (void)ConvertFiberToThread();
+    GTEST_SKIP() << "could not create the test fiber";
+  }
+
+  EXPECT_FALSE(hasCurrentStaticArena());
+  const void *DispatcherCommandLineContext = cl::getCurrentContextIdentity();
+  SwitchToFiber(WorkerFiber);
+  EXPECT_EQ(1u, State.Visits);
+  EXPECT_FALSE(hasCurrentStaticArena());
+  EXPECT_EQ(DispatcherCommandLineContext, cl::getCurrentContextIdentity());
+
+  SwitchToFiber(WorkerFiber);
+  EXPECT_EQ(2u, State.Visits);
+  EXPECT_FALSE(hasCurrentStaticArena());
+  EXPECT_EQ(DispatcherCommandLineContext, cl::getCurrentContextIdentity());
+
+  // Resume once more so the worker unwinds its command-line and arena owners.
+  // Deleting a fiber while those C++ scopes are suspended would leak them.
+  SwitchToFiber(WorkerFiber);
+  EXPECT_TRUE(State.Finished);
+  EXPECT_FALSE(hasCurrentStaticArena());
+  EXPECT_EQ(DispatcherCommandLineContext, cl::getCurrentContextIdentity());
+
+  DeleteFiber(WorkerFiber);
+  if (ConvertedThread)
+    EXPECT_TRUE(ConvertFiberToThread());
 #endif
 }
 
