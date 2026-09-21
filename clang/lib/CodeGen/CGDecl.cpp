@@ -305,6 +305,7 @@ llvm::Constant *CodeGenModule::getOrCreateStaticVarDecl(
     setTLSMode(GV, D);
 
   setGVProperties(GV, &D);
+  markStaticArenaPlaceholder(&D, GV);
   getTargetCodeGenInfo().setTargetAttributes(cast<Decl>(&D), GV, *this);
 
   // Make sure the result is of the correct type.
@@ -360,6 +361,19 @@ llvm::Constant *CodeGenModule::getOrCreateStaticVarDecl(
 llvm::GlobalVariable *
 CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
                                                llvm::GlobalVariable *GV) {
+  if (CodeGenModule::isStaticArenaGlobal(GV) &&
+      CGM.requiresStaticArenaRuntimeInitialization(&D)) {
+    PGO->markStmtMaybeUsed(D.getInit()); // FIXME: Too lazy
+
+    // The arena starts with raw zeroed storage.  Run the language-level
+    // initializer behind the relocated guard so each arena obtains a distinct
+    // object and destructor registration.
+    GV->setConstant(false);
+    if (HaveInsertPoint())
+      EmitCXXGuardedInit(D, GV, /*PerformInit=*/true);
+    return GV;
+  }
+
   ConstantEmitter emitter(*this);
   llvm::Constant *Init = emitter.tryEmitForInitializer(D);
 
@@ -420,7 +434,12 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   // Store into LocalDeclMap before generating initializer to handle
   // circular references.
   llvm::Type *elemTy = ConvertTypeForMem(D.getType());
-  setAddrOfLocalVar(&D, Address(addr, elemTy, alignment));
+  auto *InitialStorage = cast<llvm::GlobalVariable>(addr->stripPointerCasts());
+  if (CodeGenModule::isStaticArenaGlobal(InitialStorage))
+    setAddrOfLocalVar(&D, CGM.emitStaticArenaAddress(*this, &D, InitialStorage)
+                              .withElementType(elemTy));
+  else
+    setAddrOfLocalVar(&D, Address(addr, elemTy, alignment));
 
   // We can't have a VLA here, but we can have a pointer to a VLA,
   // even though that doesn't really make any sense.
@@ -447,6 +466,7 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   }
 
   var->setAlignment(alignment.getAsAlign());
+  CGM.finalizeStaticArenaGlobal(&D, var);
 
   if (D.hasAttr<AnnotateAttr>())
     CGM.AddGlobalAnnotations(&D, var);
@@ -468,7 +488,8 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   else if (D.hasAttr<UsedAttr>())
     CGM.addUsedOrCompilerUsedGlobal(var);
 
-  if (CGM.getCodeGenOpts().KeepPersistentStorageVariables)
+  if (CGM.getCodeGenOpts().KeepPersistentStorageVariables &&
+      !CodeGenModule::isStaticArenaGlobal(var))
     CGM.addUsedOrCompilerUsedGlobal(var);
 
   // We may have to cast the constant because of the initializer
@@ -478,14 +499,20 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   // RAUW's the GV uses of this constant will be invalid.
   llvm::Constant *castedAddr =
     llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(var, expectedType);
-  LocalDeclMap.find(&D)->second = Address(castedAddr, elemTy, alignment);
   CGM.setStaticLocalDeclAddress(&D, castedAddr);
+  if (CodeGenModule::isStaticArenaGlobal(var))
+    LocalDeclMap.find(&D)->second =
+        CGM.emitStaticArenaAddress(*this, &D, var).withElementType(elemTy);
+  else
+    LocalDeclMap.find(&D)->second = Address(castedAddr, elemTy, alignment);
 
-  CGM.getSanitizerMetadata()->reportGlobal(var, D);
+  if (!CodeGenModule::isStaticArenaGlobal(var))
+    CGM.getSanitizerMetadata()->reportGlobal(var, D);
 
   // Emit global variable debug descriptor for static vars.
   CGDebugInfo *DI = getDebugInfo();
-  if (DI && CGM.getCodeGenOpts().hasReducedDebugInfo()) {
+  if (DI && !CodeGenModule::isStaticArenaGlobal(var) &&
+      CGM.getCodeGenOpts().hasReducedDebugInfo()) {
     DI->setLocation(D.getLocation());
     DI->EmitGlobalVariable(var, &D);
   }
@@ -1949,11 +1976,36 @@ void CodeGenFunction::emitZeroOrPatternForAutoVarInit(QualType type,
   }
 }
 
+static bool refersToStaticArenaStorage(CodeGenFunction &CGF, const VarDecl &D) {
+  if (!D.getType()->isReferenceType())
+    return false;
+
+  const APValue *Value = D.evaluateValue();
+  if (!Value || !Value->isLValue())
+    return false;
+
+  const auto *Base = Value->getLValueBase().dyn_cast<const ValueDecl *>();
+  const auto *BaseVD = dyn_cast_or_null<VarDecl>(Base);
+  if (!BaseVD || BaseVD->hasLocalStorage())
+    return false;
+
+  // In C, getMangledName() does not carry the enclosing-function component
+  // used by getStaticDeclName() for a local static. Once its storage has been
+  // materialized, preserve that concrete selection rather than rematching the
+  // declaration under its unqualified source name.
+  if (BaseVD->isStaticLocal())
+    return CGF.CGM.isStaticArenaInitializer(BaseVD);
+
+  return CGF.CGM.isStaticArenaVar(BaseVD,
+                                  CGF.CGM.getMangledName(GlobalDecl(BaseVD)));
+}
+
 void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   assert(emission.Variable && "emission was not valid!");
 
   // If this was emitted as a global constant, we're done.
-  if (emission.wasEmittedAsGlobal()) return;
+  if (emission.wasEmittedAsGlobal())
+    return;
 
   const VarDecl &D = *emission.Variable;
   auto DL = ApplyDebugLocation::CreateDefaultArtificial(*this, D.getLocation());
@@ -1980,9 +2032,8 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   // Initialize the variable here if it doesn't have a initializer and it is a
   // C struct that is non-trivial to initialize or an array containing such a
   // struct.
-  if (!Init &&
-      type.isNonTrivialToPrimitiveDefaultInitialize() ==
-          QualType::PDIK_Struct) {
+  if (!Init && type.isNonTrivialToPrimitiveDefaultInitialize() ==
+                   QualType::PDIK_Struct) {
     LValue Dst = MakeAddrLValue(emission.getAllocatedAddress(), type);
     if (emission.IsEscapingByRef)
       drillIntoBlockVariable(*this, Dst, &D);
@@ -2027,8 +2078,9 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
     return initializeWhatIsTechnicallyUninitialized(Loc);
 
   llvm::Constant *constant = nullptr;
-  if (emission.IsConstantAggregate ||
-      D.mightBeUsableInConstantExpressions(getContext())) {
+  if ((emission.IsConstantAggregate ||
+       D.mightBeUsableInConstantExpressions(getContext())) &&
+      !refersToStaticArenaStorage(*this, D)) {
     assert(!capturedByInit && "constant init contains a capturing block?");
     constant = ConstantEmitter(*this).tryEmitAbstractForInitializer(D);
     if (constant && !constant->isNullValue() &&

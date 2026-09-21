@@ -1938,6 +1938,10 @@ enum ConstantEmissionKind {
   CEK_AsValueOrReference,
   CEK_AsValueOnly
 };
+
+static bool refersToStaticArenaStorage(CodeGenFunction &CGF,
+                                       const APValue &Value);
+
 static ConstantEmissionKind checkVarTypeForConstantEmission(QualType type) {
   type = type.getCanonicalType();
   if (const auto *ref = dyn_cast<ReferenceType>(type)) {
@@ -1996,6 +2000,14 @@ CodeGenFunction::tryEmitAsConstant(const DeclRefExpr *RefExpr) {
 
   // In any case, if the initializer has side-effects, abandon ship.
   if (result.HasSideEffects)
+    return ConstantEmission();
+
+  // Arena storage has an invocation-time address.  A const local pointer (or
+  // reference) can still be folded by the AST evaluator, but materializing
+  // that APValue as an IR constant would reintroduce the discarded process
+  // address.  Keep the ordinary lvalue/load path so it uses the runtime value
+  // established by the initializer.
+  if (refersToStaticArenaStorage(*this, result.Val))
     return ConstantEmission();
 
   // In CUDA/HIP device compilation, a lambda may capture a reference variable
@@ -3482,14 +3494,19 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
       return LV.value();
   }
 
-  llvm::Value *V = CGF.CGM.GetAddrOfGlobalVar(VD);
-
-  if (VD->getTLSKind() != VarDecl::TLS_None)
-    V = CGF.Builder.CreateThreadLocalAddress(V);
-
   llvm::Type *RealVarTy = CGF.getTypes().ConvertTypeForMem(VD->getType());
   CharUnits Alignment = CGF.getContext().getDeclAlign(VD);
-  Address Addr(V, RealVarTy, Alignment);
+  llvm::Value *V = CGF.CGM.GetAddrOfGlobalVar(VD);
+  auto *Storage = dyn_cast<llvm::GlobalVariable>(V->stripPointerCasts());
+  Address Addr = Address::invalid();
+  if (CodeGenModule::isStaticArenaGlobal(Storage)) {
+    Addr = CGF.CGM.emitStaticArenaAddress(CGF, VD, Storage)
+               .withElementType(RealVarTy);
+  } else {
+    if (VD->getTLSKind() != VarDecl::TLS_None)
+      V = CGF.Builder.CreateThreadLocalAddress(V);
+    Addr = Address(V, RealVarTy, Alignment);
+  }
   // Emit reference to the private copy of the variable if it is an OpenMP
   // threadprivate variable.
   if (CGF.getLangOpts().OpenMP && !CGF.getLangOpts().OpenMPSimd &&
@@ -3614,6 +3631,26 @@ static bool canEmitSpuriousReferenceToVariable(CodeGenFunction &CGF,
   }
 }
 
+static bool refersToStaticArenaStorage(CodeGenFunction &CGF,
+                                       const APValue &Value) {
+  if (!Value.isLValue())
+    return false;
+
+  const auto *Base = Value.getLValueBase().dyn_cast<const ValueDecl *>();
+  const auto *BaseVD = dyn_cast_or_null<VarDecl>(Base);
+  if (!BaseVD || BaseVD->hasLocalStorage())
+    return false;
+
+  // A C local static's final storage name includes its enclosing function,
+  // unlike getMangledName(). Consult the already-materialized storage so a
+  // later non-ODR constant use cannot regress to the placeholder address.
+  if (BaseVD->isStaticLocal())
+    return CGF.CGM.isStaticArenaInitializer(BaseVD);
+
+  return CGF.CGM.isStaticArenaVar(BaseVD,
+                                  CGF.CGM.getMangledName(GlobalDecl(BaseVD)));
+}
+
 LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   const NamedDecl *ND = E->getDecl();
   QualType T = E->getType();
@@ -3623,9 +3660,15 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Global Named registers access via intrinsics only
-    if (VD->getStorageClass() == SC_Register &&
-        VD->hasAttr<AsmLabelAttr>() && !VD->isLocalVarDecl())
+    if (VD->getStorageClass() == SC_Register && VD->hasAttr<AsmLabelAttr>() &&
+        !VD->isLocalVarDecl()) {
+      // This path deliberately bypasses GetAddrOfGlobalVar, so force the
+      // arena selection check before returning the register-backed lvalue.
+      // A selected declaration must be diagnosed rather than silently
+      // remaining process/register state.
+      (void)CGM.isStaticArenaVar(VD, CGM.getMangledName(GlobalDecl(VD)));
       return EmitGlobalNamedRegister(VD, CGM);
+    }
 
     // If this DeclRefExpr does not constitute an odr-use of the variable,
     // we're not permitted to emit a reference to it in general, and it might
@@ -3635,29 +3678,41 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
         (VD->getType()->isReferenceType() ||
          !canEmitSpuriousReferenceToVariable(*this, E, VD))) {
       VD->getAnyInitializer(VD);
-      llvm::Constant *Val = ConstantEmitter(*this).emitAbstract(
-          E->getLocation(), *VD->evaluateValue(), VD->getType());
-      assert(Val && "failed to emit constant expression");
+      const APValue *Value = VD->evaluateValue();
 
-      Address Addr = Address::invalid();
-      if (!VD->getType()->isReferenceType()) {
-        // Spill the constant value to a global.
-        Addr = CGM.createUnnamedGlobalFrom(*VD, Val,
-                                           getContext().getDeclAlign(VD));
-        llvm::Type *VarTy = getTypes().ConvertTypeForMem(VD->getType());
-        auto *PTy = llvm::PointerType::get(
-            getLLVMContext(), getTypes().getTargetAddressSpace(VD->getType()));
-        Addr = Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, PTy, VarTy);
-      } else {
-        // Should we be using the alignment of the constant pointer we emitted?
-        CharUnits Alignment =
-            CGM.getNaturalTypeAlignment(E->getType(),
-                                        /* BaseInfo= */ nullptr,
-                                        /* TBAAInfo= */ nullptr,
-                                        /* forPointeeType= */ true);
-        Addr = makeNaturalAddressForPointer(Val, T, Alignment);
+      // Range-for and other language desugarings can introduce a reference or
+      // const pointer whose value is normally folded directly to the
+      // referenced global. An arena global has no link-time address. Fall
+      // through to the normal local/capture lookup below, whose mapping
+      // contains the resolver-derived runtime address established by the
+      // initializer.
+      if (Value && !refersToStaticArenaStorage(*this, *Value)) {
+        llvm::Constant *Val = ConstantEmitter(*this).emitAbstract(
+            E->getLocation(), *Value, VD->getType());
+        assert(Val && "failed to emit constant expression");
+
+        Address Addr = Address::invalid();
+        if (!VD->getType()->isReferenceType()) {
+          // Spill the constant value to a global.
+          Addr = CGM.createUnnamedGlobalFrom(*VD, Val,
+                                             getContext().getDeclAlign(VD));
+          llvm::Type *VarTy = getTypes().ConvertTypeForMem(VD->getType());
+          auto *PTy = llvm::PointerType::get(
+              getLLVMContext(),
+              getTypes().getTargetAddressSpace(VD->getType()));
+          Addr = Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, PTy, VarTy);
+        } else {
+          // Should we be using the alignment of the constant pointer we
+          // emitted?
+          CharUnits Alignment =
+              CGM.getNaturalTypeAlignment(E->getType(),
+                                          /* BaseInfo= */ nullptr,
+                                          /* TBAAInfo= */ nullptr,
+                                          /* forPointeeType= */ true);
+          Addr = makeNaturalAddressForPointer(Val, T, Alignment);
+        }
+        return MakeAddrLValue(Addr, T, AlignmentSource::Decl);
       }
-      return MakeAddrLValue(Addr, T, AlignmentSource::Decl);
     }
 
     // FIXME: Handle other kinds of non-odr-use DeclRefExprs.
@@ -3737,10 +3792,15 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
     } else if (VD->isStaticLocal()) {
       llvm::Constant *var = CGM.getOrCreateStaticVarDecl(
           *VD, CGM.getLLVMLinkageVarDefinition(VD));
-      addr = Address(
-          var, ConvertTypeForMem(VD->getType()), getContext().getDeclAlign(VD));
+      auto *Storage = cast<llvm::GlobalVariable>(var->stripPointerCasts());
+      if (CodeGenModule::isStaticArenaGlobal(Storage))
+        addr = CGM.emitStaticArenaAddress(*this, VD, Storage)
+                   .withElementType(ConvertTypeForMem(VD->getType()));
+      else
+        addr = Address(var, ConvertTypeForMem(VD->getType()),
+                       getContext().getDeclAlign(VD));
 
-    // No other cases for now.
+      // No other cases for now.
     } else {
       llvm_unreachable("DeclRefExpr for Decl not entered in LocalDeclMap?");
     }

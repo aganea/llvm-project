@@ -40,6 +40,10 @@ private:
   /// Whether we're in a constant context.
   bool InConstantContext = false;
 
+  /// The declaration whose concrete initializer is currently being emitted.
+  /// Abstract emission deliberately leaves this null.
+  const VarDecl *InitializedDecl = nullptr;
+
   /// The AST address space where this (non-abstract) initializer is going.
   /// Used for generating appropriate placeholders.
   LangAS DestAddressSpace = LangAS::Default;
@@ -69,6 +73,7 @@ public:
 
   bool isInConstantContext() const { return InConstantContext; }
   void setInConstantContext(bool var) { InConstantContext = var; }
+  const VarDecl *getInitializedDecl() const { return InitializedDecl; }
 
   /// Try to emit the initiaizer of the given declaration as an abstract
   /// constant.  If this succeeds, the emission must be finalized.

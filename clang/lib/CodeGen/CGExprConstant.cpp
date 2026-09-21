@@ -26,6 +26,7 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/Builtins.h"
+#include "clang/Basic/DiagnosticCodeGen.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -1711,6 +1712,8 @@ ConstantEmitter::emitAbstract(SourceLocation loc, const APValue &value,
 
 llvm::Constant *ConstantEmitter::tryEmitForInitializer(const VarDecl &D) {
   initializeNonAbstract(D.getType().getAddressSpace());
+  assert(!InitializedDecl && "emitter reused for multiple initializers");
+  InitializedDecl = &D;
   llvm::Constant *Init = tryEmitPrivateForVarInit(D);
 
   // If a placeholder address was needed for a TLS variable, implying that the
@@ -2320,14 +2323,36 @@ ConstantLValueEmitter::tryEmitBase(const APValue::LValueBase &base) {
     }
 
     if (const auto *VD = dyn_cast<VarDecl>(D)) {
+      auto HandleStaticArenaAddress = [&](llvm::Constant *Addr) {
+        if (!CodeGenModule::isStaticArenaGlobal(
+                dyn_cast<llvm::GlobalVariable>(Addr->stripPointerCasts())))
+          return Addr;
+
+        if (Emitter.isInConstantContext()) {
+          const VarDecl *InitializedDecl = Emitter.getInitializedDecl();
+          bool IsArenaTemplate =
+              InitializedDecl && CGM.isStaticArenaInitializer(InitializedDecl);
+          if (IsArenaTemplate)
+            return Addr;
+
+          CGM.getDiags().Report(VD->getLocation(),
+                                diag::err_static_arena_constant_address)
+              << VD;
+        }
+        return static_cast<llvm::Constant *>(nullptr);
+      };
+
       // We can never refer to a variable with local storage.
       if (!VD->hasLocalStorage()) {
-        if (VD->isFileVarDecl() || VD->hasExternalStorage())
-          return CGM.GetAddrOfGlobalVar(VD);
+        if (VD->isFileVarDecl() || VD->hasExternalStorage()) {
+          llvm::Constant *Addr = CGM.GetAddrOfGlobalVar(VD);
+          return HandleStaticArenaAddress(Addr);
+        }
 
         if (VD->isLocalVarDecl()) {
-          return CGM.getOrCreateStaticVarDecl(
+          llvm::Constant *Addr = CGM.getOrCreateStaticVarDecl(
               *VD, CGM.getLLVMLinkageVarDefinition(VD));
+          return HandleStaticArenaAddress(Addr);
         }
       }
     }

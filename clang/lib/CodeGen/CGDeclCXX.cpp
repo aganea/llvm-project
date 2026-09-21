@@ -18,7 +18,10 @@
 #include "CodeGenFunction.h"
 #include "TargetInfo.h"
 #include "clang/AST/Attr.h"
+#include "clang/Basic/DiagnosticCodeGen.h"
 #include "clang/Basic/LangOptions.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Basic/StaticArenaList.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/MDBuilder.h"
@@ -28,7 +31,7 @@ using namespace clang;
 using namespace CodeGen;
 
 static void EmitDeclInit(CodeGenFunction &CGF, const VarDecl &D,
-                         ConstantAddress DeclPtr) {
+                         Address DeclPtr) {
   assert(
       (D.hasGlobalStorage() ||
        (D.hasLocalStorage() && CGF.getContext().getLangOpts().OpenCLCPlusPlus)) &&
@@ -70,7 +73,7 @@ static void EmitDeclInit(CodeGenFunction &CGF, const VarDecl &D,
 /// Emit code to cause the destruction of the given variable with
 /// static storage duration.
 static void EmitDeclDestroy(CodeGenFunction &CGF, const VarDecl &D,
-                            ConstantAddress Addr) {
+                            Address Addr, llvm::GlobalVariable *Storage) {
   // Honor __attribute__((no_destroy)) and bail instead of attempting
   // to emit a reference to a possibly nonexistent destructor, which
   // in turn can cause a crash. This will result in a global constructor
@@ -107,6 +110,61 @@ static void EmitDeclDestroy(CodeGenFunction &CGF, const VarDecl &D,
   // passed directly to __cxa_atexit if the target does not allow this
   // mismatch.
   const CXXRecordDecl *Record = Type->getAsCXXRecordDecl();
+
+  if (CodeGenModule::isStaticArenaGlobal(Storage)) {
+    if (!Record) {
+      CGM.getDiags().Report(D.getLocation(),
+                            diag::err_static_arena_unsupported_destructor)
+          << &D;
+      return;
+    }
+
+    llvm::PointerType *PtrTy =
+        llvm::PointerType::getUnqual(CGM.getLLVMContext());
+    std::string AdapterName =
+        ("__llvm_arena_dtor_adapter_v1." + Storage->getName()).str();
+    llvm::Function *Adapter = CGM.getModule().getFunction(AdapterName);
+    if (!Adapter) {
+      // Emit the callback through CodeGenFunction instead of calling the LLVM
+      // structor declaration directly.  This preserves every ABI-specific
+      // part of a complete-destructor call (including hidden parameters,
+      // return conventions, and calling convention) while presenting the
+      // arena runtime with its uniform void(void *) callback ABI.
+      CodeGenFunction DtorCGF(CGM);
+      auto *Object = ImplicitParamDecl::Create(CGM.getContext(),
+                                               CGM.getContext().VoidPtrTy,
+                                               ImplicitParamKind::Other);
+      FunctionArgList Args{Object};
+      const CGFunctionInfo &FI =
+          CGM.getTypes().arrangeBuiltinFunctionDeclaration(
+              CGM.getContext().VoidTy, Args);
+      llvm::FunctionType *AdapterTy = CGM.getTypes().GetFunctionType(FI);
+      Adapter = CGM.CreateGlobalInitOrCleanUpFunction(AdapterTy, AdapterName,
+                                                      FI, D.getLocation());
+      auto NoLocation = ApplyDebugLocation::CreateEmpty(DtorCGF);
+      DtorCGF.StartFunction(GlobalDecl(), CGM.getContext().VoidTy, Adapter, FI,
+                            Args, D.getLocation(), D.getLocation());
+      auto ArtificialLocation = ApplyDebugLocation::CreateArtificial(DtorCGF);
+      llvm::Value *ObjectValue = DtorCGF.EmitLoadOfScalar(
+          DtorCGF.GetAddrOfLocalVar(Object), /*Volatile=*/false,
+          CGM.getContext().VoidPtrTy, D.getLocation());
+      Address ObjectAddress(ObjectValue, DtorCGF.ConvertTypeForMem(Type),
+                            CGM.getContext().getDeclAlign(&D));
+      DtorCGF.emitDestroy(ObjectAddress, Type, DtorCGF.getDestroyer(DtorKind),
+                          DtorCGF.needsEHCleanup(DtorKind));
+      DtorCGF.FinishFunction();
+      if (llvm::Comdat *C = CGM.getStaticArenaComdat(Storage))
+        Adapter->setComdat(C);
+    }
+
+    llvm::FunctionType *AtExitTy =
+        llvm::FunctionType::get(CGM.IntTy, {PtrTy, PtrTy}, /*isVarArg=*/false);
+    llvm::FunctionCallee AtExit =
+        CGM.CreateRuntimeFunction(AtExitTy, "__llvm_arena_atexit_v1");
+    CGF.Builder.CreateCall(AtExit, {Adapter, Addr.emitRawPointer(CGF)});
+    return;
+  }
+
   bool CanRegisterDestructor =
       Record && (!CGM.getCXXABI().HasThisReturn(
                      GlobalDecl(Record->getDestructor(), Dtor_Complete)) ||
@@ -127,13 +185,13 @@ static void EmitDeclDestroy(CodeGenFunction &CGF, const VarDecl &D,
           CGM.getLLVMContext(), CGM.getContext().getTargetAddressSpace(DestAS));
       auto SrcAS = D.getType().getQualifiers().getAddressSpace();
       if (DestAS == SrcAS)
-        Argument = Addr.getPointer();
+        Argument = cast<llvm::Constant>(Addr.emitRawPointer(CGF));
       else
         // FIXME: On addr space mismatch we are passing NULL. The generation
         // of the global destructor function should be adjusted accordingly.
         Argument = llvm::ConstantPointerNull::get(DestTy);
     } else {
-      Argument = Addr.getPointer();
+      Argument = cast<llvm::Constant>(Addr.emitRawPointer(CGF));
     }
   // Otherwise, the standard logic requires a helper function.
   } else {
@@ -195,17 +253,23 @@ void CodeGenFunction::EmitCXXGlobalVarDeclInit(const VarDecl &D,
   // For example, in the above CUDA code, the static local variable s has a
   // "shared" address space qualifier, but the constructor of StructWithCtor
   // expects "this" in the "generic" address space.
-  unsigned ExpectedAddrSpace = getTypes().getTargetAddressSpace(T);
-  unsigned ActualAddrSpace = GV->getAddressSpace();
-  llvm::Constant *DeclPtr = GV;
-  if (ActualAddrSpace != ExpectedAddrSpace) {
-    llvm::PointerType *PTy =
-        llvm::PointerType::get(getLLVMContext(), ExpectedAddrSpace);
-    DeclPtr = llvm::ConstantExpr::getAddrSpaceCast(DeclPtr, PTy);
+  Address DeclAddr = Address::invalid();
+  llvm::Constant *ConstantDeclPtr = nullptr;
+  if (CodeGenModule::isStaticArenaGlobal(GV)) {
+    DeclAddr = CGM.emitStaticArenaAddress(*this, &D, GV);
+  } else {
+    unsigned ExpectedAddrSpace = getTypes().getTargetAddressSpace(T);
+    unsigned ActualAddrSpace = GV->getAddressSpace();
+    ConstantDeclPtr = GV;
+    if (ActualAddrSpace != ExpectedAddrSpace) {
+      llvm::PointerType *PTy =
+          llvm::PointerType::get(getLLVMContext(), ExpectedAddrSpace);
+      ConstantDeclPtr =
+          llvm::ConstantExpr::getAddrSpaceCast(ConstantDeclPtr, PTy);
+    }
+    DeclAddr = ConstantAddress(ConstantDeclPtr, GV->getValueType(),
+                               getContext().getDeclAlign(&D));
   }
-
-  ConstantAddress DeclAddr(
-      DeclPtr, GV->getValueType(), getContext().getDeclAlign(&D));
 
   if (!T->isReferenceType()) {
     if (getLangOpts().OpenMP && !getLangOpts().OpenMPSimd &&
@@ -218,10 +282,11 @@ void CodeGenFunction::EmitCXXGlobalVarDeclInit(const VarDecl &D,
         D.needsDestruction(getContext()) == QualType::DK_cxx_destructor;
     if (PerformInit)
       EmitDeclInit(*this, D, DeclAddr);
-    if (D.getType().isConstantStorage(getContext(), true, !NeedsDtor))
-      EmitDeclInvariant(*this, D, DeclPtr);
+    if (!CodeGenModule::isStaticArenaGlobal(GV) &&
+        D.getType().isConstantStorage(getContext(), true, !NeedsDtor))
+      EmitDeclInvariant(*this, D, ConstantDeclPtr);
     else
-      EmitDeclDestroy(*this, D, DeclAddr);
+      EmitDeclDestroy(*this, D, DeclAddr, GV);
     return;
   }
 
@@ -516,16 +581,123 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrCleanUpFunction(
 void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
                                           llvm::GlobalVariable *GV,
                                           llvm::Function *InitFunc,
-                                          InitSegAttr *ISA) {
+                                          StringRef Section,
+                                          llvm::GlobalVariable *ComdatAnchor) {
   llvm::GlobalVariable *PtrArray = new llvm::GlobalVariable(
       TheModule, InitFunc->getType(), /*isConstant=*/true,
       llvm::GlobalValue::PrivateLinkage, InitFunc, "__cxx_init_fn_ptr");
-  PtrArray->setSection(ISA->getSection());
+  PtrArray->setSection(Section);
   addUsedGlobal(PtrArray);
 
   // If the GV is already in a comdat group, then we have to join it.
-  if (llvm::Comdat *C = GV->getComdat())
+  bool HasDistinctComdatAnchor = ComdatAnchor && ComdatAnchor != GV;
+  if (!ComdatAnchor)
+    ComdatAnchor = GV;
+  if (llvm::Comdat *C = ComdatAnchor->getComdat()) {
     PtrArray->setComdat(C);
+    // The legacy init_seg path only associated the pointer with GV's COMDAT.
+    // Arena lifecycle entries additionally need their generated initializer
+    // in the record-keyed group, but must not change init_seg's independently
+    // selected initializer COMDAT.
+    if (HasDistinctComdatAnchor)
+      InitFunc->setComdat(C);
+  }
+}
+
+/// Derives the lifecycle section spelling for -fstatic-arena=<base> on the
+/// current target. The flag takes one C identifier and each object format gets
+/// the spelling its linker can actually bound a range with:
+///
+///  - COFF: ".<group>$<key>$u", where <group> is the first underscore-separated
+///    component of <base> and <key> is the rest. The program brackets the range
+///    with "$a" and "$z" sentinel sections; '$' (0x24) sorts below every
+///    identifier character, so no <key> can interleave into another's range.
+///    The leading component is the grouped-section name, which keeps the output
+///    section name short enough to survive PE's 8-byte section names.
+///  - Everything else (ELF and friends): <base> verbatim, so the linker
+///    synthesizes __start_<base>/__stop_<base> and no sentinels are needed.
+static std::string deriveStaticArenaLifecycleSectionName(const llvm::Triple &T,
+                                                         StringRef Base) {
+  if (!T.isOSBinFormatCOFF())
+    return Base.str();
+  auto [Group, Key] = Base.split('_');
+  if (Key.empty())
+    return ("." + Group + "$u").str();
+  return ("." + Group + "$" + Key + "$u").str();
+}
+
+bool CodeGenModule::matchesList(
+    StaticArenaList &List,
+    llvm::DenseMap<const CXXRecordDecl *, bool> &TypeCache, const VarDecl *D,
+    StringRef MangledName) {
+  // src: -- the whole-translation-unit escape hatch.
+  SourceManager &SM = getContext().getSourceManager();
+  StringRef File = SM.getFilename(SM.getFileLoc(D->getLocation()));
+  if (!File.empty() && List.isFileSelected(File))
+    return true;
+
+  // name: -- source-level spelling, independent of target mangling. Match the
+  // exact identifier for convenient file-local declarations and the qualified
+  // name for disambiguating common identifiers such as static data members.
+  if (List.isNameSelected(D->getName()) ||
+      List.isNameSelected(D->getQualifiedNameAsString()))
+    return true;
+
+  // A source-qualified name keeps narrow selectors for common internal names
+  // portable across object formats. For example,
+  // `name:*llvm-objdump.cpp@ToolName` does not capture every file-local
+  // `ToolName` in the folded driver.
+  if (!File.empty()) {
+    std::string SourceQualifiedName = File.str();
+    SourceQualifiedName += '@';
+    SourceQualifiedName += D->getName();
+    if (List.isNameSelected(SourceQualifiedName))
+      return true;
+
+    SourceQualifiedName.resize(File.size() + 1);
+    SourceQualifiedName += D->getQualifiedNameAsString();
+    if (List.isNameSelected(SourceQualifiedName))
+      return true;
+  }
+
+  // global: -- the mangled-name escape hatch, for what a type cannot name.
+  if (List.isGlobalSelected(MangledName))
+    return true;
+
+  // type: -- match the canonical base element record. For a template
+  // specialization use the template's qualified name, so one entry covers
+  // every specialization of cl::opt and similar registration types.
+  QualType Ty = getContext()
+                    .getBaseElementType(D->getType())
+                    .getCanonicalType()
+                    .getUnqualifiedType();
+  const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
+  if (!RD)
+    return false;
+  RD = RD->getCanonicalDecl();
+  if (auto It = TypeCache.find(RD); It != TypeCache.end())
+    return It->second;
+
+  std::string Name;
+  if (const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(RD))
+    Name = CTSD->getSpecializedTemplate()->getQualifiedNameAsString();
+  else
+    Name = RD->getQualifiedNameAsString();
+
+  bool Match = List.isTypeSelected(Name);
+  TypeCache[RD] = Match;
+  return Match;
+}
+
+StringRef CodeGenModule::getStaticArenaLifecycleSectionName() {
+  StringRef Base = getCodeGenOpts().StaticArenaLifecycleId;
+  if (Base.empty())
+    return StringRef();
+
+  if (!StaticArenaLifecycleSectionName)
+    StaticArenaLifecycleSectionName =
+        deriveStaticArenaLifecycleSectionName(getTriple(), Base);
+  return *StaticArenaLifecycleSectionName;
 }
 
 void
@@ -566,6 +738,19 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
   llvm::GlobalVariable *COMDATKey =
       supportsCOMDAT() && D->isExternallyVisible() ? Addr : nullptr;
 
+  bool IsStaticArena = isStaticArenaGlobal(Addr);
+  llvm::GlobalVariable *StaticArenaRecord =
+      IsStaticArena ? getStaticArenaRecord(D, Addr) : nullptr;
+  if (StaticArenaRecord)
+    COMDATKey = StaticArenaRecord;
+
+  // Arena dynamic initialization is part of the arena lifecycle: the storage
+  // selection itself decides that this initializer belongs in the range named
+  // by -fstatic-arena=. Explicit ordering attributes are rejected during arena
+  // selection rather than forming a second, independently configurable mode.
+  StringRef LifecycleSection =
+      IsStaticArena ? getStaticArenaLifecycleSectionName() : StringRef();
+
   if (D->getTLSKind()) {
     // FIXME: Should we support init_priority for thread_local?
     // FIXME: We only need to register one __cxa_thread_atexit function for the
@@ -584,11 +769,15 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     if (Priority != -1)
       AddGlobalCtor(Fn, Priority, ~0U, COMDATKey);
     else
-      EmitPointerToInitFunc(D, Addr, Fn, ISA);
+      EmitPointerToInitFunc(D, Addr, Fn, ISA->getSection());
   } else if (auto *IPA = D->getAttr<InitPriorityAttr>()) {
     OrderGlobalInitsOrStermFinalizers Key(IPA->getPriority(),
                                           PrioritizedCXXGlobalInits.size());
     PrioritizedCXXGlobalInits.push_back(std::make_pair(Key, Fn));
+  } else if (!LifecycleSection.empty()) {
+    // The embedding application walks this range after binding the arena, so
+    // arena-owned objects are never initialized against process-global state.
+    EmitPointerToInitFunc(D, Addr, Fn, LifecycleSection, StaticArenaRecord);
   } else if (isTemplateInstantiation(D->getTemplateSpecializationKind()) ||
              !isUniqueGVALinkage(getContext().GetGVALinkageForVariable(D)) ||
              D->hasAttr<SelectAnyAttr>()) {

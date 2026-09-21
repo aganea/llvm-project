@@ -2745,7 +2745,11 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
       GI->Guard = GuardVar;
   }
 
-  ConstantAddress GuardAddr(GuardVar, GuardTy, GuardAlign);
+  bool IsStaticArena = CodeGenModule::isStaticArenaGlobal(GV);
+  if (IsStaticArena)
+    CGM.registerStaticArenaGuard(D, GuardVar, GV);
+  Address GuardAddr = IsStaticArena ? CGM.emitStaticArenaAddress(CGF, GuardVar)
+                                    : Address(GuardVar, GuardTy, GuardAlign);
 
   assert(GuardVar->getLinkage() == GV->getLinkage() &&
          "static local from the same function had different linkage");
@@ -2807,7 +2811,7 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
     // responsible for doing the initialization.
     CGF.EmitBlock(AttemptInitBlock);
     CGF.EmitNounwindRuntimeCall(getInitThreadHeaderFn(CGM),
-                                GuardAddr.getPointer());
+                                GuardAddr.emitRawPointer(CGF));
     llvm::LoadInst *SecondGuardLoad = Builder.CreateLoad(GuardAddr);
     SecondGuardLoad->setOrdering(llvm::AtomicOrdering::Unordered);
     llvm::Value *ShouldDoInit =
@@ -2821,7 +2825,7 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
     CGF.EmitCXXGlobalVarDeclInit(D, GV, PerformInit);
     CGF.PopCleanupBlock();
     CGF.EmitNounwindRuntimeCall(getInitThreadFooterFn(CGM),
-                                GuardAddr.getPointer());
+                                GuardAddr.emitRawPointer(CGF));
     Builder.CreateBr(EndBlock);
 
     CGF.EmitBlock(EndBlock);

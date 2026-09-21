@@ -2717,12 +2717,13 @@ static llvm::FunctionCallee getGuardAbortFn(CodeGenModule &CGM,
 
 namespace {
   struct CallGuardAbort final : EHScopeStack::Cleanup {
-    llvm::GlobalVariable *Guard;
-    CallGuardAbort(llvm::GlobalVariable *Guard) : Guard(Guard) {}
+    llvm::Value *Guard;
+    CallGuardAbort(llvm::Value *Guard) : Guard(Guard) {}
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
-      CGF.EmitNounwindRuntimeCall(getGuardAbortFn(CGF.CGM, Guard->getType()),
-                                  Guard);
+      CGF.EmitNounwindRuntimeCall(
+          getGuardAbortFn(CGF.CGM, cast<llvm::PointerType>(Guard->getType())),
+          Guard);
     }
   };
 }
@@ -2813,7 +2814,12 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     CGM.setStaticLocalDeclGuardAddress(&D, guard);
   }
 
-  Address guardAddr = Address(guard, guard->getValueType(), guardAlignment);
+  bool IsStaticArena = CodeGenModule::isStaticArenaGlobal(var);
+  if (IsStaticArena)
+    CGM.registerStaticArenaGuard(D, guard, var);
+  Address guardAddr =
+      IsStaticArena ? CGM.emitStaticArenaAddress(CGF, guard)
+                    : Address(guard, guard->getValueType(), guardAlignment);
 
   // Test whether the variable has completed initialization.
   //
@@ -2905,8 +2911,8 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   // Variables used when coping with thread-safe statics and exceptions.
   if (threadsafe) {
     // Call __cxa_guard_acquire.
-    llvm::Value *V
-      = CGF.EmitNounwindRuntimeCall(getGuardAcquireFn(CGM, guardPtrTy), guard);
+    llvm::Value *V = CGF.EmitNounwindRuntimeCall(
+        getGuardAcquireFn(CGM, guardPtrTy), guardAddr.emitRawPointer(CGF));
 
     llvm::BasicBlock *InitBlock = CGF.createBasicBlock("init");
 
@@ -2914,7 +2920,8 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
                          InitBlock, EndBlock);
 
     // Call __cxa_guard_abort along the exceptional edge.
-    CGF.EHStack.pushCleanup<CallGuardAbort>(EHCleanup, guard);
+    CGF.EHStack.pushCleanup<CallGuardAbort>(EHCleanup,
+                                            guardAddr.emitRawPointer(CGF));
 
     CGF.EmitBlock(InitBlock);
   } else if (!D.isLocalVarDecl()) {

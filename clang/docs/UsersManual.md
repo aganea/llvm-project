@@ -2265,6 +2265,140 @@ treated as a constant initializer.
 Clang provides a number of ways to control code generation. The options
 are listed below.
 
+(static-arena-storage)=
+
+#### Experimental static-arena storage
+
+Clang's experimental CC1 options `-fstatic-arena=<lifecycle-id>` and
+`-fstatic-arena-list=<file>` can move selected namespace-scope and
+function-local variables out of the executable's ordinary static storage. An
+embedding application creates and binds an LLVM `StaticArena` for an
+invocation, and every evaluated access to a selected variable is resolved in
+that arena. Different invocations can therefore have independent copies of
+otherwise-global tool state without source-level accessor changes.
+
+The list uses the sanitizer special-case-list syntax under an `[arena]`
+section. It accepts `type:`, `src:`, `name:`, and `global:` entries.
+`type:` entries name an unqualified template pattern (for example, one entry
+can select every specialization of a class template), `src:` entries match
+source paths, `name:` entries match an unqualified or qualified source-level
+declaration name, and `global:` entries match emitted LLVM symbol names. A
+`name:` pattern can also use `<source-path>@<name>` (for example,
+`*llvm-objdump.cpp@ToolName`) to disambiguate a common file-local name while
+remaining independent of target mangling.
+
+`-fstatic-arena` is a compiler/runtime ABI intended for LLVM's multicall driver,
+not a general-purpose storage option. The lifecycle ID must be a non-empty C
+identifier, and at least one `-fstatic-arena-list=<file>` is required. The same
+list controls both storage placement and initialization: constant state is
+copied into each arena, while a selected namespace-scope dynamic initializer is
+emitted into the lifecycle range derived from the ID. The program must link the
+matching LLVM Support runtime and run that range only after binding an arena. A
+selected function-local static remains lazy; both its object and initialization
+guard live in the arena. Destructors are registered with the bound arena and run
+in reverse registration order when that invocation is finalized.
+
+LLVM's multicall-driver integration is enabled as one unit by the
+`LLVM_DRIVER_PER_INVOCATION_GLOBALS` CMake option. It builds private copies of
+the participating libraries with the production arena list, emits the matching
+lifecycle ranges, and installs the invocation context before running them.
+
+The multicall driver uses the following lifetime and concurrency policy:
+
+- Mutable command-line objects, their external `cl::location` storage and
+  cached pointers, statistics, pass/session state, and linker-session globals
+  are invocation-owned. Worker tasks created through LLVM's threading helpers
+  capture and install the complete tool execution context. Teardown refuses to
+  release an invocation while a captured task lease is outstanding.
+- Address-identity objects (for example analysis keys, legacy pass IDs and
+  `SpecificAlloc<T>` tags), immutable generated tables, and the machine-pass
+  registration catalog remain process-wide. Registry defaults and listeners
+  are invocation-owned. Plugin and machine-pass catalogs may be populated
+  during process startup or serialized plugin setup before fan-out; adding or
+  removing entries while multiple tool contexts are active is an error. The
+  multicall driver populates target identities before its first invocation;
+  target component registration is serialized and repeated registration of the
+  same component is a no-op, while replacing a live component during overlap is
+  an error. The legacy pass catalog permits synchronized lazy registration, but
+  it must not change during overlap when an invocation-owned registration
+  listener is installed.
+- Allocators, jobserver/environment discovery, plugin loading, HTTP support,
+  crash and signal handling, and process thread-pool infrastructure remain
+  process services. They must provide their own synchronization or be
+  serialized by the embedding host, and they are not reset by destroying an
+  arena. Folded invocations have invocation-owned `-disable-symbolication` and
+  `-crash-diagnostics-dir` controls whose values are published through
+  signal-safe snapshots. Tokenless signal-handler threads use the
+  process-default copies instead, so an embedding host should configure that
+  fallback before fan-out when callbacks may run on unattached threads. Other
+  signal-handler state such as `-print-on-crash` has one process owner and must
+  not be enabled by overlapping invocations.
+- A thread not created by an LLVM propagation-aware helper must be explicitly
+  attached to an invocation before it accesses invocation-owned state. A
+  tokenless thread continues to see the process-default command-line context;
+  merely running another invocation does not turn that fallback into a
+  process-wide abort policy.
+- `outs()`, `errs()`, `dbgs()`, and standard input remain process streams.
+  Concurrent hosts must either provide invocation-isolated I/O to APIs that
+  accept it or serialize uses of those streams. Dynamic plugin discovery and
+  loading must likewise finish before concurrent invocations, or be serialized
+  by the host.
+- Invocation teardown is guaranteed when a folded entry point returns normally.
+  Fatal-error and process-exit paths remain outside that guarantee. In
+  particular, generic `cl::` help/error handling can exit, LLD exits when it
+  reports that it cannot run again, and `llvm-debuginfod` is a long-running,
+  non-returning service rather than a repeatable folded invocation.
+
+Version 1 has the following constraints:
+
+- Arena-producing objects must all be linked into one main COFF or ELF
+  executable. Mach-O, arena-producing shared libraries and plugins, imported
+  or exported selected variables, device code, and HWAddressSanitizer are not
+  supported. Loading a late arena-producing shared object is invalid.
+- Every definition and reference to a selected variable must be compiled
+  consistently. A reference compiled without the feature normally fails to
+  link because no conventional storage symbol is emitted, but mixed-mode
+  duplicate inline definitions cannot always be diagnosed.
+- An arena is shared by all threads belonging to one invocation. The generated
+  IR does not describe selected variables as thread-local, and access from
+  several threads needs the same synchronization as access to an ordinary
+  shared global. The isolation is between invocations, not between threads of
+  one invocation.
+- Switching a thread's arena binding is valid only at task or invocation
+  boundaries where no pointer into the previous arena remains live. A task
+  that migrates to another thread must install the complete captured tool
+  execution context. Retaining arena pointers across coroutine suspension is
+  unsupported.
+- Debug builds use a canary to catch many reads of a selected `cl::opt` before
+  its arena lifecycle initializer has run, but this is not a complete check. In
+  particular, class-valued options with internal storage inherit the value type
+  for source compatibility, so a direct call such as `StringOption.size()`
+  bypasses the checked `cl::opt` accessors.
+- A persistent object that stores an arena-derived pointer must live in the
+  same arena or have a separately proven invocation-bounded lifetime. Clang
+  diagnoses the known direct pattern where a resolver-derived address is
+  stored in a process-global variable in the same translation unit. This is a
+  targeted check, not a general escape analysis: calls, returns, arbitrary
+  memory dataflow, and cross-translation-unit escapes remain the list author's
+  responsibility.
+- Constant or zero initialization is copied into each arena only for types
+  whose representation Clang can safely materialize. Selected constant-
+  expression objects, non-trivially-copyable representations, references, and
+  initializers that contain an address of another selected object are rejected.
+  Dynamically initialized objects begin their lifetime when their arena
+  lifecycle initializer runs.
+- Explicit TLS, address-space, section, retention, DLL-storage, and
+  initialization-order attributes conflict with arena storage and are
+  rejected when their declaration is selected. Tentative common definitions
+  require `-fno-common`.
+- Version 1 emits no source-level debug variable for selected storage. Ordinary
+  loads and stores through the resolved address remain visible to AddressSanitizer.
+
+The runtime intentionally fails closed. Access without a live bound arena, an
+unassigned layout record, an out-of-bounds record, registration during an
+invalid lifecycle state, or teardown while tasks remain attached terminates
+with a diagnostic instead of falling back to process-global storage.
+
 :::{option} -f[no-]sanitize=check1,check2,...
 
 Turn on runtime checks or mitigations for various forms of undefined or

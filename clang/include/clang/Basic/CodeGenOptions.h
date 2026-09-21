@@ -298,6 +298,16 @@ public:
   /// Regexes separated by a semi-colon to filter the files to not instrument.
   std::string ProfileExcludeFiles;
 
+  /// Base name of the lifecycle section that receives pointers to dynamic
+  /// initializers for globals moved into the static arena
+  /// (-fstatic-arena=). Must be a C identifier; the target-specific section
+  /// spelling is derived from it. Empty means the feature is off.
+  std::string StaticArenaLifecycleId;
+
+  /// Paths to special case list files selecting globals whose storage is
+  /// provided by the per-invocation static arena (-fstatic-arena-list=).
+  std::vector<std::string> StaticArenaListFiles;
+
   /// The version string to put into coverage files.
   char CoverageVersion[4] = {'0', '0', '0', '0'};
 

@@ -96,6 +96,7 @@ add_clang_library(clangCodeGen
   CGOpenMPRuntimeGPU.cpp
   CGPointerAuth.cpp
   CGRecordLayoutBuilder.cpp
+  CGStaticArena.cpp
   CGStmt.cpp
   CGStmtOpenMP.cpp
   CGVTT.cpp

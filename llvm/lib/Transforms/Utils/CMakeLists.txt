@@ -78,6 +78,7 @@ add_llvm_component_library(LLVMTransformUtils
   RelLookupTableConverter.cpp
   ScalarEvolutionExpander.cpp
   SCCPSolver.cpp
+  StaticArenaAddressEscape.cpp
   StripConvergenceIntrinsics.cpp
   StripGCRelocates.cpp
   SSAUpdater.cpp

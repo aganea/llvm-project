@@ -2053,6 +2053,21 @@ def fprofile_list_EQ : Joined<["-"], "fprofile-list=">,
     HelpText<"Filename defining the list of functions/files to instrument. "
              "The file uses the sanitizer special case list format.">,
     MarshallingInfoStringVector<LangOpts<"ProfileListFiles">>;
+def fstatic_arena_EQ : Joined<["-"], "fstatic-arena=">,
+    Group<f_Group>, Visibility<[CC1Option]>,
+    MetaVarName<"<lifecycle-id>">,
+    HelpText<"Move globals selected by -fstatic-arena-list= into "
+             "per-invocation storage and emit their dynamic initializer "
+             "pointers into a section derived from <lifecycle-id>. The ID "
+             "must be a C identifier">,
+    MarshallingInfoString<CodeGenOpts<"StaticArenaLifecycleId">>;
+def fstatic_arena_list_EQ : Joined<["-"], "fstatic-arena-list=">,
+    Group<f_Group>, Visibility<[CC1Option]>,
+    HelpText<"Filename defining the globals whose storage is moved into the "
+             "per-invocation static arena. The file uses the sanitizer special "
+             "case list format and supports type:, src:, name: and global: "
+             "prefixes under an [arena] section">,
+    MarshallingInfoStringVector<CodeGenOpts<"StaticArenaListFiles">>;
 def fprofile_function_groups : Joined<["-"], "fprofile-function-groups=">,
   Group<f_Group>, Visibility<[ClangOption, CC1Option]>, MetaVarName<"<N>">,
   HelpText<"Partition functions into N groups and select only functions in group i to be instrumented using -fprofile-selected-function-group">,

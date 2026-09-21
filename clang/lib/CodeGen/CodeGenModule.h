@@ -87,6 +87,7 @@ class AnnotateAttr;
 class CXXDestructorDecl;
 class Module;
 class CoverageSourceInfo;
+class StaticArenaList;
 class InitSegAttr;
 
 namespace CodeGen {
@@ -694,6 +695,34 @@ private:
 
   std::unique_ptr<SanitizerMetadata> SanitizerMD;
 
+  /// Eagerly parsed -fstatic-arena-list= filter and its independent caches.
+  std::unique_ptr<StaticArenaList> StaticArenaSelection;
+  llvm::DenseMap<const CXXRecordDecl *, bool> StaticArenaTypeCache;
+  /// Target-specific spelling derived from -fstatic-arena=, computed on first
+  /// use. Owns the storage behind
+  /// getStaticArenaLifecycleSectionName()'s result.
+  std::optional<std::string> StaticArenaLifecycleSectionName;
+  /// A declaration can be queried with more than one prospective IR name
+  /// before its storage is materialized. Keep name matching separate from the
+  /// declaration-level eligibility result so an early non-match cannot decide
+  /// all later queries for that declaration.
+  llvm::StringMap<llvm::DenseMap<const VarDecl *, bool>>
+      StaticArenaVarMatchCache;
+  llvm::DenseMap<const VarDecl *, bool> StaticArenaVarCache;
+
+  struct StaticArenaGlobalInfo {
+    const VarDecl *D = nullptr;
+    llvm::GlobalVariable *Record = nullptr;
+    llvm::GlobalVariable *Template = nullptr;
+    llvm::GlobalVariable *Entry = nullptr;
+    bool IsFinalized = false;
+  };
+
+  /// Arena entities are keyed by the final storage symbol name rather than a
+  /// replaceable GlobalVariable pointer. Initializer emission can replace a
+  /// placeholder when its final IR type becomes known.
+  llvm::StringMap<StaticArenaGlobalInfo> StaticArenaGlobals;
+
   llvm::MapVector<const Decl *, bool> DeferredEmptyCoverageMappingDecls;
 
   std::unique_ptr<CoverageMappingModuleGen> CoverageMapping;
@@ -741,6 +770,45 @@ public:
 
   /// Finalize LLVM code generation.
   void Release();
+
+  /// Whether \p D was selected for per-invocation static-arena storage.
+  /// MangledName is supplied by paths (notably local statics) whose storage
+  /// name is not getMangledName(D).
+  bool isStaticArenaVar(const VarDecl *D, StringRef MangledName = {});
+
+  /// Whether the concrete initializer currently emitted for \p D belongs to
+  /// static-arena storage. Local statics must consult their already-created
+  /// storage because their final IR name can differ from getMangledName(D).
+  bool isStaticArenaInitializer(const VarDecl *D);
+
+  /// Whether a selected constant-initialized C++ object must be constructed
+  /// anew for each arena because its representation cannot be safely cloned.
+  bool requiresStaticArenaRuntimeInitialization(const VarDecl *D);
+
+  static bool isStaticArenaGlobal(const llvm::GlobalVariable *GV) {
+    return GV && GV->hasAttribute("static-arena");
+  }
+
+  /// Return an invocation-relative address for a selected variable or guard.
+  Address emitStaticArenaAddress(CodeGenFunction &CGF, const VarDecl *D,
+                                 llvm::GlobalVariable *Storage);
+  Address emitStaticArenaAddress(CodeGenFunction &CGF,
+                                 llvm::GlobalVariable *Storage);
+
+  /// Complete a defining record after the storage initializer, type, linkage,
+  /// alignment and COMDAT have reached their final values.
+  void finalizeStaticArenaGlobal(const VarDecl *D,
+                                 llvm::GlobalVariable *Storage,
+                                 llvm::Comdat *OwnerComdat = nullptr);
+
+  /// Mark and register an ABI-created guard for an arena variable.
+  void registerStaticArenaGuard(const VarDecl &Owner,
+                                llvm::GlobalVariable *Guard,
+                                llvm::GlobalVariable *OwnerStorage);
+
+  llvm::GlobalVariable *getStaticArenaRecord(const VarDecl *D,
+                                             llvm::GlobalVariable *Storage);
+  llvm::Comdat *getStaticArenaComdat(llvm::GlobalVariable *Storage);
 
   /// Get the current Atomic options.
   AtomicOptions getAtomicOpts() { return AtomicOpts; }
@@ -2088,7 +2156,20 @@ private:
                                     bool PerformInit);
 
   void EmitPointerToInitFunc(const VarDecl *VD, llvm::GlobalVariable *Addr,
-                             llvm::Function *InitFunc, InitSegAttr *ISA);
+                             llvm::Function *InitFunc, StringRef Section,
+                             llvm::GlobalVariable *ComdatAnchor = nullptr);
+
+  StringRef getStaticArenaLifecycleSectionName();
+
+  bool matchesList(StaticArenaList &List,
+                   llvm::DenseMap<const CXXRecordDecl *, bool> &TypeCache,
+                   const VarDecl *D, StringRef MangledName);
+
+  llvm::GlobalVariable *getOrCreateStaticArenaRecord(const VarDecl *D,
+                                                     StringRef StorageName);
+  void markStaticArenaPlaceholder(const VarDecl *D,
+                                  llvm::GlobalVariable *Storage);
+  void checkStaticArenaPlaceholders();
 
   /// EmitCtorList - Generates a global array of functions and priorities using
   /// the given list and name. This array will have appending linkage and is

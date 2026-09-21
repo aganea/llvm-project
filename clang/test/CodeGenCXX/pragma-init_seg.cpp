@@ -68,3 +68,8 @@ int g() { return A<int>::x; }
 // CHECK: ptr @__cxx_init_fn_ptr.1,
 // CHECK: ptr @__cxx_init_fn_ptr.2,
 // CHECK: ptr @__cxx_init_fn_ptr.3], section "llvm.metadata"
+
+// EmitPointerToInitFunc associates the section pointer with the variable's
+// COMDAT, but must preserve the independently selected initializer-function
+// COMDAT installed by MicrosoftCXXABI::EmitGuardedInit.
+// CHECK: define linkonce_odr dso_local void @"??__Ex@selectany_init@@YAXXZ"() {{.*}}comdat {

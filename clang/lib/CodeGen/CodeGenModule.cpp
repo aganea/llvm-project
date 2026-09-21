@@ -41,9 +41,11 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticCodeGen.h"
 #include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/StaticArenaList.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/Version.h"
 #include "clang/CodeGen/BackendUtil.h"
@@ -600,6 +602,17 @@ CodeGenModule::CodeGenModule(ASTContext &C,
                                        ItaniumMangleContext::MK_Itanium;
 
   RuntimeCC = getTargetCodeGenInfo().getABIInfo().getRuntimeCC();
+
+  if (!CodeGenOpts.StaticArenaListFiles.empty()) {
+    std::string Error;
+    StaticArenaSelection = StaticArenaList::create(
+        CodeGenOpts.StaticArenaListFiles, *getFileSystem(), "arena", Error);
+    if (!StaticArenaSelection)
+      Diags.Report(diag::err_static_arena_list) << Error;
+  }
+
+  if (!CodeGenOpts.StaticArenaLifecycleId.empty())
+    getModule().addModuleFlag(llvm::Module::Error, "static-arena-abi", 1);
 
   if (LangOpts.ObjC)
     createObjCRuntime();
@@ -2051,6 +2064,12 @@ void CodeGenModule::Release() {
       ErrnoTBAAMD->addOperand(StructTagNode);
     }
   }
+
+  // This must remain the final storage-use-producing action in Release. In
+  // particular, llvm.used has to be materialized before selected placeholders
+  // are checked and erased, while debug and target-specific finalization must
+  // not get an opportunity to recreate a direct use afterwards.
+  checkStaticArenaPlaceholders();
 }
 
 void CodeGenModule::EmitOpenCLMetadata() {
@@ -4711,10 +4730,37 @@ ConstantAddress CodeGenModule::GetWeakRefReference(const ValueDecl *VD) {
   CharUnits Alignment = getContext().getDeclAlign(VD);
   llvm::Type *DeclTy = getTypes().ConvertTypeForMem(VD->getType());
 
+  if (const auto *Var = dyn_cast<VarDecl>(VD))
+    (void)isStaticArenaVar(Var, getMangledName(GlobalDecl(Var)));
+
+  bool AliaseeIsStaticArena = false;
+  GlobalDecl AliaseeGD;
+  if (lookupRepresentativeDecl(AA->getAliasee(), AliaseeGD))
+    if (const auto *AliaseeVD = dyn_cast<VarDecl>(AliaseeGD.getDecl()))
+      AliaseeIsStaticArena = isStaticArenaVar(AliaseeVD, AA->getAliasee());
+
+  // A declaration-only weakref can reach this path before its target has been
+  // entered in the mangling table or materialized as an IR global. In that
+  // case only a global: selector can identify the target, so consult it by the
+  // exact assembler name carried by AliasAttr.
+  if (!AliaseeIsStaticArena && isa<VarDecl>(VD) &&
+      !getCodeGenOpts().StaticArenaLifecycleId.empty()) {
+    if (StaticArenaSelection)
+      AliaseeIsStaticArena =
+          StaticArenaSelection->isGlobalSelected(AA->getAliasee());
+  }
+
+  if (AliaseeIsStaticArena)
+    Diags.Report(VD->getLocation(), diag::err_static_arena_alias) << VD;
+
   // See if there is already something with the target's name in the module.
   llvm::GlobalValue *Entry = GetGlobalValue(AA->getAliasee());
-  if (Entry)
+  if (Entry) {
+    if (auto *GV = dyn_cast<llvm::GlobalVariable>(Entry);
+        !AliaseeIsStaticArena && GV && isStaticArenaGlobal(GV))
+      Diags.Report(VD->getLocation(), diag::err_static_arena_alias) << VD;
     return ConstantAddress(Entry, DeclTy, Alignment);
+  }
 
   llvm::Constant *Aliasee;
   if (isa<llvm::FunctionType>(DeclTy))
@@ -4726,6 +4772,9 @@ ConstantAddress CodeGenModule::GetWeakRefReference(const ValueDecl *VD) {
                                     nullptr);
 
   auto *F = cast<llvm::GlobalValue>(Aliasee);
+  if (auto *GV = dyn_cast<llvm::GlobalVariable>(F);
+      !AliaseeIsStaticArena && GV && isStaticArenaGlobal(GV))
+    Diags.Report(VD->getLocation(), diag::err_static_arena_alias) << VD;
   F->setLinkage(llvm::Function::ExternalWeakLinkage);
   WeakRefReferences.insert(F);
 
@@ -4884,8 +4933,23 @@ void CodeGenModule::EmitGlobal(GlobalDecl GD) {
   } else {
     const auto *VD = cast<VarDecl>(Global);
     assert(VD->isFileVarDecl() && "Cannot emit local var decl as global.");
+
+    // Global named-register variables never request an LLVM global address:
+    // their use path lowers directly to read/write-register intrinsics. Run
+    // arena selection here so even an unused allowlisted declaration fails
+    // closed instead of bypassing isStaticArenaVar altogether.
+    if (VD->getStorageClass() == SC_Register && VD->hasAttr<AsmLabelAttr>())
+      (void)isStaticArenaVar(VD, getMangledName(GD));
+
     if (VD->isThisDeclarationADefinition() != VarDecl::Definition &&
         !Context.isMSStaticDataMemberInlineDefinition(VD)) {
+      // Weak references resolve their targets by assembler name and can be
+      // emitted without ever requesting the target's IR address. Preserve a
+      // representative declaration so static-arena type:/src: selection can
+      // still classify a declaration-only target in GetWeakRefReference.
+      if (!getCodeGenOpts().StaticArenaLifecycleId.empty())
+        (void)getMangledName(GD);
+
       if (LangOpts.OpenMP) {
         // Emit declaration of the must-be-emitted declare target variable.
         if (std::optional<OMPDeclareTargetDeclAttr::MapTypeTy> Res =
@@ -6054,6 +6118,9 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
                                      ForDefinition_t IsForDefinition) {
   // Lookup the entry, lazily creating it if necessary.
   llvm::GlobalValue *Entry = GetGlobalValue(MangledName);
+  if (D && isStaticArenaVar(D, MangledName) &&
+      isa_and_nonnull<llvm::GlobalAlias>(Entry))
+    Diags.Report(D->getLocation(), diag::err_static_arena_alias) << D;
   unsigned TargetAS = getContext().getTargetAddressSpace(AddrSpace);
   if (Entry) {
     if (WeakRefReferences.erase(Entry)) {
@@ -6067,6 +6134,10 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
 
     if (LangOpts.OpenMP && !LangOpts.OpenMPSimd && D)
       getOpenMPRuntime().registerTargetGlobalVariable(D, Entry);
+
+    if (D)
+      if (auto *ExistingGV = dyn_cast<llvm::GlobalVariable>(Entry))
+        markStaticArenaPlaceholder(D, ExistingGV);
 
     if (Entry->getValueType() == Ty && Entry->getAddressSpace() == TargetAS)
       return Entry;
@@ -6152,6 +6223,7 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
     }
 
     setGVProperties(GV, D);
+    markStaticArenaPlaceholder(D, GV);
 
     // If required by the ABI, treat declarations of static data members with
     // inline initializers as definitions.
@@ -6230,7 +6302,7 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
       getCUDARuntime().handleVarRegistration(D, *GV);
   }
 
-  if (D)
+  if (D && !isStaticArenaGlobal(GV))
     SanitizerMD->reportGlobal(GV, *D);
 
   LangAS ExpectedAS =
@@ -6646,6 +6718,14 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
     // to do a RAUW.
     assert(!ASTTy->isIncompleteType() && "Unexpected incomplete type");
     Init = EmitNullConstant(D->getType());
+  } else if (!IsDefinitionAvailableExternally &&
+             requiresStaticArenaRuntimeInitialization(D)) {
+    // A constant representation is not necessarily safe to memcpy into a new
+    // arena (for example, a default-constructed std::unique_ptr).  Leave the
+    // record without a template and perform the C++ initialization as part of
+    // the arena lifecycle instead.
+    Init = EmitNullConstant(ASTTy);
+    NeedsGlobalCtor = true;
   } else {
     initializedGlobalDecl = GlobalDecl(D);
     emitter.emplace(*this);
@@ -6847,16 +6927,20 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
   maybeSetTrivialComdat(*D, *GV);
 
+  finalizeStaticArenaGlobal(D, GV);
+
   // Emit the initializer function if necessary.
   if (NeedsGlobalCtor || NeedsGlobalDtor)
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
 
-  SanitizerMD->reportGlobal(GV, *D, NeedsGlobalCtor);
+  if (!isStaticArenaGlobal(GV))
+    SanitizerMD->reportGlobal(GV, *D, NeedsGlobalCtor);
 
   // Emit global variable debug information.
-  if (CGDebugInfo *DI = getModuleDebugInfo())
-    if (getCodeGenOpts().hasReducedDebugInfo())
-      DI->EmitGlobalVariable(GV, D);
+  if (!isStaticArenaGlobal(GV))
+    if (CGDebugInfo *DI = getModuleDebugInfo())
+      if (getCodeGenOpts().hasReducedDebugInfo())
+        DI->EmitGlobalVariable(GV, D);
 }
 
 static bool isVarDeclStrongDefinition(const ASTContext &Context,
@@ -7261,6 +7345,11 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
   assert(AA && "Not an alias?");
 
   StringRef MangledName = getMangledName(GD);
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (isStaticArenaVar(VD, MangledName)) {
+      Diags.Report(VD->getLocation(), diag::err_static_arena_alias) << VD;
+      return;
+    }
 
   if (AA->getAliasee() == MangledName) {
     Diags.Report(AA->getLocation(), diag::err_cyclic_alias) << 0;
@@ -7292,6 +7381,12 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
       LT = getLLVMLinkageVarDefinition(VD);
     else
       LT = getFunctionLinkage(GD);
+  }
+
+  if (auto *GV = dyn_cast<llvm::GlobalVariable>(Aliasee->stripPointerCasts());
+      GV && isStaticArenaGlobal(GV)) {
+    Diags.Report(D->getLocation(), diag::err_static_arena_alias) << D;
+    return;
   }
 
   // Create the new alias itself, but don't set a name yet.

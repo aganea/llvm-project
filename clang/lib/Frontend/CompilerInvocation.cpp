@@ -1850,6 +1850,43 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
 #include "clang/Options/Options.inc"
 #undef CODEGEN_OPTION_WITH_MARSHALLING
 
+  if (Args.hasArg(options::OPT_fstatic_arena_EQ) &&
+      !isValidAsciiIdentifier(Opts.StaticArenaLifecycleId,
+                              /*AllowDollar=*/false))
+    Diags.Report(diag::err_drv_invalid_value)
+        << "-fstatic-arena=" << Opts.StaticArenaLifecycleId;
+
+  if (!Opts.StaticArenaLifecycleId.empty()) {
+    if (Opts.StaticArenaListFiles.empty())
+      Diags.Report(diag::err_drv_argument_only_allowed_with)
+          << "-fstatic-arena" << "-fstatic-arena-list=<file>";
+    if (!T.isOSBinFormatCOFF() && !T.isOSBinFormatELF())
+      Diags.Report(diag::err_drv_unsupported_opt_for_target)
+          << "-fstatic-arena" << T.str();
+    if (LangOpts->HLSL)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "HLSL";
+    if (LangOpts->CUDA && LangOpts->CUDAIsDevice)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "CUDA device code";
+    if (LangOpts->OpenMPIsTargetDevice)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "OpenMP target device code";
+    if (LangOpts->SYCLIsDevice)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "SYCL device code";
+    if (LangOpts->Sanitize.hasOneOf(SanitizerKind::HWAddress |
+                                    SanitizerKind::KernelHWAddress))
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "-fsanitize=hwaddress";
+    if (IK.getLanguage() == Language::LLVM_IR)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "LLVM IR input";
+    if (IK.getLanguage() == Language::CIR)
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fstatic-arena" << "CIR input";
+  }
+
   // At O0 we want to fully disable inlining outside of cases marked with
   // 'alwaysinline' that are required for correctness.
   if (Opts.OptimizationLevel == 0) {
@@ -5188,6 +5225,14 @@ bool CompilerInvocation::CreateFromArgsImpl(
 
   ParseCodeGenArgs(Res.getCodeGenOpts(), Args, DashX, Diags, T,
                    Res.getFrontendOpts().OutputFile, LangOpts);
+
+  // Static-arena lowering currently lives in the classic CodeGenModule path.
+  // Reject alternate pipelines instead of silently leaving selected globals
+  // in process-lifetime storage.
+  if (!Res.getCodeGenOpts().StaticArenaLifecycleId.empty() &&
+      Res.getFrontendOpts().UseClangIRPipeline)
+    Diags.Report(diag::err_drv_argument_not_allowed_with)
+        << "-fstatic-arena" << "ClangIR code generation";
 
   // FIXME: Override value name discarding when asan or msan is used because the
   // backend passes depend on the name of the alloca in order to print out
