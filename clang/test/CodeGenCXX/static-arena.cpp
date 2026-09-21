@@ -1,4 +1,4 @@
-// Verify the core static-arena IR contract on both supported object formats.
+// Verify the core static-arena IR contract on the supported object formats.
 //
 // RUN: split-file %s %t
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
@@ -13,6 +13,10 @@
 // RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
 // RUN:   -o - %t/test.cpp \
 // RUN:   | FileCheck %s --check-prefix=ILP32
+// RUN: %clang_cc1 -triple wasm32-unknown-emscripten -std=c++20 -emit-llvm \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
+// RUN:   -o - %t/test.cpp \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,WASM
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
 // RUN:   -O2 -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
 // RUN:   -o - %t/test.cpp \
@@ -77,8 +81,10 @@ int use_arena_globals() {
 // Every retained table member is the pointer entry, not merely its record.
 // ELF-DAG: @__llvm_arena_ptr_v1.arena_zero = private constant ptr @__llvm_arena_var_v1.arena_zero, section "llvma_v1", align 8
 // COFF-DAG: @__llvm_arena_ptr_v1.arena_zero = private constant ptr @__llvm_arena_var_v1.arena_zero, section ".llvma$v1$b", align 8
+// WASM-DAG: @__llvm_arena_ptr_v1.arena_zero = private constant ptr @__llvm_arena_var_v1.arena_zero, section "llvma_v1", align 4
 // ELF-DAG: @__cxx_init_fn_ptr = private constant ptr @__cxx_global_var_init, section "arena_test"
 // COFF-DAG: @__cxx_init_fn_ptr = private constant ptr @"??__Earena_dynamic@@YAXXZ", section ".arena$test$u"
+// WASM-DAG: @__cxx_init_fn_ptr = private constant ptr @__cxx_global_var_init, section "arena_test"
 // CHECK: @llvm.used = appending global
 // CHECK-SAME: ptr @__llvm_arena_ptr_v1.arena_zero
 

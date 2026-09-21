@@ -1860,7 +1860,8 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
     if (Opts.StaticArenaListFiles.empty())
       Diags.Report(diag::err_drv_argument_only_allowed_with)
           << "-fstatic-arena" << "-fstatic-arena-list=<file>";
-    if (!T.isOSBinFormatCOFF() && !T.isOSBinFormatELF())
+    if (!T.isOSBinFormatCOFF() && !T.isOSBinFormatELF() &&
+        !T.isOSBinFormatWasm())
       Diags.Report(diag::err_drv_unsupported_opt_for_target)
           << "-fstatic-arena" << T.str();
     if (LangOpts->HLSL)

@@ -492,8 +492,9 @@ option(LLVM_TOOL_LLVM_DRIVER_BUILD "Enables building the llvm multicall tool" OF
 # clang.
 #
 # Requires the integrated -fstatic-arena=<section> implementation in the host
-# compiler and a static COFF or ELF image.  Probe the complete compiler-facing
-# ABI instead of sniffing the compiler id; MSVC is not supported.
+# compiler and a static COFF, ELF or Wasm image. Probe the complete
+# compiler-facing ABI instead of sniffing the compiler id; MSVC is not
+# supported.
 option(LLVM_DRIVER_PER_INVOCATION_GLOBALS
   "Give allowlisted llvm-driver globals per-invocation storage" OFF)
 
@@ -601,8 +602,9 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
       "${_llvm_driver_probe_source_dir}/probe.${extension}")
     file(WRITE "${_llvm_driver_probe_source}" "${source}")
 
-    # The inline-assembly references below are intentionally unresolved if a
-    # compiler accepts but ignores the arena options. A static-library
+    # The native inline-assembly references and Wasm section-bound references
+    # below are intentionally unresolved if a compiler accepts but ignores the
+    # arena options. A static-library
     # try_compile would not diagnose that, so require the complete link even in
     # cross-compiling configurations that normally probe with archives.
     set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
@@ -620,6 +622,33 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
       "${_llvm_driver_probe_source}"
       LINK_OPTIONS -fno-lto
       OUTPUT_VARIABLE _llvm_driver_probe_output)
+
+    # A permissive linker can accept the intentionally missing native symbols
+    # or Wasm section bounds used to detect ignored arena options. Compile the
+    # same source without its producer and require that link to fail under the
+    # same effective flags. Otherwise an explicit ON could silently become a
+    # no-op (for example with Emscripten's ERROR_ON_UNDEFINED_SYMBOLS=0).
+    if(${result})
+      set(_llvm_driver_missing_bounds_result
+        "${result}_ACCEPTS_MISSING_ARENA_SYMBOLS")
+      unset(${_llvm_driver_missing_bounds_result} CACHE)
+      unset(${_llvm_driver_missing_bounds_result})
+      try_compile(${_llvm_driver_missing_bounds_result}
+        "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/StaticArenaMissingBounds-${language}"
+        "${_llvm_driver_probe_source}"
+        COMPILE_DEFINITIONS -DLLVM_STATIC_ARENA_MISSING_BOUNDS_PROBE=1
+        LINK_OPTIONS -fno-lto
+        OUTPUT_VARIABLE _llvm_driver_missing_bounds_output)
+      if(${_llvm_driver_missing_bounds_result})
+        set(${result} FALSE)
+        message(STATUS
+          "Rejecting ${result}: the linker accepts missing static-arena "
+          "probe symbols; disable permissive undefined-symbol handling")
+        string(APPEND _llvm_driver_probe_output
+          "\nThe linker accepted missing static-arena probe symbols; "
+          "disable permissive undefined-symbol handling.\n")
+      endif()
+    endif()
     if(${result})
       message(STATUS "Performing Test ${result} - Success")
     else()
@@ -632,9 +661,19 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
   # both C and C++ sources and receive the same lowering options.
   if(NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     llvm_check_per_invocation_globals_compiler_abi(C c [=[
-      #if !defined(_WIN32) && !defined(__ELF__)
-      #error static arena range discovery requires COFF or ELF
+      #if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+      #error static arena range discovery requires COFF, ELF or Wasm
       #endif
+      #if defined(__wasm__)
+      // Strong references to the public section bounds both exercise Wasm's
+      // actual discovery ABI and fail the link if either arena option is
+      // accepted but ignored. Keep the references in a retained data object:
+      // wasm-ld enables section GC by default.
+      extern const unsigned char __start_llvma_v1[];
+      extern const unsigned char __stop_llvma_v1[];
+      static const void *const LLVMStaticArenaProbeBounds[]
+          __attribute__((used)) = {__start_llvma_v1, __stop_llvma_v1};
+      #else
       #if __SIZEOF_POINTER__ == 8
       #define LLVM_STATIC_ARENA_RELOCATION ".quad "
       #elif __SIZEOF_POINTER__ == 4
@@ -643,7 +682,7 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
       #error unsupported pointer size
       #endif
       // 32-bit x86 COFF uses L_ plus the C global prefix for private symbols;
-      // the other supported COFF and ELF targets use LLVM's .L prefix.
+      // the other supported native targets use LLVM's .L prefix.
       #if defined(_WIN32) && defined(__i386__)
       #define LLVM_STATIC_ARENA_ENTRY "L___llvm_arena_ptr_v1.Probe"
       #else
@@ -654,6 +693,8 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
           LLVM_STATIC_ARENA_RELOCATION LLVM_STATIC_ARENA_ENTRY "\n"
           ".text\n"
       );
+      #endif
+      #ifndef LLVM_STATIC_ARENA_MISSING_BOUNDS_PROBE
       struct StaticArenaProbe { int Value; };
       static struct StaticArenaProbe Probe = { 1 };
       static unsigned char Storage[sizeof(Probe)];
@@ -662,6 +703,9 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
         return Storage;
       }
       int main(void) { return Probe.Value == 0; }
+      #else
+      int main(void) { return 0; }
+      #endif
       ]=] LLVM_HAVE_PER_INVOCATION_GLOBALS_C)
   endif()
 
@@ -672,9 +716,21 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
     # Requiring both the arena-table entry and the lifecycle pointer proves
     # that the unified option performs storage and lifecycle lowering.
     llvm_check_per_invocation_globals_compiler_abi(CXX cxx [=[
-      #if !defined(_WIN32) && !defined(__ELF__)
-      #error static arena range discovery requires COFF or ELF
+      #if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+      #error static arena range discovery requires COFF, ELF or Wasm
       #endif
+      #if defined(__wasm__)
+      extern "C" {
+      extern const unsigned char __start_llvma_v1[];
+      extern const unsigned char __stop_llvma_v1[];
+      extern const unsigned char __start_llvmi_probe[];
+      extern const unsigned char __stop_llvmi_probe[];
+      }
+      static const void *const LLVMStaticArenaProbeBounds[]
+          __attribute__((used)) = {
+              __start_llvma_v1, __stop_llvma_v1,
+              __start_llvmi_probe, __stop_llvmi_probe};
+      #else
       #if __SIZEOF_POINTER__ == 8
       #define LLVM_STATIC_ARENA_RELOCATION ".quad "
       #elif __SIZEOF_POINTER__ == 4
@@ -695,6 +751,8 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
           LLVM_STATIC_ARENA_RELOCATION LLVM_STATIC_ARENA_LIFECYCLE_ENTRY "\n"
           ".text\n"
       );
+      #endif
+      #ifndef LLVM_STATIC_ARENA_MISSING_BOUNDS_PROBE
       struct StaticArenaProbe {
         StaticArenaProbe();
         ~StaticArenaProbe();
@@ -712,6 +770,9 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
         return 0;
       }
       int main() { return Probe.Value == 0; }
+      #else
+      int main() { return 0; }
+      #endif
       ]=] LLVM_HAVE_PER_INVOCATION_GLOBALS_CXX)
   endif()
 
@@ -722,7 +783,8 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
 
   if(NOT LLVM_HAVE_PER_INVOCATION_GLOBALS)
     message(FATAL_ERROR
-      "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires a static COFF or ELF host "
+      "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires a static COFF, ELF or "
+      "Wasm host "
       "and a compiler supporting the complete -fstatic-arena=<section> ABI; "
       "the explicitly requested per-invocation-global configuration cannot "
       "be built.")
@@ -1273,7 +1335,7 @@ endif()
 if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND
    (BUILD_SHARED_LIBS OR LLVM_BUILD_LLVM_DYLIB OR LLVM_LINK_LLVM_DYLIB))
   message(FATAL_ERROR
-    "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires one static COFF/ELF "
+    "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires one static COFF/ELF/Wasm "
     "executable image; shared or LLVM-dylib builds are unsupported")
 endif()
 

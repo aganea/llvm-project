@@ -2373,9 +2373,11 @@ The multicall driver uses the following lifetime and concurrency policy:
 Version 1 has the following constraints:
 
 - Arena-producing objects must all be linked into one main COFF or ELF
-  executable. Mach-O, arena-producing shared libraries and plugins, imported
-  or exported selected variables, device code, and HWAddressSanitizer are not
-  supported. Loading a late arena-producing shared object is invalid.
+  executable, or one statically linked Wasm main module. Mach-O, arena-producing
+  shared libraries and plugins (including side modules containing selected
+  LLVM globals), imported or exported selected variables, device code, and
+  HWAddressSanitizer are not supported. Loading a late arena-producing shared
+  object is invalid.
 - Every definition and reference to a selected variable must be compiled
   consistently. A reference compiled without the feature normally fails to
   link because no conventional storage symbol is emitted, but mixed-mode

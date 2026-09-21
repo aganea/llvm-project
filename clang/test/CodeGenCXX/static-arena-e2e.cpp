@@ -250,7 +250,7 @@ static LLVMStaticArenaVarV1 *const *recordEnd() {
   return &ArenaRecordsEnd;
 }
 
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 
 extern "C" LLVMStaticArenaVarV1 *const __start_llvma_v1[]
     __attribute__((weak));
@@ -271,7 +271,7 @@ static LLVMStaticArenaVarV1 *const *recordEnd() {
 }
 
 #else
-#error "static-arena e2e supports native COFF and ELF hosts only"
+#error "static-arena e2e supports COFF, ELF and Wasm hosts only"
 #endif
 
 E2E_INIT_RANGE(llvmi_e2e_common, "e2e_common");

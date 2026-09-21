@@ -77,7 +77,7 @@ static uintptr_t recordEnd() {
   return reinterpret_cast<uintptr_t>(&RecordRangeEnd);
 }
 
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 
 extern "C" LLVMStaticArenaVarV1 *const __start_llvma_v1[] __attribute__((weak));
 extern "C" LLVMStaticArenaVarV1 *const __stop_llvma_v1[] __attribute__((weak));
@@ -117,9 +117,10 @@ static LLVMStaticArenaVarV1 *recordAt(const RecordRange &Range, size_t Index) {
 }
 
 static RecordRange getRecordRange() {
-#if !defined(_WIN32) && !defined(__ELF__)
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
   fail(nullptr,
-       "the v1 runtime supports arena-producing COFF and ELF images only");
+       "the v1 runtime supports arena-producing COFF, ELF and Wasm images "
+       "only");
 #else
   uintptr_t BeginAddress = recordBegin();
   uintptr_t EndAddress = recordEnd();

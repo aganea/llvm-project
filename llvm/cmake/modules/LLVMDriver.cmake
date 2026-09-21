@@ -503,7 +503,8 @@ endfunction()
 
 # Materialize one declarative range record per lifecycle section beside a
 # tool's generated runner. The C++ template includes that data under separate
-# COFF, ELF, and execution macros, keeping platform source code out of CMake.
+# COFF, ELF/Wasm, and execution macros, keeping platform source code out of
+# CMake.
 # This helper is deliberately callable again at the end of configuration,
 # when the complete actual target closure is known: the second configure pass
 # atomically replaces the preliminary component-only range data.

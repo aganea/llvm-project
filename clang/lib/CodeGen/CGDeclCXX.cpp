@@ -614,8 +614,8 @@ void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
 ///    identifier character, so no <key> can interleave into another's range.
 ///    The leading component is the grouped-section name, which keeps the output
 ///    section name short enough to survive PE's 8-byte section names.
-///  - Everything else (ELF and friends): <base> verbatim, so the linker
-///    synthesizes __start_<base>/__stop_<base> and no sentinels are needed.
+///  - ELF and Wasm: <base> verbatim, so the linker synthesizes
+///    __start_<base>/__stop_<base> and no sentinels are needed.
 static std::string deriveStaticArenaLifecycleSectionName(const llvm::Triple &T,
                                                          StringRef Base) {
   if (!T.isOSBinFormatCOFF())

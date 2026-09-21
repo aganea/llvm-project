@@ -35,7 +35,7 @@ static LLVMStaticArenaVarV1 InvalidRecord = {
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
   extern "C" __attribute__((section(".llvma$v1$b"), used))                     \
   LLVMStaticArenaVarV1 *const Name = &(Record)
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
   extern "C" __attribute__((section("llvma_v1"), used))                        \
   LLVMStaticArenaVarV1 *const Name = &(Record)
@@ -55,8 +55,8 @@ namespace {
 TEST(StaticArenaInvalidRecordTest, RejectsPreassignedOffset) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -70,8 +70,8 @@ TEST(StaticArenaInvalidRecordTest, RejectsPreassignedOffset) {
 TEST(StaticArenaInvalidRecordTest, RejectsZeroSize) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -85,8 +85,8 @@ TEST(StaticArenaInvalidRecordTest, RejectsZeroSize) {
 TEST(StaticArenaInvalidRecordTest, RejectsInvalidAlignment) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {

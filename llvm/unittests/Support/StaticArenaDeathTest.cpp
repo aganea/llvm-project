@@ -42,7 +42,7 @@ static LLVMStaticArenaVarV1 ResolverRecord = {UINT64_MAX, sizeof(uint32_t),
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
   extern "C" __attribute__((section(".llvma$v1$b"), used))                     \
   LLVMStaticArenaVarV1 *const Name = &(Record)
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
   extern "C" __attribute__((section("llvma_v1"), used))                        \
   LLVMStaticArenaVarV1 *const Name = &(Record)
@@ -62,8 +62,8 @@ namespace {
 TEST(StaticArenaDeathTest, ResolverRejectsMissingBinding) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -77,8 +77,8 @@ TEST(StaticArenaDeathTest, ResolverRejectsMissingBinding) {
 TEST(StaticArenaDeathTest, ClosingAllowsAccessButFinalizedRejectsIt) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
@@ -95,8 +95,8 @@ TEST(StaticArenaDeathTest, ClosingAllowsAccessButFinalizedRejectsIt) {
 TEST(StaticArenaDeathTest, ResolverRejectsUnassignedAndOutOfBoundsRecords) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
@@ -121,8 +121,8 @@ TEST(StaticArenaDeathTest, ResolverRejectsUnassignedAndOutOfBoundsRecords) {
 TEST(StaticArenaDeathTest, CreateRevalidatesRecordsBeforeTemplateCopy) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -147,8 +147,8 @@ TEST(StaticArenaDeathTest, CreateRevalidatesRecordsBeforeTemplateCopy) {
 TEST(StaticArenaDeathTest, OutstandingTaskLeasePreventsClosing) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -165,8 +165,8 @@ TEST(StaticArenaDeathTest, OutstandingTaskLeasePreventsClosing) {
 TEST(StaticArenaDeathTest, ClosingRejectsNewTaskCapture) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {

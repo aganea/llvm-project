@@ -51,12 +51,12 @@ void @TOOL_NAME@_init_lifecycle();
 #include "@LIFECYCLE_RANGES_INCLUDE@"
 #undef LLVM_DRIVER_LIFECYCLE_RANGE
 
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 
-// ELF: the linker synthesizes the bounds of a section whose name is a C
-// identifier, so there is nothing to bracket and no ordering to reason about.
-// Weak so that a tool contributing no lifecycle initializers -- and so no
-// section -- still links, with both bounds null.
+// ELF and Wasm: the linker synthesizes the bounds of a section whose name is
+// a C identifier, so there is nothing to bracket and no ordering to reason
+// about. Weak so that a tool contributing no lifecycle initializers -- and so
+// no section -- still links, with both bounds null.
 #define LLVM_DRIVER_LIFECYCLE_RANGE(ID, SECTION, KEY)                    \
   extern const InitFnTy __start_##SECTION[] __attribute__((weak));       \
   extern const InitFnTy __stop_##SECTION[] __attribute__((weak));        \
@@ -71,7 +71,7 @@ void @TOOL_NAME@_init_lifecycle();
 
 #else
 
-#error "llvm-driver lifecycle initialization requires COFF or ELF range discovery"
+#error "llvm-driver lifecycle initialization requires COFF, ELF or Wasm range discovery"
 
 #endif
 
@@ -83,10 +83,11 @@ static void runLifecycleRange(uintptr_t BeginAddress, uintptr_t EndAddress) {
     std::abort();
 
   // Padding between COFF sentinels reads as null, hence the check rather than a
-  // bare call. A missing ELF section has two null weak bounds. Walk by integer
-  // address and copy each pointer value: the linker concatenates distinct C++
-  // objects, so indexing from one sentinel as if the section were one array is
-  // undefined behavior and an optimizing compiler may delete the loop.
+  // bare call. A missing ELF or Wasm section has two null weak bounds. Walk by
+  // integer address and copy each pointer value: the linker concatenates
+  // distinct C++ objects, so indexing from one sentinel as if the section were
+  // one array is undefined behavior and an optimizing compiler may delete the
+  // loop.
   for (uintptr_t Address = BeginAddress; Address != EndAddress;
        Address += sizeof(InitFnTy)) {
     InitFnTy Init = loadLifecycleInit(Address);

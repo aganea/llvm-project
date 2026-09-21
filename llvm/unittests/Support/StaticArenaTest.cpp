@@ -8,6 +8,7 @@
 
 #include "llvm/Support/StaticArena.h"
 
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/ToolExecutionContext.h"
@@ -71,7 +72,7 @@ static LLVMStaticArenaVarV1 OptionLocationRecord = {
 #define STATIC_ARENA_TEST_ENTRY(Name, Record)                                  \
   extern "C" __attribute__((section(".llvma$v1$b"), used))                     \
   LLVMStaticArenaVarV1 *const Name = &(Record)
-#elif defined(__ELF__)
+#elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_TEST_ENTRY(Name, Record)                                  \
   extern "C" __attribute__((section("llvma_v1"), used))                        \
   LLVMStaticArenaVarV1 *const Name = &(Record)
@@ -99,8 +100,10 @@ static void finishArena(StaticArena &Arena) {
 }
 
 TEST(StaticArenaTest, ConcurrentFirstCreationPublishesOneLayout) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> ArenaA;
   std::unique_ptr<StaticArena> ArenaB;
@@ -141,8 +144,8 @@ TEST(StaticArenaTest, ConcurrentFirstCreationPublishesOneLayout) {
 }
 
 TEST(StaticArenaTest, IndependentStorageTemplateAlignmentAndMembership) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_FALSE(hasCurrentStaticArena());
   EXPECT_FALSE(isInCurrentStaticArena(nullptr));
@@ -201,8 +204,8 @@ TEST(StaticArenaTest, IndependentStorageTemplateAlignmentAndMembership) {
 }
 
 TEST(StaticArenaTest, NestedBindingsRestoreTheOuterArena) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> ArenaA = StaticArena::create();
   std::unique_ptr<StaticArena> ArenaB = StaticArena::create();
@@ -228,8 +231,8 @@ TEST(StaticArenaTest, NestedBindingsRestoreTheOuterArena) {
 }
 
 TEST(StaticArenaTest, EmptyTaskBindingMasksTheOuterArena) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
@@ -247,8 +250,10 @@ TEST(StaticArenaTest, EmptyTaskBindingMasksTheOuterArena) {
 }
 
 TEST(StaticArenaTest, TwoWorkersCanBindTheSameArenaConcurrently) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
@@ -300,8 +305,10 @@ static void countConcurrentCallback(void *Object) {
 }
 
 TEST(StaticArenaTest, ConcurrentDestructorRegistrationRunsEveryCallback) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   for (std::atomic<unsigned> &Count : ConcurrentCallbackCounts)
     Count.store(0, std::memory_order_relaxed);
@@ -371,8 +378,8 @@ static void callbackTwoAndRegisterAnother(void *Object) {
 }
 
 TEST(StaticArenaTest, FinalizationDrainsCallbacksRegisteredByCallbacks) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   CallbackOrder.store(0, std::memory_order_relaxed);
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
@@ -396,8 +403,8 @@ using ArenaOption = cl::opt<int, true>;
 TEST(StaticArenaTest, RejectsArenaOptionWithProcessLocation) {
 #if !GTEST_HAS_DEATH_TEST
   GTEST_SKIP() << "death tests are unavailable";
-#elif !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   EXPECT_DEATH(
       {
@@ -413,8 +420,10 @@ TEST(StaticArenaTest, RejectsArenaOptionWithProcessLocation) {
 }
 
 TEST(StaticArenaTest, ToolExecutionContextPropagatesArenaAndCommandLine) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
@@ -446,8 +455,8 @@ TEST(StaticArenaTest, ToolExecutionContextPropagatesArenaAndCommandLine) {
 }
 
 TEST(StaticArenaTest, CombinedCaptureFailureRollsBackCommandLineLease) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {

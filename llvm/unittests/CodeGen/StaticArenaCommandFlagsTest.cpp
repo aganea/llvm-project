@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/CommandFlags.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/StaticArena.h"
 #include "llvm/Support/ThreadPool.h"
@@ -28,8 +29,10 @@ struct InvocationResult {
 };
 
 TEST(StaticArenaCommandFlagsTest, ConcurrentMCPUUsesInvocationStorage) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   DefaultThreadPool Pool(hardware_concurrency(2));
   std::atomic<unsigned> Ready{0};

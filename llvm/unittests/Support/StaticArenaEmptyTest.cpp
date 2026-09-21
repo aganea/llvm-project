@@ -14,8 +14,8 @@
 using namespace llvm;
 
 TEST(StaticArenaEmptyTest, EmptyLayoutCanBeOwnedAndFinalized) {
-#if !defined(_WIN32) && !defined(__ELF__)
-  GTEST_SKIP() << "the v1 producer supports COFF and ELF only";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
 #else
   std::unique_ptr<StaticArena> Arena = StaticArena::create();
   {
