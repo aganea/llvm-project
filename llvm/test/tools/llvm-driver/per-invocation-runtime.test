@@ -1,0 +1,23 @@
+# REQUIRES: llvm-driver-per-invocation-test, thread_support
+# REQUIRES: x86-registered-target
+
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-mc -filetype=obj -triple=x86_64-apple-darwin %t/macho.s -o %t/macho.o
+# RUN: llvm-mc -filetype=obj -triple=wasm32-unknown-unknown %t/wasm.s -o %t/wasm.o
+# RUN: llvm-driver-per-invocation-test %t %t/macho.o %t/wasm.o > %t.out
+# RUN: FileCheck %s < %t.out
+
+# CHECK: sequential-reset=ok
+# CHECK-NEXT: concurrent-same-tool=ok
+# CHECK-NEXT: lld-sequential-concurrent=ok
+
+#--- macho.s
+.globl _main
+_main:
+  retq
+
+#--- wasm.s
+.globl _start
+_start:
+  .functype _start () -> ()
+  end_function

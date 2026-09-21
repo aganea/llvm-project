@@ -1,0 +1,25 @@
+# REQUIRES: llvm-driver, llvm-driver-per-invocation-globals, lld
+# REQUIRES: x86-registered-target, thread_support
+
+## Exercise both raw-thread boundaries in the folded Mach-O linker. The
+## read-workers path uses Driver.cpp's background page-in queue, while -map
+## makes Writer.cpp launch its map-file writer thread. Both workers must retain
+## the invocation's arena and command-line contexts.
+
+# RUN: rm -rf %t
+# RUN: mkdir -p %t
+# RUN: llvm-mc -filetype=obj -triple=x86_64-apple-darwin %s -o %t/main.o
+# RUN: %llvm ld64.lld -arch x86_64 \
+# RUN:   -platform_version macos 10.15 10.15 --read-workers=2 -e _main \
+# RUN:   -map %t/map -o %t/out %t/main.o
+# RUN: %llvm nm %t/out | FileCheck %s --check-prefix=SYMBOL
+# RUN: FileCheck %s --check-prefix=MAP < %t/map
+
+# SYMBOL: T _main
+# MAP: # Arch: x86_64
+# MAP: # Symbols:
+# MAP: _main
+
+.globl _main
+_main:
+  retq

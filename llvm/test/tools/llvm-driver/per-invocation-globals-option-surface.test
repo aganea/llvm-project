@@ -1,0 +1,33 @@
+# Regression guard for per-invocation global state. All six cl::-based tools
+# must retain their own option registries when folded into llvm.exe, without
+# accepting options from libraries outside their closure.
+
+# REQUIRES: llvm-driver, llvm-driver-per-invocation-globals
+
+# RUN: %llvm pdbutil --help 2>&1 | FileCheck --check-prefix=PDB %s
+# RUN: %llvm profdata --help 2>&1 | FileCheck --check-prefix=PROFDATA %s
+# RUN: %llvm xray --help 2>&1 | FileCheck --check-prefix=XRAY %s
+# RUN: %llvm remarkutil --help 2>&1 | FileCheck --check-prefix=REMARK %s
+# RUN: %llvm ctxprof-util --help 2>&1 | FileCheck --check-prefix=CTXPROF %s
+# RUN: %llvm cov --help 2>&1 | FileCheck --check-prefix=COV %s
+
+# PDB: OVERVIEW: LLVM PDB Dumper
+# PROFDATA: OVERVIEW: LLVM profile data
+# XRAY: OVERVIEW: XRay Tools
+# REMARK: OVERVIEW: Remark file utilities
+# CTXPROF: OVERVIEW: LLVM Contextual Profile Utils
+# COV: Usage: llvm-cov {export|gcov|report|show}
+
+# --enable-gvn-hoist is defined in LLVMPasses, outside llvm-profdata's library
+# closure. If every library in llvm.exe were initialized eagerly, parsing would
+# accept it and llvm-profdata would proceed to its "Unknown command" fallback.
+# RUN: not %llvm profdata --enable-gvn-hoist 2>&1 | FileCheck --check-prefix=REJECT %s
+# REJECT: Unknown command line argument '--enable-gvn-hoist'
+# REJECT-NOT: Unknown command.
+
+# --disable-basic-aa is defined in LLVMAnalysis, whose name used to enter this
+# closure accidentally when LLVMTarget was matched as a prefix of
+# LLVMTargetParser in an opaque CMake generator expression.
+# RUN: not %llvm profdata --disable-basic-aa 2>&1 | FileCheck --check-prefix=REJECT-ANALYSIS %s
+# REJECT-ANALYSIS: Unknown command line argument '--disable-basic-aa'
+# REJECT-ANALYSIS-NOT: Unknown command.

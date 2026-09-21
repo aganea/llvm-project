@@ -180,6 +180,34 @@ if(TARGET llvm-driver)
   set(LLVM_TEST_DEPENDS ${LLVM_TEST_DEPENDS} llvm-driver)
 endif()
 
+# Link this test through the same arena-built llvm-ar object and private
+# library closure used by llvm-driver.  Keep LLVM_LINK_COMPONENTS empty: a
+# normal LLVMSupport archive in this image could satisfy symbols before the
+# driver-private archive and mask an incomplete folded-tool closure.
+if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND LLVM_ENABLE_THREADS AND
+   TARGET obj.llvm-ar AND TARGET obj.lld)
+  get_property(llvm_ar_lifecycle_runner TARGET obj.llvm-ar
+    PROPERTY LLVM_DRIVER_LIFECYCLE_RUNNER)
+  get_property(lld_lifecycle_runner TARGET obj.lld
+    PROPERTY LLVM_DRIVER_LIFECYCLE_RUNNER)
+  if(llvm_ar_lifecycle_runner AND lld_lifecycle_runner)
+    function(add_llvm_driver_per_invocation_test)
+      set(LLVM_LINK_COMPONENTS)
+      set(LLVM_COMMON_DEPENDS)
+      set(EXCLUDE_FROM_ALL ON)
+      add_llvm_executable(llvm-driver-per-invocation-test
+        DISABLE_LLVM_LINK_LLVM_DYLIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/llvm-driver/Inputs/per-invocation.cpp
+        )
+      target_link_libraries(llvm-driver-per-invocation-test PRIVATE
+        obj.llvm-ar
+        obj.lld)
+    endfunction()
+    add_llvm_driver_per_invocation_test()
+    list(APPEND LLVM_TEST_DEPENDS llvm-driver-per-invocation-test)
+  endif()
+endif()
+
 # If Intel JIT events are supported, depend on a tool that tests the listener.
 if( LLVM_USE_INTEL_JITEVENTS )
   set(LLVM_TEST_DEPENDS ${LLVM_TEST_DEPENDS} llvm-jitlistener)
