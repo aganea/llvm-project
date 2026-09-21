@@ -6,20 +6,40 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/HTTP/HTTPClient.h"
 #include "llvm/Support/Driver.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
-#define LLVM_DRIVER_TOOL(tool, entry)                                          \
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
   int entry##_main(int argc, char **argv, const llvm::ToolContext &);
 #include "LLVMDriverTools.def"
 
+// Lifecycle entry points exist only for tools built with per-invocation
+// globals, so an unconditional declaration would be an undefined reference.
+#define LLVM_DRIVER_LIFECYCLE_DECL_0(entry)
+#define LLVM_DRIVER_LIFECYCLE_DECL_1(entry) void entry##_init_lifecycle();
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
+  LLVM_DRIVER_LIFECYCLE_DECL_##per_invocation(entry)
+#include "LLVMDriverTools.def"
+
+// Targets and their components are an immutable process-wide catalog. In
+// per-invocation mode, populate it before any invocation can overlap. Tool
+// entry points may still repeat these calls; TargetRegistry makes identical
+// component registrations synchronized no-ops.
+static constexpr bool HasPerInvocationGlobals =
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation) per_invocation ||
+#include "LLVMDriverTools.def"
+    false;
+
 constexpr char subcommands[] =
-#define LLVM_DRIVER_TOOL(tool, entry) "  " tool "\n"
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation) "  " tool "\n"
 #include "LLVMDriverTools.def"
     ;
 
@@ -35,7 +55,14 @@ static void printHelpMessage() {
 
 int main(int Argc, char **Argv) {
   const CallableTool Tools[] = {
-#define LLVM_DRIVER_TOOL(tool, entry) {tool, entry##_main},
+#define LLVM_DRIVER_LIFECYCLE_INIT_0(entry) nullptr
+#define LLVM_DRIVER_LIFECYCLE_INIT_1(entry) entry##_init_lifecycle
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
+  {tool, [](int Argc, char **Argv, const ToolContext &Context) {               \
+     return runLLVMDriverTool(                                                 \
+         LLVM_DRIVER_LIFECYCLE_INIT_##per_invocation(entry), entry##_main,     \
+         Argc, Argv, Context);                                                 \
+   }},
 #include "LLVMDriverTools.def"
   };
 
@@ -48,11 +75,29 @@ int main(int Argc, char **Argv) {
     return Argc == 1 ? 1 : 0;
   }
 
-  SmallVector<const char *, 16> Args(Argv, Argv + Argc);
-  ErrorOr<int> Result = Session.callTool(Args);
-  if (!Result) {
-    printHelpMessage();
-    return 1;
+  auto RunTool = [&]() {
+    SmallVector<const char *, 16> Args(Argv, Argv + Argc);
+    ErrorOr<int> Result = Session.callTool(Args);
+    if (!Result) {
+      printHelpMessage();
+      return 1;
+    }
+    return *Result;
+  };
+
+  if constexpr (HasPerInvocationGlobals) {
+    // HTTP is a process-wide runtime service.  Initialize it once on the
+    // startup thread so folded tools may use independent clients concurrently
+    // without racing their otherwise-idempotent initialize() calls.
+    llvm::HTTPClient::initialize();
+    llvm::scope_exit HTTPClientCleanup([] { llvm::HTTPClient::cleanup(); });
+
+    llvm::InitializeAllTargets();
+    llvm::InitializeAllTargetMCs();
+    llvm::InitializeAllAsmPrinters();
+    llvm::InitializeAllAsmParsers();
+    llvm::InitializeAllDisassemblers();
+    return RunTool();
   }
-  return *Result;
+  return RunTool();
 }

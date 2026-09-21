@@ -482,6 +482,253 @@ set(LLVM_FORCE_VC_REPOSITORY
 
 option(LLVM_TOOL_LLVM_DRIVER_BUILD "Enables building the llvm multicall tool" OFF)
 
+# Give allowlisted globals in llvm-driver and its private LLVM library closure
+# per-invocation storage.  Dynamic initialization is emitted into lifecycle
+# sections which llvm-driver runs after binding the invocation's arena.
+#
+# This is declared here rather than in llvm/tools/llvm-driver/CMakeLists.txt on
+# purpose: add_subdirectory(clang) runs long before that directory, so an option
+# declared there reads as undefined (which if() treats as false) everywhere in
+# clang.
+#
+# Requires the integrated -fstatic-arena=<section> implementation in the host
+# compiler and a static COFF or ELF image.  Probe the complete compiler-facing
+# ABI instead of sniffing the compiler id; MSVC is not supported.
+option(LLVM_DRIVER_PER_INVOCATION_GLOBALS
+  "Give allowlisted llvm-driver globals per-invocation storage" OFF)
+
+if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
+  # This feature is commonly enabled in a stage2 build whose stage1
+  # compiler is rebuilt in place.  Do not retain an answer produced by an
+  # older compiler binary at the same path.
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS CACHE)
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS)
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS_C CACHE)
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS_C)
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS_CXX CACHE)
+  unset(LLVM_HAVE_PER_INVOCATION_GLOBALS_CXX)
+
+  # CMAKE_CURRENT_SOURCE_DIR, not LLVM_MAIN_SRC_DIR: the latter is only set
+  # further down this file, and would expand to the empty string here.
+  set(LLVM_DRIVER_STATIC_ARENA_LIST
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/llvm-static-arena-list.txt"
+    CACHE FILEPATH
+    "Special case list selecting llvm-driver globals for per-invocation storage")
+  set(_static_arena_probe_list
+    "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/static-arena-probe.txt")
+  file(WRITE "${_static_arena_probe_list}"
+    "[arena]\ntype:StaticArenaProbe\nname:Probe\n")
+
+  # Keep all probe-only flag changes in function scope. In particular, an
+  # active configuration's CMAKE_<LANG>_FLAGS_<CONFIG> is appended after the
+  # base flags. A check-module wrapper which only adds -fno-lto to its required
+  # flags can therefore have LTO silently re-enabled by a later
+  # CMAKE_<LANG>_FLAGS_<CONFIG>. Use a dedicated executable try_compile and
+  # explicitly replace every flag variable which the child may consume.
+  function(llvm_check_per_invocation_globals_compiler_abi
+      language extension source result)
+    set(_llvm_driver_probe_configs
+      DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    if(CMAKE_BUILD_TYPE)
+      string(TOUPPER "${CMAKE_BUILD_TYPE}" _llvm_driver_probe_config)
+      list(APPEND _llvm_driver_probe_configs
+        "${_llvm_driver_probe_config}")
+    endif()
+    foreach(_llvm_driver_probe_config ${CMAKE_CONFIGURATION_TYPES})
+      string(TOUPPER "${_llvm_driver_probe_config}"
+        _llvm_driver_probe_config_upper)
+      list(APPEND _llvm_driver_probe_configs
+        "${_llvm_driver_probe_config_upper}")
+    endforeach()
+    list(REMOVE_DUPLICATES _llvm_driver_probe_configs)
+
+    # A custom toolchain may explicitly propagate IPO cache variables into
+    # try_compile projects. Shadow those variables as well as stripping LTO
+    # command-line flags, so the native-object ABI probe cannot silently become
+    # an LTO link through CMAKE_TRY_COMPILE_PLATFORM_VARIABLES.
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+    foreach(_llvm_driver_probe_config ${_llvm_driver_probe_configs})
+      set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_llvm_driver_probe_config} OFF)
+    endforeach()
+
+    set(_llvm_driver_probe_flag_variables
+      CMAKE_${language}_FLAGS
+      CMAKE_EXE_LINKER_FLAGS)
+    foreach(_llvm_driver_probe_config ${_llvm_driver_probe_configs})
+      list(APPEND _llvm_driver_probe_flag_variables
+        CMAKE_${language}_FLAGS_${_llvm_driver_probe_config}
+        CMAKE_EXE_LINKER_FLAGS_${_llvm_driver_probe_config})
+    endforeach()
+
+    foreach(_llvm_driver_probe_flag_variable
+        ${_llvm_driver_probe_flag_variables})
+      set(_llvm_driver_probe_flags
+        "${${_llvm_driver_probe_flag_variable}}")
+      # Repeat because a match consumes its trailing separator; with adjacent
+      # removed options the next option can otherwise be skipped.
+      while(TRUE)
+        set(_llvm_driver_probe_flags_before "${_llvm_driver_probe_flags}")
+        string(REGEX REPLACE
+          "(^|[ \t])(-flto[^ \t]*|-fwhole-program-vtables|/clang:-flto[^ \t]*|/clang:-fwhole-program-vtables|/[Gg][Ll]|/[Ll][Tt][Cc][Gg][^ \t]*)([ \t]|$)"
+          "\\1\\3" _llvm_driver_probe_flags
+          "${_llvm_driver_probe_flags}")
+        if(_llvm_driver_probe_flags STREQUAL
+           _llvm_driver_probe_flags_before)
+          break()
+        endif()
+      endwhile()
+      # try_compile's source-file signature initializes its child cache from
+      # the variables in this scope. Passing the same names with CMAKE_FLAGS is
+      # too late: the generated project overwrites them with its inherited
+      # values. Shadow them here instead, without changing the parent cache.
+      set(${_llvm_driver_probe_flag_variable}
+        "${_llvm_driver_probe_flags}")
+    endforeach()
+
+    # Put the probe options after the sanitized base flags. Configuration
+    # flags were also sanitized above, so no later flag can re-enable LTO or
+    # whole-program-vtables.
+    string(APPEND CMAKE_${language}_FLAGS
+      " -fno-lto"
+      " -fno-whole-program-vtables"
+      " -Werror=unknown-argument"
+      " -Xclang -fstatic-arena=llvmi_probe"
+      " -Xclang \"-fstatic-arena-list=${_static_arena_probe_list}\"")
+    set(_llvm_driver_probe_source_dir
+      "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/StaticArenaProbe")
+    file(MAKE_DIRECTORY "${_llvm_driver_probe_source_dir}")
+    set(_llvm_driver_probe_source
+      "${_llvm_driver_probe_source_dir}/probe.${extension}")
+    file(WRITE "${_llvm_driver_probe_source}" "${source}")
+
+    # The inline-assembly references below are intentionally unresolved if a
+    # compiler accepts but ignores the arena options. A static-library
+    # try_compile would not diagnose that, so require the complete link even in
+    # cross-compiling configurations that normally probe with archives.
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
+
+    # -Werror=unknown-argument makes this a feature test rather than a no-op for
+    # a compiler that merely warns about unknown Clang options. The source also
+    # emits relocations against local symbols created by static-arena lowering.
+    # An option parser that accepts but ignores either flag therefore fails in
+    # the assembler or linker. ThinLTO coverage belongs to
+    # clang/test/Driver/static-arena-lto.cpp; this capability probe must use a
+    # native object because LTO may rename symbols named by module assembly.
+    message(STATUS "Performing Test ${result}")
+    try_compile(${result}
+      "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/StaticArenaProbe-${language}"
+      "${_llvm_driver_probe_source}"
+      LINK_OPTIONS -fno-lto
+      OUTPUT_VARIABLE _llvm_driver_probe_output)
+    if(${result})
+      message(STATUS "Performing Test ${result} - Success")
+    else()
+      message(STATUS "Performing Test ${result} - Failed")
+    endif()
+    set(${result} "${${result}}" PARENT_SCOPE)
+  endfunction()
+
+  # Probe C independently because the private component-library targets contain
+  # both C and C++ sources and receive the same lowering options.
+  if(NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    llvm_check_per_invocation_globals_compiler_abi(C c [=[
+      #if !defined(_WIN32) && !defined(__ELF__)
+      #error static arena range discovery requires COFF or ELF
+      #endif
+      #if __SIZEOF_POINTER__ == 8
+      #define LLVM_STATIC_ARENA_RELOCATION ".quad "
+      #elif __SIZEOF_POINTER__ == 4
+      #define LLVM_STATIC_ARENA_RELOCATION ".long "
+      #else
+      #error unsupported pointer size
+      #endif
+      // 32-bit x86 COFF uses L_ plus the C global prefix for private symbols;
+      // the other supported COFF and ELF targets use LLVM's .L prefix.
+      #if defined(_WIN32) && defined(__i386__)
+      #define LLVM_STATIC_ARENA_ENTRY "L___llvm_arena_ptr_v1.Probe"
+      #else
+      #define LLVM_STATIC_ARENA_ENTRY ".L__llvm_arena_ptr_v1.Probe"
+      #endif
+      __asm__(
+          ".data\n"
+          LLVM_STATIC_ARENA_RELOCATION LLVM_STATIC_ARENA_ENTRY "\n"
+          ".text\n"
+      );
+      struct StaticArenaProbe { int Value; };
+      static struct StaticArenaProbe Probe = { 1 };
+      static unsigned char Storage[sizeof(Probe)];
+      void *__llvm_arena_addr_v1(const void *Record) {
+        (void)Record;
+        return Storage;
+      }
+      int main(void) { return Probe.Value == 0; }
+      ]=] LLVM_HAVE_PER_INVOCATION_GLOBALS_C)
+  endif()
+
+  # MSVC is excluded by compiler id rather than by the probe: cl.exe ignores
+  # both unknown -f options and the -Werror= that would otherwise catch them.
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    # Define both runtime hooks and a dynamically initialized selected global.
+    # Requiring both the arena-table entry and the lifecycle pointer proves
+    # that the unified option performs storage and lifecycle lowering.
+    llvm_check_per_invocation_globals_compiler_abi(CXX cxx [=[
+      #if !defined(_WIN32) && !defined(__ELF__)
+      #error static arena range discovery requires COFF or ELF
+      #endif
+      #if __SIZEOF_POINTER__ == 8
+      #define LLVM_STATIC_ARENA_RELOCATION ".quad "
+      #elif __SIZEOF_POINTER__ == 4
+      #define LLVM_STATIC_ARENA_RELOCATION ".long "
+      #else
+      #error unsupported pointer size
+      #endif
+      #if defined(_WIN32) && defined(__i386__)
+      #define LLVM_STATIC_ARENA_ENTRY "L___llvm_arena_ptr_v1.Probe"
+      #define LLVM_STATIC_ARENA_LIFECYCLE_ENTRY "L___cxx_init_fn_ptr"
+      #else
+      #define LLVM_STATIC_ARENA_ENTRY ".L__llvm_arena_ptr_v1.Probe"
+      #define LLVM_STATIC_ARENA_LIFECYCLE_ENTRY ".L__cxx_init_fn_ptr"
+      #endif
+      __asm__(
+          ".data\n"
+          LLVM_STATIC_ARENA_RELOCATION LLVM_STATIC_ARENA_ENTRY "\n"
+          LLVM_STATIC_ARENA_RELOCATION LLVM_STATIC_ARENA_LIFECYCLE_ENTRY "\n"
+          ".text\n"
+      );
+      struct StaticArenaProbe {
+        StaticArenaProbe();
+        ~StaticArenaProbe();
+        int Value;
+      };
+      StaticArenaProbe::StaticArenaProbe() : Value(1) {}
+      StaticArenaProbe::~StaticArenaProbe() {}
+      // C linkage keeps the arena-entry spelling independent of the C++ ABI.
+      extern "C" { StaticArenaProbe Probe; }
+      alignas(StaticArenaProbe) static unsigned char Storage[sizeof(Probe)];
+      extern "C" void *__llvm_arena_addr_v1(const void *) {
+        return Storage;
+      }
+      extern "C" int __llvm_arena_atexit_v1(void (*)(void *), void *) {
+        return 0;
+      }
+      int main() { return Probe.Value == 0; }
+      ]=] LLVM_HAVE_PER_INVOCATION_GLOBALS_CXX)
+  endif()
+
+  if(LLVM_HAVE_PER_INVOCATION_GLOBALS_C AND
+     LLVM_HAVE_PER_INVOCATION_GLOBALS_CXX)
+    set(LLVM_HAVE_PER_INVOCATION_GLOBALS TRUE)
+  endif()
+
+  if(NOT LLVM_HAVE_PER_INVOCATION_GLOBALS)
+    message(FATAL_ERROR
+      "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires a static COFF or ELF host "
+      "and a compiler supporting the complete -fstatic-arena=<section> ABI; "
+      "the explicitly requested per-invocation-global configuration cannot "
+      "be built.")
+  endif()
+endif()
+
 set(PACKAGE_NAME LLVM)
 set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "https://github.com/llvm/llvm-project/issues/")
@@ -1021,6 +1268,13 @@ cmake_dependent_option(LLVM_DYLIB_EXPORT_INLINES "Force inline members of classe
 
 if(LLVM_BUILD_LLVM_DYLIB_VIS)
   set(LLVM_BUILD_LLVM_DYLIB ON)
+endif()
+
+if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND
+   (BUILD_SHARED_LIBS OR LLVM_BUILD_LLVM_DYLIB OR LLVM_LINK_LLVM_DYLIB))
+  message(FATAL_ERROR
+    "LLVM_DRIVER_PER_INVOCATION_GLOBALS requires one static COFF/ELF "
+    "executable image; shared or LLVM-dylib builds are unsupported")
 endif()
 
 if (LLVM_LINK_LLVM_DYLIB AND BUILD_SHARED_LIBS)

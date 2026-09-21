@@ -2,6 +2,7 @@ include(GNUInstallDirs)
 include(LLVMDistributionSupport)
 include(LLVMProcessSources)
 include(LLVM-Config)
+include(LLVMDriver)
 include(DetermineGCCCompatible)
 
 # get_subproject_title(titlevar)
@@ -612,6 +613,12 @@ function(llvm_add_library name)
     llvm_process_sources(ALL_FILES ${ARG_UNPARSED_ARGUMENTS} ${ARG_ADDITIONAL_HEADERS})
   endif()
 
+  # Keep the real source list before an OBJECT variant rewrites ALL_FILES to
+  # $<TARGET_OBJECTS:...>.  Driver-private library copies must recompile these
+  # sources with the per-invocation globals flags; reusing the ordinary object
+  # library would silently put process-lifetime globals back in the image.
+  set(driver_per_invocation_all_files ${ALL_FILES})
+
   if(ARG_MODULE)
     if(ARG_SHARED OR ARG_STATIC)
       message(WARNING "MODULE with SHARED|STATIC doesn't make sense.")
@@ -921,6 +928,11 @@ function(llvm_add_library name)
       COMMAND touch ${LLVM_LIBRARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${name}${CMAKE_STATIC_LIBRARY_SUFFIX}
       )
   endif()
+
+  llvm_configure_driver_per_invocation_library(${name}
+    STATIC "${ARG_STATIC}"
+    SOURCES ${driver_per_invocation_all_files}
+    DEPENDS ${LLVM_COMMON_DEPENDS} ${ARG_DEPENDS})
 endfunction()
 
 function(add_llvm_install_targets target)
@@ -1089,7 +1101,17 @@ macro(add_llvm_library name)
 endmacro(add_llvm_library name)
 
 macro(generate_llvm_objects name)
-  cmake_parse_arguments(ARG "GENERATE_DRIVER" "" "DEPENDS" ${ARGN})
+  cmake_parse_arguments(ARG
+    "GENERATE_DRIVER;GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS"
+    "" "DEPENDS" ${ARGN})
+  # This keyword always requests the generated standalone main wrapper: the
+  # source defines only <tool>_main in every configuration.  Folding is a
+  # separate decision: cl::-based tools require the complete library tier.
+  set(driver_fold_into_llvm_driver ${ARG_GENERATE_DRIVER})
+  if(ARG_GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS)
+    set(ARG_GENERATE_DRIVER TRUE)
+    set(driver_fold_into_llvm_driver ${LLVM_DRIVER_PER_INVOCATION_GLOBALS})
+  endif()
 
   llvm_process_sources( ALL_FILES ${ARG_UNPARSED_ARGUMENTS} )
 
@@ -1113,40 +1135,14 @@ macro(generate_llvm_objects name)
     set_target_properties(${obj_name} PROPERTIES FOLDER "${subproject_title}/Object Libraries")
   endif()
 
-  if (ARG_GENERATE_DRIVER)
-    string(REPLACE "-" "_" TOOL_NAME ${name})
-
-    set(INITLLVM_ARGS "")
-
-    # When Clang is invoked as an OS utility (e.g., c17), it needs to follow the POSIX specification
-    # for how utilities respond to signals.
-    if(${name} STREQUAL "clang")
-      set(INITLLVM_ARGS ", /*InstallPipeSignalExitHandler=*/true, /*NeedsPOSIXUtilitySignalHandling=*/true")
-    endif()
-
-    foreach(path ${CMAKE_MODULE_PATH})
-      if(EXISTS ${path}/llvm-driver-template.cpp.in)
-        configure_file(
-          ${path}/llvm-driver-template.cpp.in
-          ${CMAKE_CURRENT_BINARY_DIR}/${name}-driver.cpp)
-        break()
-      endif()
-    endforeach()
-
-    list(APPEND ALL_FILES ${CMAKE_CURRENT_BINARY_DIR}/${name}-driver.cpp)
-
-    if (LLVM_TOOL_LLVM_DRIVER_BUILD
-        AND (NOT LLVM_DISTRIBUTION_COMPONENTS OR ${name} IN_LIST LLVM_DISTRIBUTION_COMPONENTS)
-       )
-      set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_COMPONENTS ${LLVM_LINK_COMPONENTS})
-      set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_DEPS ${ARG_DEPENDS} ${LLVM_COMMON_DEPENDS})
-      set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_OBJLIBS "${obj_name}")
-
-      set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOLS ${name})
-      set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_ALIASES_${name} ${name})
-      target_link_libraries(${obj_name} PUBLIC ${LLVM_PTHREAD_LIB})
-      llvm_config(${obj_name} ${USE_SHARED} ${LLVM_LINK_COMPONENTS} )
-    endif()
+  if(ARG_GENERATE_DRIVER)
+    llvm_configure_driver_tool(ALL_FILES ${name} "${obj_name}"
+      FOLD_INTO_DRIVER "${driver_fold_into_llvm_driver}"
+      LLVM_CONFIG_OPTIONS ${USE_SHARED}
+      FILES ${ALL_FILES}
+      DEPENDS ${ARG_DEPENDS}
+      COMMON_DEPENDS ${LLVM_COMMON_DEPENDS}
+      LINK_COMPONENTS ${LLVM_LINK_COMPONENTS})
   endif()
 endmacro()
 
@@ -1605,7 +1601,13 @@ if(NOT LLVM_TOOLCHAIN_TOOLS)
 endif()
 
 macro(llvm_add_tool project name)
-  cmake_parse_arguments(ARG "DEPENDS;GENERATE_DRIVER" "" "" ${ARGN})
+  cmake_parse_arguments(ARG
+    "DEPENDS;GENERATE_DRIVER;GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS"
+    "" "" ${ARGN})
+  if(ARG_GENERATE_DRIVER_REQUIRES_PER_INVOCATION_GLOBALS AND
+     LLVM_DRIVER_PER_INVOCATION_GLOBALS)
+    set(ARG_GENERATE_DRIVER TRUE)
+  endif()
   if( NOT LLVM_BUILD_TOOLS )
     set(EXCLUDE_FROM_ALL ON)
   endif()

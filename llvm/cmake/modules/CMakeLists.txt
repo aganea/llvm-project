@@ -112,6 +112,9 @@ file(COPY .
   FILES_MATCHING PATTERN *.cmake
   PATTERN CMakeFiles EXCLUDE
   PATTERN llvm-driver-template.cpp.in
+  PATTERN llvm-driver-initsec.cpp.in
+  PATTERN llvm-driver-initsec-range.def.in
+  PATTERN llvm-driver-initsec-ranges.def.in
   )
 
 #
@@ -182,7 +185,10 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
     PATTERN LLVMConfigVersion.cmake EXCLUDE
     PATTERN LLVM-Config.cmake EXCLUDE
     PATTERN GetHostTriple.cmake EXCLUDE
-    PATTERN llvm-driver-template.cpp.in)
+    PATTERN llvm-driver-template.cpp.in
+    PATTERN llvm-driver-initsec.cpp.in
+    PATTERN llvm-driver-initsec-range.def.in
+    PATTERN llvm-driver-initsec-ranges.def.in)
 
   if (NOT LLVM_ENABLE_IDE)
     # Add a dummy target so this can be used with LLVM_DISTRIBUTION_COMPONENTS

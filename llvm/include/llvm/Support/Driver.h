@@ -78,8 +78,9 @@ LLVM_ABI int runLLVMDriverTool(void (*InitLifecycle)(), LLVMDriverToolMain Main,
 /// tool invocation. The individual tools borrow a ToolContext and therefore do
 /// not initialize or shut down LLVM themselves.
 ///
-/// LLVM tools may use process-global state. Tool invocations must be externally
-/// serialized; concurrent calls are not supported.
+/// Tools that do not isolate their invocation state must be externally
+/// serialized. Registrations that enter through runLLVMDriverTool may overlap,
+/// subject to the concurrency policy of the process-wide services they use.
 class LLVM_ABI ToolSession {
 public:
   ToolSession(int &Argc, char **&Argv, ArrayRef<CallableTool> Tools,

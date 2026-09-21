@@ -1,0 +1,110 @@
+//===-- driver-initsec.cpp ------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Generated per driver tool when LLVM_DRIVER_PER_INVOCATION_GLOBALS is on.
+// It runs the tool-private lifecycle range and the ranges of its transitive
+// driver-private LLVM component-library closure after arena binding.
+//
+//===----------------------------------------------------------------------===//
+
+#include "llvm/Support/Compiler.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+
+using InitFnTy = void (*)();
+
+static LLVM_ATTRIBUTE_NOINLINE InitFnTy loadLifecycleInit(uintptr_t Address) {
+  InitFnTy Init = nullptr;
+  std::memcpy(&Init, reinterpret_cast<const void *>(Address), sizeof(Init));
+  return Init;
+}
+
+// Called from the multicall driver's dispatch table.
+void @TOOL_NAME@_init_lifecycle();
+
+#if defined(_WIN32)
+
+// COFF has no __start_/__stop_ mechanism, so the range is bracketed by sentinel
+// sections. '$' (0x24) sorts below every identifier character, so within the
+// ".llvmi" grouped section each range's $a, $u and $z subkeys stay contiguous
+// and sorted, including when one section key prefixes another. Grouping under
+// the short ".llvmi" name also stays inside PE's 8-byte section-name limit.
+#define LLVM_DRIVER_LIFECYCLE_RANGE(ID, SECTION, KEY)                    \
+  __attribute__((section(".llvmi$" #KEY "$a"), used))                  \
+  static const InitFnTy RangeStart##ID = nullptr;                        \
+  __attribute__((section(".llvmi$" #KEY "$z"), used))                  \
+  static const InitFnTy RangeEnd##ID = nullptr;                          \
+  static uintptr_t lifecycleBegin##ID() {                                \
+    return reinterpret_cast<uintptr_t>(&RangeStart##ID) +                \
+           sizeof(InitFnTy);                                             \
+  }                                                                      \
+  static uintptr_t lifecycleEnd##ID() {                                  \
+    return reinterpret_cast<uintptr_t>(&RangeEnd##ID);                   \
+  }
+#include "@LIFECYCLE_RANGES_INCLUDE@"
+#undef LLVM_DRIVER_LIFECYCLE_RANGE
+
+#elif defined(__ELF__)
+
+// ELF: the linker synthesizes the bounds of a section whose name is a C
+// identifier, so there is nothing to bracket and no ordering to reason about.
+// Weak so that a tool contributing no lifecycle initializers -- and so no
+// section -- still links, with both bounds null.
+#define LLVM_DRIVER_LIFECYCLE_RANGE(ID, SECTION, KEY)                    \
+  extern const InitFnTy __start_##SECTION[] __attribute__((weak));       \
+  extern const InitFnTy __stop_##SECTION[] __attribute__((weak));        \
+  static uintptr_t lifecycleBegin##ID() {                                \
+    return reinterpret_cast<uintptr_t>(__start_##SECTION);               \
+  }                                                                      \
+  static uintptr_t lifecycleEnd##ID() {                                  \
+    return reinterpret_cast<uintptr_t>(__stop_##SECTION);                \
+  }
+#include "@LIFECYCLE_RANGES_INCLUDE@"
+#undef LLVM_DRIVER_LIFECYCLE_RANGE
+
+#else
+
+#error "llvm-driver lifecycle initialization requires COFF or ELF range discovery"
+
+#endif
+
+static void runLifecycleRange(uintptr_t BeginAddress, uintptr_t EndAddress) {
+  if (BeginAddress == 0 && EndAddress == 0)
+    return;
+  if (BeginAddress == 0 || EndAddress == 0 || EndAddress < BeginAddress ||
+      (EndAddress - BeginAddress) % sizeof(InitFnTy) != 0)
+    std::abort();
+
+  // Padding between COFF sentinels reads as null, hence the check rather than a
+  // bare call. A missing ELF section has two null weak bounds. Walk by integer
+  // address and copy each pointer value: the linker concatenates distinct C++
+  // objects, so indexing from one sentinel as if the section were one array is
+  // undefined behavior and an optimizing compiler may delete the loop.
+  for (uintptr_t Address = BeginAddress; Address != EndAddress;
+       Address += sizeof(InitFnTy)) {
+    InitFnTy Init = loadLifecycleInit(Address);
+    if (Init)
+      Init();
+  }
+}
+
+/// Runs @TOOL_NAME@'s per-invocation lifecycle initializers.
+///
+/// Not idempotent, by nature: re-running the range re-constructs live objects
+/// and re-registers their atexit destructors, because the atexit call lives
+/// inside the lifecycle initializer itself. A host reusing one image across
+/// invocations has to tear the previous invocation's state down first --
+/// cl::ResetCommandLineParser() alone is not enough.
+void @TOOL_NAME@_init_lifecycle() {
+#define LLVM_DRIVER_LIFECYCLE_RANGE(ID, SECTION, KEY)                    \
+  runLifecycleRange(lifecycleBegin##ID(), lifecycleEnd##ID());
+#include "@LIFECYCLE_RANGES_INCLUDE@"
+#undef LLVM_DRIVER_LIFECYCLE_RANGE
+}
