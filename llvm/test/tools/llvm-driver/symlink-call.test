@@ -6,6 +6,8 @@
 # RUN: mkdir %t
 # RUN: ln -s %llvm %t/llvm-cxxfilt
 # RUN: %t/llvm-cxxfilt --help | FileCheck %s
+# RUN: ln -s %t/llvm-cxxfilt %t/llvm-foo
+# RUN: %t/llvm-foo --help | FileCheck %s
 # RUN: ln -s %llvm %t/llvm-cxxfilt-15
 # RUN: %t/llvm-cxxfilt-15 --help | FileCheck %s
 # RUN: ln -s %llvm %t/cxxfilt

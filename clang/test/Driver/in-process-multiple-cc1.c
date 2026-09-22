@@ -3,6 +3,19 @@
 // A Clang invocation owned by ToolSession can execute multiple cc1 jobs
 // in-process. Each job must free its CompilerInstance before returning.
 // RUN: split-file %s %t
+
+// An implicit dry run retains the standalone driver's output contract even
+// though the session will restore these jobs to in-process execution when it
+// actually runs them. In particular, the commands remain adjacent.
+// RUN: cd %t && %clang --target=wasm32-unknown-unknown \
+// RUN:   -c -### first.c second.c 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=IMPLICIT \
+// RUN:       --implicit-check-not='(in-process)'
+// IMPLICIT: "-cc1"
+// IMPLICIT-SAME: "first.c"
+// IMPLICIT-NEXT: {{.*}}"-cc1"
+// IMPLICIT-SAME: "second.c"
+
 // RUN: cd %t && %clang --target=wasm32-unknown-unknown \
 // RUN:   -fintegrated-cc1 -c -### first.c second.c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=COMMANDS \

@@ -57,6 +57,25 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
   llvm_finalize_driver_per_invocation_graph(llvm-driver)
 endif()
 
+# Folded plugin-capable tools requested exports while they were still custom
+# targets.  Apply that request to the real executable only now, after its full
+# ordinary or driver-private static-library closure is known.  This timing is
+# required when LLVM_EXPORT_SYMBOLS_FOR_PLUGINS builds a selective export list.
+get_property(llvm_driver_export_symbols_for_plugins GLOBAL PROPERTY
+  LLVM_DRIVER_EXPORT_SYMBOLS_FOR_PLUGINS)
+if(llvm_driver_export_symbols_for_plugins)
+  # Resolve selective-export inspection tools only after a folded tool has
+  # actually requested plugin exports.  Probing them unconditionally would
+  # reject valid minimal and one-stage drivers with no plugin-capable tools.
+  llvm_configure_driver_plugin_export_tools()
+  export_executable_symbols_for_plugins(llvm-driver)
+  # The selective export-list implementation gives ordinary executables a
+  # link interface for libraries whose symbols were not exported.  Folded
+  # plugins instead resolve against the aggregate image, and its internal
+  # object/private targets cannot be part of LLVM's install export set.
+  set_property(TARGET llvm-driver PROPERTY INTERFACE_LINK_LIBRARIES "")
+endif()
+
 # The finalizer recomputes this from each tool's authoritative late link
 # closure, so do not snapshot it before finalization.
 get_property(LLVM_DRIVER_PER_INVOCATION_TOOLS GLOBAL PROPERTY

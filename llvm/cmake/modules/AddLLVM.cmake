@@ -867,7 +867,17 @@ function(llvm_add_library name)
 
   if(ARG_MODULE AND LLVM_EXPORT_SYMBOLS_FOR_PLUGINS AND ARG_PLUGIN_TOOL AND (WIN32 OR CYGWIN))
     # On DLL platforms symbols are imported from the tool by linking against it.
-    set(llvm_libs ${ARG_PLUGIN_TOOL})
+    # A build may expose a linkable executable behind a non-linkable tool
+    # facade. Honor that target's generic link redirection property.
+    set(llvm_plugin_tool ${ARG_PLUGIN_TOOL})
+    if(TARGET ${ARG_PLUGIN_TOOL})
+      get_property(llvm_plugin_tool_link_target TARGET ${ARG_PLUGIN_TOOL}
+        PROPERTY LLVM_PLUGIN_TOOL_LINK_TARGET)
+      if(llvm_plugin_tool_link_target)
+        set(llvm_plugin_tool ${llvm_plugin_tool_link_target})
+      endif()
+    endif()
+    set(llvm_libs ${llvm_plugin_tool})
   elseif (NOT ARG_COMPONENT_LIB)
     if (LLVM_LINK_LLVM_DYLIB AND NOT ARG_DISABLE_LLVM_LINK_LLVM_DYLIB)
       set(llvm_libs LLVM)

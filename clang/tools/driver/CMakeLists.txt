@@ -75,7 +75,7 @@ endif()
 
 # Support plugins.
 if(CLANG_PLUGIN_SUPPORT)
-  export_executable_symbols_for_plugins(clang)
+  llvm_export_driver_tool_symbols_for_plugins(clang)
 endif()
 
 add_dependencies(clang clang-resource-headers)

@@ -2301,7 +2301,11 @@ in reverse registration order when that invocation is finalized.
 LLVM's multicall-driver integration is enabled as one unit by the
 `LLVM_DRIVER_PER_INVOCATION_GLOBALS` CMake option. It builds private copies of
 the participating libraries with the production arena list, emits the matching
-lifecycle ranges, and installs the invocation context before running them.
+lifecycle ranges, and installs the invocation context before running them. On
+DLL platforms, a folded driver which exports symbols for plugins also needs
+host `llvm-nm` and `llvm-readobj` tools outside the aggregate link; provide
+them through the existing CMake tool settings when they are not available
+beside the bootstrap compiler.
 
 An Emscripten host must build one statically linked Wasm main module and keep
 one `llvm::ToolSession` alive for that module's lifetime. The host dispatches
@@ -2318,11 +2322,16 @@ The command-line `llvm-driver` owns its session for one call to `main`; it is
 not itself the JavaScript embedding API. An Emscripten application needs a thin
 exported C or embind wrapper which owns the `ToolSession`, registers its folded
 entry points through `runLLVMDriverTool`, and calls `ToolSession::callTool` for
-each request. Before the first request, that wrapper must also perform the
-process-wide target, target-MC, assembler, disassembler, and CodeGen pass
-registration done by `llvm-driver` startup, plus the process services required
-by its folded tools (including HTTP initialization in the current driver).
-All of that initialization must finish before concurrent dispatch begins.
+each request. The generated command-line driver conservatively classifies new
+folded tools as catalog consumers. Only an explicit audited lightweight
+allowlist may avoid that classification, and its finalized library closures
+are checked for known target/pass providers and consumers. Immediately before
+the first catalog-consuming invocation, the driver performs one synchronized
+process-wide initialization; lightweight tools do not pay that startup cost.
+HTTP initialization is likewise lazy when the platform implementation permits
+thread-safe initialization. A custom Emscripten wrapper must either reproduce
+that once-only dispatch boundary or initialize the target/pass catalogs and
+other required process services before it permits concurrent requests.
 
 The multicall driver uses the following lifetime and concurrency policy:
 
@@ -2330,24 +2339,39 @@ The multicall driver uses the following lifetime and concurrency policy:
   cached pointers, statistics, pass/session state, and linker-session globals
   are invocation-owned. Worker tasks created through LLVM's threading helpers
   capture and install the complete tool execution context. Teardown refuses to
-  release an invocation while a captured task lease is outstanding.
+  release an invocation while a captured task lease is outstanding. For
+  compatibility, a plain `cl::ScopedContext` also exposes options registered in
+  the process-default parser; those borrowed option objects remain shared and
+  must not be parsed by overlapping invocations. The folded driver's private,
+  arena-compiled closure gives participating options invocation-owned storage.
 - Address-identity objects (for example analysis keys, legacy pass IDs and
   `SpecificAlloc<T>` tags), immutable generated tables, and the machine-pass
   registration catalog remain process-wide. Registry defaults and listeners
   are invocation-owned. Plugin and machine-pass catalogs may be populated
   during process startup or serialized plugin setup before fan-out; adding or
   removing entries while multiple tool contexts are active is an error. The
-  multicall driver populates target identities before its first invocation;
-  target component registration is serialized and repeated registration of the
-  same component is a no-op, while replacing a live component during overlap is
-  an error. The legacy pass catalog permits synchronized lazy registration, but
-  it must not change during overlap when an invocation-owned registration
-  listener is installed.
+  multicall driver populates target identities before its first
+  catalog-consuming invocation. This audited bootstrap may overlap an already
+  active lightweight invocation whose finalized closure cannot consume the
+  catalogs; two cold catalog-consuming dispatches wait for the same complete
+  initialization. Target component registration is serialized and repeated
+  registration of the same component is a no-op, while replacing a live
+  component during overlap is an error. The legacy pass catalog permits
+  synchronized lazy registration, but it must not change during overlap when
+  an invocation-owned registration listener is installed.
 - Allocators, jobserver/environment discovery, plugin loading, HTTP support,
   crash and signal handling, and process thread-pool infrastructure remain
   process services. They must provide their own synchronization or be
   serialized by the embedding host, and they are not reset by destroying an
-  arena. Folded invocations have invocation-owned `-disable-symbolication` and
+  arena. `llvm::parallel` work from arena-backed invocations shares a bounded
+  process-wide physical executor; each invocation's parsed strategy is a quota
+  on that executor rather than a request to create another full-width pool.
+  The normal and GNU Make jobserver policies use separate process pools so a
+  normal task cannot consume a job token and a jobserver task cannot run
+  without one. Explicit `ThreadPool` owners, including the current in-process
+  ThinLTO backend, are not routed through this executor and still need an
+  external concurrency policy when several links overlap. Folded invocations
+  have invocation-owned `-disable-symbolication` and
   `-crash-diagnostics-dir` controls whose values are published through
   signal-safe snapshots. Tokenless signal-handler threads use the
   process-default copies instead, so an embedding host should configure that

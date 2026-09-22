@@ -22,7 +22,14 @@ if(CYGWIN OR NOT LLVM_ENABLE_PIC)
 endif()
 
 if (LLVM_TOOL_LLVM_DRIVER_BUILD)
-  add_llvm_tool(llvm-driver)
+  # The aggregate may contain tools which support loadable plugins.  Its link
+  # must therefore obey the same dead-strip policy as their standalone
+  # executables.  The export request itself is applied after every folded
+  # tool's link graph has been assembled in llvm-driver/CMakeLists.txt.
+  if(LLVM_ENABLE_PLUGINS OR LLVM_EXPORT_SYMBOLS_FOR_PLUGINS)
+    set(llvm_driver_plugin_support SUPPORT_PLUGINS)
+  endif()
+  add_llvm_tool(llvm-driver ${llvm_driver_plugin_support})
 endif()
 
 # Add LTO, llvm-ar, llvm-config, and llvm-profdata before clang, ExternalProject

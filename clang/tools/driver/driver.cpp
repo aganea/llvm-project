@@ -390,8 +390,16 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
   // A long-lived session cannot use process exit to reclaim cc1 state. Restore
   // the integrated jobs disabled for a multi-job compilation and make each
   // CompilerInstance release its resources before returning to the host.
+  // Keep an implicit -### dry run compatible with the standalone driver's
+  // multi-job output.  There is nothing to execute in that mode, so restoring
+  // the session-only execution policy would only insert "(in-process)" lines
+  // between otherwise adjacent commands.  An explicit -fintegrated-cc1 still
+  // reports the in-process jobs as requested.
+  bool RestoreSessionCC1Jobs =
+      !C->getArgs().hasArg(options::OPT__HASH_HASH_HASH) ||
+      C->getArgs().hasArg(options::OPT_fintegrated_cc1);
   if (ToolContext.hasSession() && !UseNewCC1Process &&
-      !TheDriver.CCPrintProcessStats) {
+      !TheDriver.CCPrintProcessStats && RestoreSessionCC1Jobs) {
     for (Command &Job : C->getJobs()) {
       if (!Job.SupportsDisableFree)
         continue;

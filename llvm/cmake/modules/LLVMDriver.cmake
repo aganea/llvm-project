@@ -66,6 +66,81 @@ function(llvm_add_driver_producer_list_dependencies target)
   endforeach()
 endfunction()
 
+# Preserve a tool's executable plugin ABI when it is folded into llvm-driver.
+# A folded tool is represented by a custom target, so exporting from it has no
+# effect.  Exporting from llvm-driver here would also be too early for the
+# selective export-list path: the aggregate's complete (possibly
+# driver-private) static-library graph is assembled only after all tool
+# projects have been visited.  Record the request for llvm-driver/CMakeLists.txt
+# to apply once that graph is final.  Standalone tools retain the ordinary
+# AddLLVM behavior.
+function(llvm_export_driver_tool_symbols_for_plugins target)
+  get_property(driver_tools GLOBAL PROPERTY LLVM_DRIVER_TOOLS)
+  if(LLVM_TOOL_LLVM_DRIVER_BUILD AND ${target} IN_LIST driver_tools)
+    # On DLL platforms add_llvm_library(PLUGIN_TOOL ...) links against the
+    # executable's import library. A folded tool target is only a custom alias,
+    # so direct those generic plugin edges to the real aggregate executable.
+    set_property(TARGET ${target} PROPERTY
+      LLVM_PLUGIN_TOOL_LINK_TARGET llvm-driver)
+    if(LLVM_ENABLE_PLUGINS OR LLVM_EXPORT_SYMBOLS_FOR_PLUGINS)
+      # Plugin modules may be configured before the aggregate's complete link
+      # graph is available. Make the executable linkable now; generation of
+      # its selective export list still waits for finalization below.
+      set_property(TARGET llvm-driver PROPERTY ENABLE_EXPORTS 1)
+      set_property(GLOBAL PROPERTY
+        LLVM_DRIVER_EXPORT_SYMBOLS_FOR_PLUGINS TRUE)
+    endif()
+    return()
+  endif()
+  export_executable_symbols_for_plugins(${target})
+endfunction()
+
+# Selective executable exports use llvm-nm and llvm-readobj to inspect the
+# linked archives.  In a folded build those tool targets are custom aliases of
+# llvm-driver, so using them to generate llvm-driver's export list would form a
+# dependency cycle.  A bootstrap compiler normally provides matching host
+# tools beside clang; select those before any tool project requests exports.
+# One-stage and cross builds can instead provide LLVM_NM/LLVM_READOBJ,
+# LLVM_NATIVE_TOOL_DIR, or LLVM_USE_HOST_TOOLS explicitly.
+function(llvm_configure_driver_plugin_export_tools)
+  if(NOT LLVM_TOOL_LLVM_DRIVER_BUILD OR
+     NOT LLVM_EXPORT_SYMBOLS_FOR_PLUGINS)
+    return()
+  endif()
+
+  get_filename_component(driver_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  foreach(driver_tool_name llvm-nm llvm-readobj)
+    if(driver_tool_name STREQUAL "llvm-nm")
+      set(driver_tool_setting LLVM_NM)
+    else()
+      set(driver_tool_setting LLVM_READOBJ)
+    endif()
+    if(${driver_tool_setting} OR LLVM_USE_HOST_TOOLS)
+      continue()
+    endif()
+
+    set(driver_tool_in_native_dir
+      "${LLVM_NATIVE_TOOL_DIR}/${driver_tool_name}${LLVM_HOST_EXECUTABLE_SUFFIX}")
+    if(LLVM_NATIVE_TOOL_DIR AND EXISTS "${driver_tool_in_native_dir}")
+      continue()
+    endif()
+
+    set(driver_bootstrap_tool
+      "${driver_compiler_dir}/${driver_tool_name}${LLVM_HOST_EXECUTABLE_SUFFIX}")
+    if(EXISTS "${driver_bootstrap_tool}")
+      set(${driver_tool_setting} "${driver_bootstrap_tool}" CACHE STRING
+        "Host ${driver_tool_name} executable. Saves building if cross-compiling."
+        FORCE)
+      continue()
+    endif()
+
+    message(FATAL_ERROR
+      "LLVM_EXPORT_SYMBOLS_FOR_PLUGINS requires a host ${driver_tool_name} "
+      "outside folded llvm-driver to avoid a dependency cycle. Set "
+      "${driver_tool_setting}, LLVM_NATIVE_TOOL_DIR, or LLVM_USE_HOST_TOOLS.")
+  endforeach()
+endfunction()
+
 # Replace only complete CMake target-name tokens inside a link item.  Plain
 # string replacement is unsafe here: LLVMTarget is a prefix of
 # LLVMTargetParser, and the driver-private target name also contains the

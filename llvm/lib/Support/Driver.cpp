@@ -10,6 +10,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
 
@@ -33,6 +34,37 @@ bool matchesToolName(StringRef RegisteredName, StringRef InvokedName) {
             !llvm::isAlnum(Candidate[Position + RegisteredName.size()]));
   };
   return Matches(Stem) || Matches(Filename);
+}
+
+bool isCanonicalToolSpelling(StringRef RegisteredName, StringRef InvokedName) {
+  auto Matches = [RegisteredName](StringRef Candidate) {
+    if (Candidate.ends_with_insensitive(RegisteredName))
+      return true;
+
+    // Preserve the version decorations accepted by LLVM and Clang drivers.
+    // Numeric versions may be joined directly (clang++3.5) or form a final
+    // component (clang-cl-3.5); development drivers also commonly use -tot.
+    StringRef WithoutNumericVersion = Candidate.rtrim("0123456789.");
+    if (WithoutNumericVersion.size() != Candidate.size() &&
+        WithoutNumericVersion.ends_with_insensitive(RegisteredName))
+      return true;
+
+    size_t LastDash = Candidate.rfind('-');
+    if (LastDash == StringRef::npos)
+      return false;
+    StringRef Version = Candidate.drop_front(LastDash + 1);
+    bool HasDigit = false;
+    bool IsNumericVersion = !Version.empty();
+    for (char C : Version) {
+      HasDigit |= llvm::isDigit(C);
+      IsNumericVersion &= llvm::isDigit(C) || C == '.';
+    }
+    IsNumericVersion &= HasDigit;
+    return (Version.equals_insensitive("tot") || IsNumericVersion) &&
+           Candidate.take_front(LastDash).ends_with_insensitive(RegisteredName);
+  };
+  return Matches(sys::path::stem(InvokedName)) ||
+         Matches(sys::path::filename(InvokedName));
 }
 
 bool isMulticallName(StringRef Name) { return matchesToolName("llvm", Name); }
@@ -98,6 +130,32 @@ ErrorOr<int> ToolSession::callTool(ArrayRef<const char *> Args) {
 
   StringRef InvokedName = Args.front();
   ErrorOr<CallableTool> Tool = findTool(InvokedName);
+  bool ResolvedExecutableLink = false;
+  bool InvokedNameIsCanonicalTool = false;
+  for (const auto &RegisteredTool : PImpl->Tools) {
+    if (isCanonicalToolSpelling(RegisteredTool.first, InvokedName)) {
+      InvokedNameIsCanonicalTool = true;
+      break;
+    }
+  }
+  if (InvokedName == PImpl->ExecutablePath && !InvokedNameIsCanonicalTool) {
+    // Preserve the selected tool across one extra symlink layer, such as
+    // llvm-gcov -> llvm-cov -> llvm. The tool still receives the original
+    // argv[0], while PrependArg records the intermediate tool name for drivers
+    // such as Clang which select their mode through ToolContext. A canonical,
+    // target-prefixed or versioned outer alias takes precedence over its link
+    // target: llvm-ar and x86_64-linux-clang++ must retain their modes even if
+    // a host happens to chain them through another tool alias.
+    SmallVector<char, 128> LinkTarget;
+    if (!sys::fs::readlink(InvokedName, LinkTarget)) {
+      ErrorOr<CallableTool> LinkTool =
+          findTool(StringRef(LinkTarget.data(), LinkTarget.size()));
+      if (LinkTool) {
+        Tool = std::move(LinkTool);
+        ResolvedExecutableLink = true;
+      }
+    }
+  }
   if (!Tool) {
     if (InvokedName != PImpl->ExecutablePath && !isMulticallName(InvokedName))
       return make_error_code(std::errc::no_such_file_or_directory);
@@ -111,7 +169,9 @@ ErrorOr<int> ToolSession::callTool(ArrayRef<const char *> Args) {
   if (!Tool)
     return Tool.getError();
 
-  std::string PrependArg = sys::path::stem(InvokedName).str();
+  std::string PrependArg = ResolvedExecutableLink
+                               ? Tool->Name.str()
+                               : sys::path::stem(InvokedName).str();
   ToolContext Context = makeContext(Tool->Name, PrependArg.c_str());
   SmallVector<char *, 16> MutableArgs;
   MutableArgs.reserve(Args.size() + 1);
