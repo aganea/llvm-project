@@ -55,6 +55,27 @@ class ScopedStaticArenaBinding;
 class StaticArenaToken;
 class ToolExecutionContext;
 
+/// Timings and sizes collected while creating one static arena.
+///
+/// This is an opt-in diagnostic interface intended for benchmarks. The normal
+/// create() path does not read a clock or collect these values. Layout time is
+/// normally nonzero only for the first arena created by an image; subsequent
+/// calls measure the cheap call_once fast path instead.
+struct StaticArenaCreateStats {
+  uint64_t TotalNanoseconds = 0;
+  uint64_t LayoutNanoseconds = 0;
+  uint64_t AllocationNanoseconds = 0;
+  uint64_t ZeroFillNanoseconds = 0;
+  uint64_t RecordInitializationNanoseconds = 0;
+  uint64_t RecordCount = 0;
+  uint64_t TemplateBytes = 0;
+  uint64_t ObjectBytes = 0;
+  uint64_t AllocationBytes = 0;
+  uint64_t BackingBytes = 0;
+  bool ComputedLayout = false;
+  bool UsedDemandZeroMapping = false;
+};
+
 /// Owns one instance of the process-wide static-arena layout.
 ///
 /// The lifecycle is deliberately explicit. beginClosing() first proves that
@@ -67,6 +88,11 @@ class LLVM_ABI StaticArena {
 public:
   static std::unique_ptr<StaticArena> create();
 
+  /// Creates an arena and records phase-level creation costs in \p Stats.
+  /// Prefer create() outside diagnostics and benchmarks: it has no timing
+  /// instrumentation on its implementation path.
+  static std::unique_ptr<StaticArena> create(StaticArenaCreateStats &Stats);
+
   ~StaticArena();
 
   StaticArena(const StaticArena &) = delete;
@@ -76,6 +102,9 @@ public:
   void runDestructors();
 
 private:
+  template <bool CollectStats>
+  static std::unique_ptr<StaticArena> createImpl(StaticArenaCreateStats *Stats);
+
   class Impl;
   explicit StaticArena(std::unique_ptr<Impl> PImpl);
 

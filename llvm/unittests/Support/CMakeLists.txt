@@ -173,6 +173,7 @@ if(LLVM_HAVE_LINK_VERSION_SCRIPT AND
   target_link_options(SupportTests PRIVATE
     "LINKER:-u,LLVMStaticArenaTestTemplateEntry"
     "LINKER:-u,LLVMStaticArenaTestOverAlignedEntry"
+    "LINKER:-u,LLVMStaticArenaTestLargeZeroFilledEntry"
     "LINKER:-u,LLVMStaticArenaTestCallbackEntry"
     "LINKER:-u,LLVMStaticArenaTestOptionEntry"
     "LINKER:-u,LLVMStaticArenaTestOptionLocationEntry")

@@ -104,7 +104,13 @@ MemoryBlock Memory::allocateMappedMemory(size_t NumBytes,
     return MemoryBlock();
 
   static size_t DefaultGranularity = getAllocationGranularity();
-  static size_t LargePageGranularity = enableProcessLargePages();
+  size_t LargePageGranularity = 0;
+  if (Flags & MF_HUGE_HINT) {
+    // Enabling large pages performs process-token and privilege operations.
+    // Do not impose that one-time cost on ordinary demand-zero mappings.
+    static size_t EnabledLargePageGranularity = enableProcessLargePages();
+    LargePageGranularity = EnabledLargePageGranularity;
+  }
 
   DWORD AllocType = MEM_RESERVE | MEM_COMMIT;
   bool HugePages = false;

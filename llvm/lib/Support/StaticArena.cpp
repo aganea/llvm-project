@@ -9,17 +9,26 @@
 #include "llvm/Support/StaticArena.h"
 
 #include "llvm/Support/MemAlloc.h"
+#include "llvm/Support/Memory.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <utility>
 #include <vector>
+
+#if !LLVM_ADDRESS_SANITIZER_BUILD && (defined(_WIN32) || defined(__ELF__))
+#define LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE 1
+#else
+#define LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE 0
+#endif
 
 using namespace llvm;
 
@@ -155,50 +164,69 @@ static bool isPowerOfTwo(uint64_t Value) {
   return Value != 0 && (Value & (Value - 1)) == 0;
 }
 
-static void ensureLayout() {
-  std::call_once(LayoutOnce, [] {
-    RecordRange Range = getRecordRange();
-    std::vector<LLVMStaticArenaVarV1 *> Seen;
-    Seen.reserve(Range.Count);
+static void computeLayout() {
+  RecordRange Range = getRecordRange();
+  std::vector<LLVMStaticArenaVarV1 *> Records;
+  Records.reserve(Range.Count);
 
-    uint64_t Cursor = 0;
-    size_t MaxAlign = alignof(std::max_align_t);
-    for (size_t I = 0; I != Range.Count; ++I) {
-      LLVMStaticArenaVarV1 *Record = recordAt(Range, I);
-      if (!Record)
-        continue;
-      if (std::find(Seen.begin(), Seen.end(), Record) != Seen.end())
-        fail(Record, "duplicate record for");
-      Seen.push_back(Record);
+  for (size_t I = 0; I != Range.Count; ++I)
+    if (LLVMStaticArenaVarV1 *Record = recordAt(Range, I))
+      Records.push_back(Record);
 
-      if (Record->Offset != UINT64_MAX)
-        fail(Record, "record offset was assigned before layout for");
-      if (Record->Size == 0)
-        fail(Record, "zero-sized record for");
-      if (!isPowerOfTwo(Record->Align))
-        fail(Record, "invalid alignment for");
-      if (Record->Size > std::numeric_limits<size_t>::max() ||
-          Record->Align > std::numeric_limits<size_t>::max())
-        fail(Record, "record does not fit size_t for");
+  // The same record can be retained through more than one section entry.
+  // Detect that before assigning offsets. Sorting keeps this O(N log N)
+  // instead of comparing every record with every preceding record.
+  std::sort(Records.begin(), Records.end(),
+            std::less<LLVMStaticArenaVarV1 *>());
+  auto Duplicate = std::adjacent_find(Records.begin(), Records.end());
+  if (Duplicate != Records.end())
+    fail(*Duplicate, "duplicate record for");
 
-      uint64_t AlignmentAdjustment = Record->Align - 1;
-      if (Cursor > UINT64_MAX - AlignmentAdjustment)
-        fail(Record, "layout alignment overflow for");
-      Cursor = (Cursor + AlignmentAdjustment) & ~AlignmentAdjustment;
-      if (Cursor > UINT64_MAX - Record->Size)
-        fail(Record, "layout size overflow for");
+  uint64_t Cursor = 0;
+  size_t MaxAlign = alignof(std::max_align_t);
+  for (size_t I = 0; I != Range.Count; ++I) {
+    LLVMStaticArenaVarV1 *Record = recordAt(Range, I);
+    if (!Record)
+      continue;
 
-      Record->Offset = Cursor;
-      Cursor += Record->Size;
-      MaxAlign = std::max(MaxAlign, static_cast<size_t>(Record->Align));
-    }
+    if (Record->Offset != UINT64_MAX)
+      fail(Record, "record offset was assigned before layout for");
+    if (Record->Size == 0)
+      fail(Record, "zero-sized record for");
+    if (!isPowerOfTwo(Record->Align))
+      fail(Record, "invalid alignment for");
+    if (Record->Size > std::numeric_limits<size_t>::max() ||
+        Record->Align > std::numeric_limits<size_t>::max())
+      fail(Record, "record does not fit size_t for");
 
-    if (Cursor > std::numeric_limits<size_t>::max())
-      fail(nullptr, "static-arena layout does not fit size_t");
-    LayoutSize = static_cast<size_t>(Cursor);
-    LayoutAlign = MaxAlign;
-    LayoutStatus.store(LayoutState::Ready, std::memory_order_release);
+    uint64_t AlignmentAdjustment = Record->Align - 1;
+    if (Cursor > UINT64_MAX - AlignmentAdjustment)
+      fail(Record, "layout alignment overflow for");
+    Cursor = (Cursor + AlignmentAdjustment) & ~AlignmentAdjustment;
+    if (Cursor > UINT64_MAX - Record->Size)
+      fail(Record, "layout size overflow for");
+
+    Record->Offset = Cursor;
+    Cursor += Record->Size;
+    MaxAlign = std::max(MaxAlign, static_cast<size_t>(Record->Align));
+  }
+
+  if (Cursor > std::numeric_limits<size_t>::max())
+    fail(nullptr, "static-arena layout does not fit size_t");
+  LayoutSize = static_cast<size_t>(Cursor);
+  LayoutAlign = MaxAlign;
+  LayoutStatus.store(LayoutState::Ready, std::memory_order_release);
+}
+
+static void ensureLayout() { std::call_once(LayoutOnce, computeLayout); }
+
+static bool ensureLayoutAndReport() {
+  bool ComputedLayout = false;
+  std::call_once(LayoutOnce, [&] {
+    ComputedLayout = true;
+    computeLayout();
   });
+  return ComputedLayout;
 }
 
 static size_t allocationSizeForLayout() {
@@ -209,6 +237,45 @@ static size_t allocationSizeForLayout() {
   return (Size + Adjustment) & ~Adjustment;
 }
 
+template <bool CollectStats> class CreateProfiler {
+public:
+  LLVM_ATTRIBUTE_ALWAYS_INLINE
+  explicit CreateProfiler(StaticArenaCreateStats *) {}
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void beginPhase() {}
+  LLVM_ATTRIBUTE_ALWAYS_INLINE
+  void endPhase(uint64_t StaticArenaCreateStats::*) {}
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void finish() {}
+};
+
+template <> class CreateProfiler<true> {
+  using Clock = std::chrono::steady_clock;
+
+public:
+  explicit CreateProfiler(StaticArenaCreateStats *Stats) : Stats(Stats) {
+    *Stats = {};
+    TotalStart = Clock::now();
+  }
+
+  void beginPhase() { PhaseStart = Clock::now(); }
+
+  void endPhase(uint64_t StaticArenaCreateStats::*Field) {
+    Stats->*Field = elapsed(PhaseStart);
+  }
+
+  void finish() { Stats->TotalNanoseconds = elapsed(TotalStart); }
+
+private:
+  static uint64_t elapsed(Clock::time_point Start) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() -
+                                                                Start)
+        .count();
+  }
+
+  StaticArenaCreateStats *Stats;
+  Clock::time_point TotalStart;
+  Clock::time_point PhaseStart;
+};
+
 } // namespace
 
 class StaticArena::Impl {
@@ -218,8 +285,13 @@ public:
 
   void *Storage = nullptr;
   size_t AllocationSize = 0;
+  size_t BackingSize = 0;
   size_t ObjectSpanSize = 0;
   size_t Alignment = 0;
+#if LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE
+  sys::MemoryBlock MappedStorage;
+#endif
+  bool UsesMappedStorage = false;
 
   std::mutex Mutex;
   std::vector<Destructor> Destructors;
@@ -234,8 +306,16 @@ public:
 StaticArena::StaticArena(std::unique_ptr<Impl> PImpl)
     : PImpl(std::move(PImpl)) {}
 
-std::unique_ptr<StaticArena> StaticArena::create() {
-  ensureLayout();
+template <bool CollectStats>
+std::unique_ptr<StaticArena>
+StaticArena::createImpl(StaticArenaCreateStats *Stats) {
+  CreateProfiler<CollectStats> Profiler(Stats);
+  Profiler.beginPhase();
+  if constexpr (CollectStats)
+    Stats->ComputedLayout = ensureLayoutAndReport();
+  else
+    ensureLayout();
+  Profiler.endPhase(&StaticArenaCreateStats::LayoutNanoseconds);
   if (LayoutStatus.load(std::memory_order_acquire) != LayoutState::Ready)
     fail(nullptr, "layout initialization did not become ready");
 
@@ -243,18 +323,86 @@ std::unique_ptr<StaticArena> StaticArena::create() {
   PImpl->ObjectSpanSize = LayoutSize;
   PImpl->Alignment = LayoutAlign;
   PImpl->AllocationSize = allocationSizeForLayout();
-  PImpl->Storage = allocate_buffer(PImpl->AllocationSize, PImpl->Alignment);
-  if (!PImpl->Storage)
-    fail(nullptr, "static-arena allocation failed");
+
+  Profiler.beginPhase();
+
+  // Fresh anonymous mappings are demand-zero: untouched arena pages need not
+  // be faulted in merely to establish the C++ zero-initialization guarantee.
+  // Keep heap allocation under ASan so an escaped raw address still diagnoses
+  // as use-after-free/use-after-poison after arena release. Wasm retains the
+  // portable heap path because it has no host virtual-memory demand paging.
+#if LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE
+  constexpr size_t DemandZeroMappingThreshold = 64 * 1024;
+  // Keep every request far enough below SIZE_MAX for the platform mapping
+  // implementation to round it to its page or allocation granularity.
+  constexpr size_t MaxMappedAllocation = SIZE_MAX / 2;
+  if (PImpl->AllocationSize >= DemandZeroMappingThreshold &&
+      PImpl->AllocationSize <= MaxMappedAllocation) {
+    auto AllocateMapping = [&](size_t Size) {
+      std::error_code EC;
+      return sys::Memory::allocateMappedMemory(
+          Size, nullptr, sys::Memory::MF_READ | sys::Memory::MF_WRITE, EC);
+    };
+    auto AlignMapping = [&] {
+      void *Storage = PImpl->MappedStorage.base();
+      size_t Space = PImpl->MappedStorage.allocatedSize();
+      return std::align(PImpl->Alignment, PImpl->AllocationSize, Storage,
+                        Space);
+    };
+
+    // Mappings already satisfy the normal page-sized alignment cases. Avoid
+    // making a tiny alignment allowance round the request up by a whole page.
+    PImpl->MappedStorage = AllocateMapping(PImpl->AllocationSize);
+    if (PImpl->MappedStorage.base()) {
+      PImpl->Storage = AlignMapping();
+      if (!PImpl->Storage) {
+        if (std::error_code EC =
+                sys::Memory::releaseMappedMemory(PImpl->MappedStorage))
+          fail(nullptr, "static-arena mapped storage release failed");
+
+        size_t AlignmentPadding = PImpl->Alignment - 1;
+        if (PImpl->AllocationSize <= MaxMappedAllocation - AlignmentPadding) {
+          PImpl->MappedStorage =
+              AllocateMapping(PImpl->AllocationSize + AlignmentPadding);
+          if (PImpl->MappedStorage.base()) {
+            PImpl->Storage = AlignMapping();
+            if (!PImpl->Storage)
+              fail(nullptr, "mapped static-arena storage could not be aligned");
+          }
+        }
+      }
+      if (PImpl->Storage) {
+        PImpl->BackingSize = PImpl->MappedStorage.allocatedSize();
+        PImpl->UsesMappedStorage = true;
+      }
+    }
+  }
+#endif
+
+  if (!PImpl->Storage) {
+    PImpl->Storage = allocate_buffer(PImpl->AllocationSize, PImpl->Alignment);
+    if (!PImpl->Storage)
+      fail(nullptr, "static-arena allocation failed");
+    PImpl->BackingSize = PImpl->AllocationSize;
+  }
+  Profiler.endPhase(&StaticArenaCreateStats::AllocationNanoseconds);
 
   __asan_unpoison_memory_region(PImpl->Storage, PImpl->AllocationSize);
-  std::memset(PImpl->Storage, 0, PImpl->AllocationSize);
 
+  if (!PImpl->UsesMappedStorage) {
+    Profiler.beginPhase();
+    std::memset(PImpl->Storage, 0, PImpl->AllocationSize);
+    Profiler.endPhase(&StaticArenaCreateStats::ZeroFillNanoseconds);
+  }
+
+  Profiler.beginPhase();
   RecordRange Range = getRecordRange();
   for (size_t I = 0; I != Range.Count; ++I) {
     LLVMStaticArenaVarV1 *Record = recordAt(Range, I);
     if (!Record)
       continue;
+    if constexpr (CollectStats)
+      ++Stats->RecordCount;
     if (Record->Offset == UINT64_MAX ||
         Record->Offset > PImpl->ObjectSpanSize ||
         Record->Size >
@@ -262,9 +410,12 @@ std::unique_ptr<StaticArena> StaticArena::create() {
       fail(Record, "record is unassigned or out of bounds for");
     if (!Record->Templ)
       continue;
+    if constexpr (CollectStats)
+      Stats->TemplateBytes += Record->Size;
     std::memcpy(static_cast<char *>(PImpl->Storage) + Record->Offset,
                 Record->Templ, static_cast<size_t>(Record->Size));
   }
+  Profiler.endPhase(&StaticArenaCreateStats::RecordInitializationNanoseconds);
 
   if (PImpl->ObjectSpanSize != PImpl->AllocationSize) {
     __asan_poison_memory_region(static_cast<char *>(PImpl->Storage) +
@@ -272,7 +423,25 @@ std::unique_ptr<StaticArena> StaticArena::create() {
                                 PImpl->AllocationSize - PImpl->ObjectSpanSize);
   }
 
-  return std::unique_ptr<StaticArena>(new StaticArena(std::move(PImpl)));
+  if constexpr (CollectStats) {
+    Stats->ObjectBytes = LayoutSize;
+    Stats->AllocationBytes = PImpl->AllocationSize;
+    Stats->BackingBytes = PImpl->BackingSize;
+    Stats->UsedDemandZeroMapping = PImpl->UsesMappedStorage;
+  }
+
+  std::unique_ptr<StaticArena> Arena(new StaticArena(std::move(PImpl)));
+  Profiler.finish();
+  return Arena;
+}
+
+std::unique_ptr<StaticArena> StaticArena::create() {
+  return createImpl<false>(nullptr);
+}
+
+std::unique_ptr<StaticArena>
+StaticArena::create(StaticArenaCreateStats &Stats) {
+  return createImpl<true>(&Stats);
 }
 
 StaticArena::~StaticArena() {
@@ -290,6 +459,14 @@ StaticArena::~StaticArena() {
     fail(nullptr, "arena released while still current");
 
   __asan_poison_memory_region(PImpl->Storage, PImpl->AllocationSize);
+#if LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE
+  if (PImpl->UsesMappedStorage) {
+    if (std::error_code EC =
+            sys::Memory::releaseMappedMemory(PImpl->MappedStorage))
+      fail(nullptr, "static-arena mapped storage release failed");
+    return;
+  }
+#endif
   deallocate_buffer(PImpl->Storage, PImpl->AllocationSize, PImpl->Alignment);
 }
 

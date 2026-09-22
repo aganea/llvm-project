@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <thread>
@@ -48,6 +49,10 @@ static LLVMStaticArenaVarV1 TemplateRecord = {UINT64_MAX, sizeof(uint32_t),
                                               "StaticArenaTest.Template"};
 static LLVMStaticArenaVarV1 OverAlignedRecord = {UINT64_MAX, 7, 64, nullptr,
                                                  "StaticArenaTest.OverAligned"};
+static constexpr size_t LargeZeroFilledBytes = 64 * 1024;
+static LLVMStaticArenaVarV1 LargeZeroFilledRecord = {
+    UINT64_MAX, LargeZeroFilledBytes, 64, nullptr,
+    "StaticArenaTest.LargeZeroFilled"};
 static LLVMStaticArenaVarV1 CallbackObjectRecord = {
     UINT64_MAX, 32, 1, nullptr, "StaticArenaTest.CallbackObject"};
 static LLVMStaticArenaVarV1 OptionRecord = {
@@ -97,6 +102,8 @@ static ContextManagedStatic<LazyContextValue<1>> SecondLazyContextValue;
 
 STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestTemplateEntry, TemplateRecord);
 STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestOverAlignedEntry, OverAlignedRecord);
+STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestLargeZeroFilledEntry,
+                        LargeZeroFilledRecord);
 STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestCallbackEntry, CallbackObjectRecord);
 STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestOptionEntry, OptionRecord);
 STATIC_ARENA_TEST_ENTRY(LLVMStaticArenaTestOptionLocationEntry,
@@ -219,11 +226,21 @@ TEST(StaticArenaTest, IndependentStorageTemplateAlignmentAndMembership) {
     EXPECT_EQ(42u, *AddressA);
     *AddressA = 1;
 
-    void *OverAligned = __llvm_arena_addr_v1(&OverAlignedRecord);
+    auto *OverAligned =
+        static_cast<unsigned char *>(__llvm_arena_addr_v1(&OverAlignedRecord));
     EXPECT_EQ(0u, reinterpret_cast<uintptr_t>(OverAligned) % 64);
+    for (size_t I = 0; I != OverAlignedRecord.Size; ++I)
+      EXPECT_EQ(0u, OverAligned[I]);
+    std::memset(OverAligned, 0x5a, OverAlignedRecord.Size);
+    auto *LargeZeroFilled = static_cast<unsigned char *>(
+        __llvm_arena_addr_v1(&LargeZeroFilledRecord));
+    EXPECT_TRUE(std::all_of(LargeZeroFilled,
+                            LargeZeroFilled + LargeZeroFilledRecord.Size,
+                            [](unsigned char Byte) { return Byte == 0; }));
+    std::memset(LargeZeroFilled, 0x5a, LargeZeroFilledRecord.Size);
     EXPECT_TRUE(isInCurrentStaticArena(AddressA));
-    EXPECT_TRUE(isInCurrentStaticArena(static_cast<char *>(OverAligned) +
-                                       OverAlignedRecord.Size - 1));
+    EXPECT_TRUE(
+        isInCurrentStaticArena(OverAligned + OverAlignedRecord.Size - 1));
     EXPECT_FALSE(isInCurrentStaticArena(nullptr));
     int ProcessOwned = 0;
     EXPECT_FALSE(isInCurrentStaticArena(&ProcessOwned));
@@ -231,9 +248,9 @@ TEST(StaticArenaTest, IndependentStorageTemplateAlignmentAndMembership) {
     // Membership deliberately covers the complete laid-out span, including
     // internal alignment holes, but excludes allocation tail padding.
     char *Storage = reinterpret_cast<char *>(AddressA) - TemplateRecord.Offset;
-    LLVMStaticArenaVarV1 *Records[] = {&TemplateRecord, &OverAlignedRecord,
-                                       &CallbackObjectRecord, &OptionRecord,
-                                       &OptionLocationRecord};
+    LLVMStaticArenaVarV1 *Records[] = {
+        &TemplateRecord,       &OverAlignedRecord, &LargeZeroFilledRecord,
+        &CallbackObjectRecord, &OptionRecord,      &OptionLocationRecord};
     uint64_t ObjectSpan = 0;
     for (LLVMStaticArenaVarV1 *Record : Records)
       ObjectSpan = std::max(ObjectSpan, Record->Offset + Record->Size);
@@ -251,12 +268,51 @@ TEST(StaticArenaTest, IndependentStorageTemplateAlignmentAndMembership) {
     AddressB = static_cast<uint32_t *>(__llvm_arena_addr_v1(&TemplateRecord));
     EXPECT_EQ(42u, *AddressB);
     *AddressB = 2;
+    auto *OverAligned =
+        static_cast<unsigned char *>(__llvm_arena_addr_v1(&OverAlignedRecord));
+    for (size_t I = 0; I != OverAlignedRecord.Size; ++I)
+      EXPECT_EQ(0u, OverAligned[I]);
+    auto *LargeZeroFilled = static_cast<unsigned char *>(
+        __llvm_arena_addr_v1(&LargeZeroFilledRecord));
+    EXPECT_TRUE(std::all_of(LargeZeroFilled,
+                            LargeZeroFilled + LargeZeroFilledRecord.Size,
+                            [](unsigned char Byte) { return Byte == 0; }));
     finishArena(*B);
   }
 
   EXPECT_NE(AddressA, AddressB);
   EXPECT_FALSE(isInCurrentStaticArena(AddressA));
   EXPECT_FALSE(isInCurrentStaticArena(AddressB));
+#endif
+}
+
+TEST(StaticArenaTest, OptInCreateStatisticsDescribeArena) {
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  StaticArenaCreateStats Stats;
+  std::unique_ptr<StaticArena> Arena = StaticArena::create(Stats);
+
+  EXPECT_GE(Stats.RecordCount, 6u);
+  EXPECT_GE(Stats.ObjectBytes, sizeof(uint32_t));
+  EXPECT_GE(Stats.AllocationBytes, Stats.ObjectBytes);
+  EXPECT_GE(Stats.BackingBytes, Stats.AllocationBytes);
+  EXPECT_GE(Stats.TotalNanoseconds, Stats.LayoutNanoseconds);
+  EXPECT_GE(Stats.TotalNanoseconds, Stats.AllocationNanoseconds);
+  EXPECT_GE(Stats.TotalNanoseconds, Stats.ZeroFillNanoseconds);
+  EXPECT_GE(Stats.TotalNanoseconds, Stats.RecordInitializationNanoseconds);
+  if (Stats.UsedDemandZeroMapping)
+    EXPECT_EQ(0u, Stats.ZeroFillNanoseconds);
+#if !LLVM_ADDRESS_SANITIZER_BUILD && (defined(_WIN32) || defined(__ELF__))
+  EXPECT_TRUE(Stats.UsedDemandZeroMapping);
+#else
+  EXPECT_FALSE(Stats.UsedDemandZeroMapping);
+#endif
+
+  {
+    ScopedStaticArenaBinding Binding(*Arena);
+    finishArena(*Arena);
+  }
 #endif
 }
 

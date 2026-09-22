@@ -21,6 +21,17 @@ add_benchmark(ImmutableMergeBM ImmutableMergeBM.cpp PARTIAL_SOURCES_INTENDED)
 
 add_benchmark(RuntimeLibcallsBench RuntimeLibcalls.cpp PARTIAL_SOURCES_INTENDED)
 add_benchmark(writeToOutputInParallelBench writeToOutputInParallel.cpp PARTIAL_SOURCES_INTENDED)
+add_benchmark(StaticArenaBM StaticArenaBM.cpp PARTIAL_SOURCES_INTENDED)
+
+# LLVM_ATTRIBUTE_RETAIN provides SHF_GNU_RETAIN under Clang. Root the
+# hand-written record entries explicitly on GCC hosts so --gc-sections cannot
+# turn the benchmark into an empty-arena measurement.
+if(LLVM_HAVE_LINK_VERSION_SCRIPT AND
+   NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_link_options(StaticArenaBM PRIVATE
+    "LINKER:-u,LLVMStaticArenaBenchmarkZeroFilled"
+    "LINKER:-u,LLVMStaticArenaBenchmarkTemplate")
+endif()
 
 if(NOT LLVM_TOOL_LLVM_DRIVER_BUILD)
   # TODO: Check if the tools are in LLVM_DISTRIBUTION_COMPONENTS with
