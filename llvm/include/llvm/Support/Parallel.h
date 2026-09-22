@@ -38,6 +38,13 @@ inline size_t getThreadCount() { return 1; }
 #endif
 
 namespace detail {
+#if LLVM_ENABLE_THREADS
+/// Whether the caller's share of a parallel algorithm must be submitted to the
+/// executor. Arena invocations share a bounded process pool, and jobserver work
+/// must acquire a slot; standalone legacy callers continue working inline.
+LLVM_ABI bool shouldRunCallerInExecutor();
+#endif
+
 class Latch {
   std::atomic<uint32_t> Count;
   mutable std::mutex Mutex;
@@ -194,8 +201,19 @@ template <class RandomAccessIterator,
 void parallelSort(RandomAccessIterator Start, RandomAccessIterator End,
                   const Comparator &Comp = Comparator()) {
 #if LLVM_ENABLE_THREADS
-  if (parallel::strategy.ThreadsRequested != 1) {
-    parallel::detail::parallel_sort(Start, End, Comp);
+  if (parallel::strategy.ThreadsRequested != 1 ||
+      parallel::detail::shouldRunCallerInExecutor()) {
+    if (parallel::detail::shouldRunCallerInExecutor()) {
+      // Arena invocations share one bounded physical pool, and a process owns
+      // only one implicit jobserver slot. Run the caller's branch through the
+      // executor so simultaneous invocations cannot bypass either limit.
+      parallel::TaskGroup TG;
+      TG.spawn([Start, End, &Comp] {
+        parallel::detail::parallel_sort(Start, End, Comp);
+      });
+    } else {
+      parallel::detail::parallel_sort(Start, End, Comp);
+    }
     return;
   }
 #endif
@@ -216,9 +234,26 @@ ResultTy parallelTransformReduce(IterTy Begin, IterTy End, ResultTy Init,
                                  ReduceFuncTy Reduce,
                                  TransformFuncTy Transform) {
 #if LLVM_ENABLE_THREADS
-  if (parallel::strategy.ThreadsRequested != 1) {
-    return parallel::detail::parallel_transform_reduce(Begin, End, Init, Reduce,
-                                                       Transform);
+  bool RunCallerInExecutor =
+      parallel::detail::shouldRunCallerInExecutor();
+  if (parallel::strategy.ThreadsRequested != 1 || RunCallerInExecutor) {
+    if (parallel::getThreadCount() != 1)
+      return parallel::detail::parallel_transform_reduce(
+          Begin, End, Init, Reduce, Transform);
+
+    if (RunCallerInExecutor && Begin != End) {
+      // A width-one top-level arena/jobserver call still has to enter the
+      // executor, but splitting it into as many as 1024 serial tasks only adds
+      // queueing overhead. Submit one serial continuation instead.
+      {
+        parallel::TaskGroup TG;
+        TG.spawn([&] {
+          for (IterTy I = Begin; I != End; ++I)
+            Init = Reduce(std::move(Init), Transform(*I));
+        });
+      }
+      return std::move(Init);
+    }
   }
 #endif
   for (IterTy I = Begin; I != End; ++I)

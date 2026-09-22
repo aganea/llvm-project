@@ -158,6 +158,11 @@ LLVM_ABI bool isInCurrentStaticArena(const void *Pointer);
 /// propagated tool context is installed.
 LLVM_ABI bool hasCurrentStaticArena();
 
+/// Returns an opaque identity for the arena bound to this thread, or null when
+/// there is no binding. The identity remains valid while a captured task lease
+/// or owner binding keeps that arena alive.
+LLVM_ABI const void *getCurrentStaticArenaIdentity();
+
 } // namespace llvm
 
 #endif // LLVM_SUPPORT_STATICARENA_H

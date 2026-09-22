@@ -462,6 +462,8 @@ bool llvm::isInCurrentStaticArena(const void *Pointer) {
 
 bool llvm::hasCurrentStaticArena() { return CurrentArena != nullptr; }
 
+const void *llvm::getCurrentStaticArenaIdentity() { return CurrentArena; }
+
 extern "C" void *__llvm_arena_addr_v1(const LLVMStaticArenaVarV1 *Record) {
   if (LayoutStatus.load(std::memory_order_acquire) != LayoutState::Ready)
     fail(Record, "layout is not ready while accessing");

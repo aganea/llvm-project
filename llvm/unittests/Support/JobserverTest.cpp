@@ -17,7 +17,9 @@
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/StaticArena.h"
 #include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 #include <future>
@@ -283,10 +285,7 @@ protected:
   }
 
   void TearDown() override {
-    if (MakeThread.joinable()) {
-      StopMakeThread = true;
-      MakeThread.join();
-    }
+    stopMakeProxy();
     unsetenv("MAKEFLAGS");
     TheFifo.reset();
     // Restore the original strategy to ensure subsequent tests are unaffected.
@@ -295,8 +294,8 @@ protected:
 
   // Starts a background thread that emulates `make`. It populates the FIFO
   // with initial tokens and then recycles tokens released by clients.
-  void startMakeProxy(int NumInitialJobs) {
-    MakeThread = std::thread([this, NumInitialJobs]() {
+  void startMakeProxy(int NumInitialJobs, bool RecycleTokens = true) {
+    MakeThread = std::thread([this, NumInitialJobs, RecycleTokens]() {
       LLVM_DEBUG(dbgs() << "[MakeProxy] Thread started.\n");
       // Open the FIFO for reading and writing. This call does not block.
       int RWFd = open(TheFifo->c_str(), O_RDWR);
@@ -323,6 +322,16 @@ protected:
         }
       }
       LLVM_DEBUG(dbgs() << "[MakeProxy] Finished writing initial tokens.\n");
+
+      // Some tests need a deterministic token set while initializing the
+      // client. Merely keep the FIFO's writer alive in that mode; the client
+      // can return acquired bytes to the FIFO directly.
+      if (!RecycleTokens) {
+        while (!StopMakeThread)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        close(RWFd);
+        return;
+      }
 
       // Make the read non-blocking so we can periodically check StopMakeThread.
       int flags = fcntl(RWFd, F_GETFL, 0);
@@ -364,6 +373,13 @@ protected:
     // This is a simple way to avoid a race condition where the client starts
     // before the initial tokens are in the pipe.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  void stopMakeProxy() {
+    if (!MakeThread.joinable())
+      return;
+    StopMakeThread = true;
+    MakeThread.join();
   }
 };
 
@@ -425,8 +441,8 @@ TEST_F(JobserverStrategyTest, ThreadPoolConcurrencyIsLimited) {
 }
 
 // Parent-side driver that spawns a fresh process to run the child test which
-// validates that parallelFor respects the jobserver limit when it is the first
-// user of the default executor in that process.
+// validates that parallelFor respects the jobserver limit even after the
+// normal process-wide executor has already been initialized.
 TEST_F(JobserverStrategyTest, ParallelForIsLimited_Subprocess) {
   // Mark child execution.
   setenv("LLVM_JOBSERVER_TEST_CHILD", "1", 1);
@@ -453,30 +469,63 @@ TEST_F(JobserverStrategyTest, ParallelForIsLimited_Subprocess) {
 TEST_F(JobserverStrategyTest, ParallelForIsLimited_SubprocessChild) {
   if (!getenv("LLVM_JOBSERVER_TEST_CHILD"))
     GTEST_SKIP() << "Not running in child mode";
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#endif
 
   // This test verifies that llvm::parallelFor respects the jobserver limit.
   const int NumExplicitJobs = 3;
   const int ConcurrencyLimit = NumExplicitJobs + 1; // +1 implicit
   const int NumTasks = 20;
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  ScopedStaticArenaBinding ArenaBinding(*Arena);
+
+  // Jobserver work uses a separate process-wide executor. Initializing the
+  // normal executor first must neither size nor disable the jobserver pool.
+  parallel::strategy = hardware_concurrency(2);
+  std::atomic<int> NormalTasks{0};
+  parallelFor(0, 4, [&](int) { ++NormalTasks; });
+  ASSERT_EQ(NormalTasks, 4);
 
   startMakeProxy(NumExplicitJobs);
 
-  // Set the global strategy before any default executor is created.
+  // Select the separately initialized process-wide jobserver executor.
   parallel::strategy = jobserver_concurrency();
 
   std::atomic<int> ActiveTasks{0};
   std::atomic<int> MaxActiveTasks{0};
+  std::atomic<int> Ready{0};
+  std::atomic<bool> Run{false};
 
-  parallelFor(0, NumTasks, [&]([[maybe_unused]] int i) {
-    int CurrentActive = ++ActiveTasks;
-    int OldMax = MaxActiveTasks.load();
-    while (CurrentActive > OldMax)
-      MaxActiveTasks.compare_exchange_weak(OldMax, CurrentActive);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    --ActiveTasks;
-  });
+  ToolExecutionContext FirstContext = ToolExecutionContext::capture();
+  ToolExecutionContext SecondContext = FirstContext;
+  auto Caller = [&](ToolExecutionContext Context) {
+    ScopedToolExecutionContext Binding(std::move(Context));
+    ++Ready;
+    while (!Run.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    parallelFor(0, NumTasks, [&]([[maybe_unused]] int i) {
+      int CurrentActive = ++ActiveTasks;
+      int OldMax = MaxActiveTasks.load();
+      while (CurrentActive > OldMax)
+        MaxActiveTasks.compare_exchange_weak(OldMax, CurrentActive);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      --ActiveTasks;
+    });
+  };
+
+  std::thread FirstCaller(Caller, std::move(FirstContext));
+  std::thread SecondCaller(Caller, std::move(SecondContext));
+  while (Ready.load() != 2)
+    std::this_thread::yield();
+  Run.store(true, std::memory_order_release);
+  FirstCaller.join();
+  SecondCaller.join();
 
   EXPECT_LE(MaxActiveTasks, ConcurrencyLimit);
+
+  Arena->beginClosing();
+  Arena->runDestructors();
 }
 
 // Parent-side driver for parallelSort child test.
@@ -518,6 +567,151 @@ TEST_F(JobserverStrategyTest, ParallelSortIsLimited_SubprocessChild) {
 
   parallelSort(V.begin(), V.end());
   ASSERT_TRUE(llvm::is_sorted(V));
+}
+
+// Parent-side driver for the token-lending test. Both the jobserver client and
+// the process-wide parallel executors are singletons, so the behavior must be
+// tested before another test initializes either one in this process.
+TEST_F(JobserverStrategyTest, NestedWaitLendsSlot_Subprocess) {
+  setenv("LLVM_JOBSERVER_LENDING_TEST_CHILD", "1", 1);
+
+  std::string Executable =
+      sys::fs::getMainExecutable(TestMainArgv0, &JobserverTestAnchor);
+  ASSERT_FALSE(Executable.empty()) << "Failed to get main executable path";
+  SmallVector<StringRef, 4> Args{
+      Executable, "--gtest_filter=JobserverStrategyTest."
+                  "NestedWaitLendsSlot_SubprocessChild"};
+
+  std::string Error;
+  bool ExecFailed = false;
+  int RC = sys::ExecuteAndWait(Executable, Args, std::nullopt, {}, 0, 0,
+                               &Error, &ExecFailed);
+  unsetenv("LLVM_JOBSERVER_LENDING_TEST_CHILD");
+  ASSERT_FALSE(ExecFailed) << Error;
+  ASSERT_EQ(RC, 0) << "Executable failed with exit code " << RC;
+}
+
+TEST_F(JobserverStrategyTest, NestedWaitLendsSlot_SubprocessChild) {
+  if (!getenv("LLVM_JOBSERVER_LENDING_TEST_CHILD"))
+    GTEST_SKIP() << "Not running in child mode";
+#if !defined(__ELF__) && !defined(__wasm__)
+    GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#endif
+  if (hardware_concurrency().compute_thread_count() < 2)
+    GTEST_SKIP() << "requires two physical executor workers";
+
+  // Start with three explicit slots, initialize the client while its FIFO is
+  // live, and then stop the proxy so no other reader can perturb the test.
+  startMakeProxy(/*NumInitialJobs=*/3, /*RecycleTokens=*/false);
+  JobserverClient *Client = JobserverClient::getInstance();
+  ASSERT_NE(Client, nullptr);
+  ASSERT_EQ(Client->getNumJobs(), 4u);
+  stopMakeProxy();
+
+  // Hold every explicit slot while returning the process's implicit slot.
+  // Consequently, correctly scheduled jobserver work has concurrency one.
+  JobSlot Implicit = Client->tryAcquire();
+  ASSERT_TRUE(Implicit.isImplicit());
+  SmallVector<JobSlot, 3> Explicit;
+  for (unsigned I = 0; I != 3; ++I) {
+    JobSlot Slot = Client->tryAcquire();
+    ASSERT_TRUE(Slot.isExplicit());
+    Explicit.push_back(std::move(Slot));
+  }
+  EXPECT_FALSE(Client->tryAcquire().isValid());
+  Client->release(std::move(Implicit));
+
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  ScopedStaticArenaBinding ArenaBinding(*Arena);
+  parallel::strategy = jobserver_concurrency();
+
+  // This checks the external-token path independently of the invocation
+  // quota. The latter is the hardware width for jobserver_concurrency(), so a
+  // maximum of exactly one demonstrates that workers really acquire slots.
+  std::atomic<unsigned> Active{0};
+  std::atomic<unsigned> Maximum{0};
+  parallelFor(0, 16, [&](size_t) {
+    unsigned Current = Active.fetch_add(1, std::memory_order_relaxed) + 1;
+    unsigned OldMaximum = Maximum.load(std::memory_order_relaxed);
+    while (Current > OldMaximum &&
+           !Maximum.compare_exchange_weak(OldMaximum, Current,
+                                          std::memory_order_relaxed)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    Active.fetch_sub(1, std::memory_order_relaxed);
+  });
+  EXPECT_EQ(Maximum.load(std::memory_order_relaxed), 1u);
+
+  std::atomic<bool> JobserverTaskStarted{false};
+  std::atomic<bool> SpawnHardwareWork{false};
+  std::atomic<bool> HardwareWorkStarted{false};
+  std::atomic<bool> ReleaseHardwareWork{false};
+  {
+    parallel::TaskGroup JobserverWork;
+    JobserverWork.spawn([&] {
+      JobserverTaskStarted.store(true, std::memory_order_release);
+      while (!SpawnHardwareWork.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+      // The synchronized strategy change below routes this nested work to the
+      // ordinary process executor. Its TaskGroup destructor waits from a
+      // jobserver worker and must return that worker's implicit token while it
+      // is only helping/waiting.
+      parallel::TaskGroup HardwareWork;
+      HardwareWork.spawn([&] {
+        HardwareWorkStarted.store(true, std::memory_order_release);
+        while (!ReleaseHardwareWork.load(std::memory_order_acquire))
+          std::this_thread::yield();
+      });
+    });
+
+    while (!JobserverTaskStarted.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    parallel::strategy = hardware_concurrency(1);
+    SpawnHardwareWork.store(true, std::memory_order_release);
+    while (!HardwareWorkStarted.load(std::memory_order_acquire))
+      std::this_thread::yield();
+
+    JobSlot LentSlot;
+    auto Deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!LentSlot.isValid() &&
+           std::chrono::steady_clock::now() < Deadline) {
+      LentSlot = Client->tryAcquire();
+      if (!LentSlot.isValid())
+        std::this_thread::yield();
+    }
+
+    // Always unblock the dependency before asserting so a failure cannot
+    // strand the subprocess in either TaskGroup destructor.
+    bool LentImplicit = LentSlot.isImplicit();
+    if (LentSlot.isValid())
+      Client->release(std::move(LentSlot));
+    ReleaseHardwareWork.store(true, std::memory_order_release);
+    EXPECT_TRUE(LentImplicit);
+  }
+
+  // A task decrements its latch immediately before its worker returns the
+  // slot. Observe that return before the fixture destroys the singleton
+  // client (the process executor deliberately outlives this invocation).
+  JobSlot ReturnedSlot;
+  auto ReturnDeadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!ReturnedSlot.isValid() &&
+         std::chrono::steady_clock::now() < ReturnDeadline) {
+    ReturnedSlot = Client->tryAcquire();
+    if (!ReturnedSlot.isValid())
+      std::this_thread::yield();
+  }
+  bool ReturnedImplicit = ReturnedSlot.isImplicit();
+  if (ReturnedSlot.isValid())
+    Client->release(std::move(ReturnedSlot));
+  EXPECT_TRUE(ReturnedImplicit);
+
+  for (JobSlot &Slot : Explicit)
+    Client->release(std::move(Slot));
+  Arena->beginClosing();
+  Arena->runDestructors();
 }
 
 #endif // LLVM_ENABLE_THREADS

@@ -173,11 +173,11 @@ Error DWARFLinkerImpl::link() {
     });
   }
 
-  // Set this process-global once. link() runs per architecture and dsymutil
-  // may run those links concurrently, so assigning it from each would be a
-  // data race; the thread count is the same for every architecture, so the
-  // first assignment suffices. Size the executor from that thread count rather
-  // than the per-architecture CU count, which is moot once it is shared.
+  // Set the invocation-local strategy once. link() runs per architecture and
+  // dsymutil may run those links concurrently, so assigning it from each would
+  // be a data race; the thread count is the same for every architecture, so
+  // the first assignment suffices. Size the invocation's process-pool quota
+  // from that thread count rather than the per-architecture CU count.
   static llvm::once_flag ParallelStrategyFlag;
   llvm::call_once(ParallelStrategyFlag, [&] {
     llvm::parallel::strategy =

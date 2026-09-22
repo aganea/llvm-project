@@ -99,6 +99,11 @@ name:llvm::TimePassesPerRun
 name:llvm::parallel::strategy
 name:InvocationFatalErrorHandlerState
 
+# DWARFLinker initializes the arena-backed parallel strategy once for all
+# architecture workers in one invocation. The guard must have the same scope;
+# a process-wide guard would skip initialization in every later invocation.
+name:*DWARFLinkerImpl.cpp@ParallelStrategyFlag
+
 # ANSI-vs-console color rendering is invocation policy on Windows. Enabling
 # the console's virtual-terminal capability is process-wide but monotonic;
 # keep the policy bit itself with the invocation that selected it.
@@ -607,7 +612,7 @@ name:*ClangScanDeps.cpp@Lock
 name:*ClangScanDeps.cpp@OSs
 
 # llvm-symbolizer installs a fetcher on each invocation's LLVMSymbolizer, but
-# initializes the underlying HTTP runtime through a process-wide call_once.
+# lazily initializes the synchronized process-wide HTTP runtime.
 name:*llvm-symbolizer.cpp@ToolName
 
 # Mutable non-template class state. These keep their existing source APIs and
