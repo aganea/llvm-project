@@ -2,7 +2,7 @@ include(GNUInstallDirs)
 include(LLVMDistributionSupport)
 include(LLVMProcessSources)
 include(LLVM-Config)
-include(LLVMDriver)
+include(Driver)
 include(DetermineGCCCompatible)
 
 # get_subproject_title(titlevar)
