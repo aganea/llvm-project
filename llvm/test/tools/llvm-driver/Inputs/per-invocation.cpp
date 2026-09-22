@@ -9,6 +9,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/Driver.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/ProcessWideRegistry.h"
@@ -22,6 +23,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 #include <thread>
@@ -371,6 +373,31 @@ clangArguments(const fs::path &Input, const fs::path &Output,
           "-emit-obj", OptimizationLevel, "-o", Output.string(),
           Input.string()};
 }
+
+static std::vector<std::string>
+pluginClangArguments(const fs::path &Input, const fs::path &Output,
+                     const fs::path &Plugin, const fs::path &Trace,
+                     const char *Value = nullptr, bool Synchronize = false) {
+  std::vector<std::string> Args{
+      "clang",
+      "-cc1",
+      "-triple",
+      LLVM_DRIVER_TEST_CLANG_TRIPLE,
+      "-emit-obj",
+      "-fpass-plugin=" + Plugin.string(),
+  };
+  if (Value)
+    Args.insert(Args.end(),
+                {"-mllvm", std::string("-per-invocation-plugin-value=") +
+                               Value});
+  if (Synchronize)
+    Args.insert(Args.end(),
+                {"-mllvm", "-per-invocation-plugin-synchronize"});
+  Args.insert(Args.end(),
+              {"-mllvm", "-per-invocation-plugin-trace=" + Trace.string(),
+               "-o", Output.string(), Input.string()});
+  return Args;
+}
 #endif
 
 static bool isNonEmptyFile(const fs::path &Path) {
@@ -380,6 +407,102 @@ static bool isNonEmptyFile(const fs::path &Path) {
 }
 
 #ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+static bool hasContents(const fs::path &Path, const char *Expected) {
+  std::ifstream IS(Path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(IS),
+                     std::istreambuf_iterator<char>()) == Expected;
+}
+
+static bool testPluginConcurrentIsolation(const fs::path &Root,
+                                          const fs::path &Plugin,
+                                          const fs::path &Input) {
+  fs::path LeftOutput = Root / "plugin-left.o";
+  fs::path RightOutput = Root / "plugin-right.o";
+  fs::path LeftTrace = Root / "plugin-left.trace";
+  fs::path RightTrace = Root / "plugin-right.trace";
+  std::vector<std::string> LeftArgs = pluginClangArguments(
+      Input, LeftOutput, Plugin, LeftTrace, "left", true);
+  std::vector<std::string> RightArgs = pluginClangArguments(
+      Input, RightOutput, Plugin, RightTrace, "right", true);
+
+  std::atomic<unsigned> Ready{0};
+  std::atomic<bool> Start{false};
+  int LeftResult = -1;
+  int RightResult = -1;
+  auto Run = [&](std::vector<std::string> &Args, int &Result) {
+    Ready.fetch_add(1, std::memory_order_release);
+    while (!Start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    Result = invokeClang(Args);
+  };
+
+  std::thread LeftThread(Run, std::ref(LeftArgs), std::ref(LeftResult));
+  std::thread RightThread(Run, std::ref(RightArgs), std::ref(RightResult));
+  while (Ready.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+  Start.store(true, std::memory_order_release);
+  LeftThread.join();
+  RightThread.join();
+
+  return LeftResult == 0 && RightResult == 0 && isNonEmptyFile(LeftOutput) &&
+         isNonEmptyFile(RightOutput) &&
+         hasContents(LeftTrace, "run=left\ndestroy=left\n") &&
+         hasContents(RightTrace, "run=right\ndestroy=right\n");
+}
+
+static bool testPluginSequentialReset(const fs::path &Root,
+                                      const fs::path &Plugin,
+                                      const fs::path &Input) {
+  fs::path FirstOutput = Root / "plugin-first.o";
+  fs::path DefaultOutput = Root / "plugin-default.o";
+  fs::path FirstTrace = Root / "plugin-first.trace";
+  fs::path DefaultTrace = Root / "plugin-default.trace";
+  if (invokeClang(pluginClangArguments(Input, FirstOutput, Plugin, FirstTrace,
+                                      "first")) != 0 ||
+      invokeClang(pluginClangArguments(Input, DefaultOutput, Plugin,
+                                      DefaultTrace)) != 0)
+    return false;
+
+  return isNonEmptyFile(FirstOutput) && isNonEmptyFile(DefaultOutput) &&
+         hasContents(FirstTrace, "run=first\ndestroy=first\n") &&
+         hasContents(DefaultTrace, "run=default\ndestroy=default\n");
+}
+
+static bool testPerInvocationPlugin(const fs::path &Root,
+                                    const fs::path &Plugin) {
+  std::error_code EC;
+  fs::create_directories(Root, EC);
+  fs::path Input = Root / "plugin-input.c";
+  if (EC || !writeFile(Input, "int plugin_input(void) { return 0; }\n"))
+    return false;
+
+  // Target and pass registration are immutable process catalogs. Initialize
+  // them before racing the two invocation-owned plugin option sets. Loading
+  // the DSO is also process-wide and serialized; PassPlugin::Load will still
+  // call its entry point inside every invocation below.
+  initializeProcessCatalogs();
+  std::string LoadError;
+  llvm::sys::DynamicLibrary Library =
+      llvm::sys::DynamicLibrary::getPermanentLibrary(Plugin.string().c_str(),
+                                                      &LoadError);
+  if (!Library.isValid()) {
+    std::fprintf(stderr, "could not preload plugin: %s\n", LoadError.c_str());
+    return false;
+  }
+  if (!testPluginConcurrentIsolation(Root, Plugin, Input)) {
+    std::fputs("concurrent plugin option isolation failed\n", stderr);
+    return false;
+  }
+  std::puts("plugin-concurrent-isolation=ok");
+
+  if (!testPluginSequentialReset(Root, Plugin, Input)) {
+    std::fputs("sequential plugin option reset/destruction failed\n", stderr);
+    return false;
+  }
+  std::puts("plugin-sequential-reset-and-destruction=ok");
+  return true;
+}
+
 static bool testConcurrentClang(const fs::path &Root) {
   fs::path FirstInput = Root / "clang-first.c";
   fs::path SecondInput = Root / "clang-second.c";
@@ -499,6 +622,21 @@ static bool testLldSequentialAndConcurrent(const fs::path &Root,
 
 int main(int Argc, char **Argv) {
   llvm::InitLLVM X(Argc, Argv);
+  if (Argc == 2 && std::string(Argv[1]) == "--plugin-support") {
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+    return 0;
+#else
+    return 1;
+#endif
+  }
+  if (Argc == 4 && std::string(Argv[1]) == "--plugin") {
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+    return testPerInvocationPlugin(Argv[3], Argv[2]) ? 0 : 1;
+#else
+    std::fputs("folded Clang support is unavailable\n", stderr);
+    return 1;
+#endif
+  }
   if (Argc != 4) {
     std::fprintf(stderr,
                  "usage: %s <temporary-directory> <Mach-O-object> "

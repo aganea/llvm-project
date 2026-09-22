@@ -368,7 +368,12 @@ public:
       for (StringRef Name : Names)
         Sub.OptionsMap.erase(Name);
 
-      llvm::erase(Sub.PositionalOpts, O);
+      // llvm::erase() still mutates the vector's size when the value is
+      // absent.  A context-owned option is normally absent from the process
+      // parser, which another thread may be reading while it constructs an
+      // explicit context.  Keep unrelated parsers strictly read-only.
+      if (is_contained(Sub.PositionalOpts, O))
+        llvm::erase(Sub.PositionalOpts, O);
       if (Sub.ConsumeAfterOpt == O)
         Sub.ConsumeAfterOpt = nullptr;
     };
@@ -376,8 +381,10 @@ public:
     for (SubCommand *Sub : RegisteredSubCommands)
       RemoveFromSubCommand(*Sub);
     RemoveFromSubCommand(All);
-    llvm::erase(DefaultOptions, O);
-    InheritedOptions.erase(O);
+    if (is_contained(DefaultOptions, O))
+      llvm::erase(DefaultOptions, O);
+    if (InheritedOptions.contains(O))
+      InheritedOptions.erase(O);
   }
 
   bool hasOptions(const SubCommand &Sub) const {

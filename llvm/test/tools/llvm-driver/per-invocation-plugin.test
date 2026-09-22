@@ -1,0 +1,13 @@
+# REQUIRES: llvm-driver-per-invocation-plugin, thread_support
+
+# A loadable pass plugin registers two non-trivial cl::opt values dynamically.
+# Two concurrent folded Clang invocations must get independent values, and a
+# later invocation that omits the value must observe the default.  The helper
+# also checks that each option owner is destroyed when its invocation returns.
+
+# RUN: rm -rf %t
+# RUN: llvm-driver-per-invocation-test --plugin \
+# RUN:   "%llvm_driver_per_invocation_plugin" %t | FileCheck %s
+
+# CHECK: plugin-concurrent-isolation=ok
+# CHECK-NEXT: plugin-sequential-reset-and-destruction=ok

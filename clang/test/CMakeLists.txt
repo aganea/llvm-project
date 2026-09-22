@@ -25,9 +25,39 @@ llvm_canonicalize_cmake_booleans(
   LLVM_LINK_LLVM_DYLIB
   LLVM_WITH_Z3
   PPC_LINUX_DEFAULT_IEEELONGDOUBLE
+  LLVM_DRIVER_PER_INVOCATION_GLOBALS
+  LLVM_EXPORT_SYMBOLS_FOR_PLUGINS
   LLVM_TOOL_LLVM_DRIVER_BUILD
   LLVM_INCLUDE_SPIRV_TOOLS_TESTS
   )
+
+set(CLANG_DRIVER_PER_INVOCATION_PLUGIN 0)
+set(CLANG_DRIVER_PER_INVOCATION_PLUGIN_TRIPLE)
+if("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+  set(CLANG_DRIVER_PER_INVOCATION_PLUGIN_TRIPLE x86_64-unknown-linux-gnu)
+elseif("WebAssembly" IN_LIST LLVM_TARGETS_TO_BUILD)
+  set(CLANG_DRIVER_PER_INVOCATION_PLUGIN_TRIPLE wasm32-unknown-unknown)
+endif()
+get_property(clang_driver_tools GLOBAL PROPERTY LLVM_DRIVER_TOOLS)
+if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND
+   LLVM_TOOL_LLVM_DRIVER_BUILD AND
+   CLANG_DRIVER_PER_INVOCATION_PLUGIN_TRIPLE AND
+   clang IN_LIST clang_driver_tools AND
+   CLANG_PLUGIN_SUPPORT AND
+   (LLVM_ENABLE_PLUGINS OR LLVM_EXPORT_SYMBOLS_FOR_PLUGINS) AND
+   (NOT (WIN32 OR CYGWIN) OR LLVM_EXPORT_SYMBOLS_FOR_PLUGINS))
+  set(LLVM_LINK_COMPONENTS)
+  add_llvm_library(ClangDriverPerInvocationPlugin MODULE
+    BUILDTREE_ONLY
+    DISABLE_LLVM_LINK_LLVM_DYLIB
+    PLUGIN_TOOL clang
+    ${LLVM_MAIN_SRC_DIR}/test/tools/llvm-driver/Inputs/per-invocation-pass-plugin.cpp
+    )
+  add_llvm_symbol_exports(ClangDriverPerInvocationPlugin
+    ${LLVM_MAIN_SRC_DIR}/test/tools/llvm-driver/Inputs/per-invocation-pass-plugin.exports)
+  list(APPEND CLANG_TEST_DEPS ClangDriverPerInvocationPlugin)
+  set(CLANG_DRIVER_PER_INVOCATION_PLUGIN 1)
+endif()
 
 # Run tests requiring Z3 headers only if LLVM was built with Z3
 # and the headers are available while building Clang -- the latter may

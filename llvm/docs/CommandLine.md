@@ -1685,6 +1685,58 @@ TODO: complete this section
 
 ### Dynamically adding command line options
 
-:::{todo}
-TODO: fill in this section
-:::
+Named options may be registered while `ParseCommandLineOptions` is already
+walking its arguments.  For example, a loader option can handle one argument,
+load a plugin, and let that plugin register options which later arguments can
+then name.  The loader argument must precede the newly registered options
+unless the tool performs a separate plugin-discovery pass before parsing (as
+Clang does before parsing its `-mllvm` arguments).
+
+There is an additional lifetime rule for a long-lived process which uses
+`cl::ScopedContext`.  A namespace-static `cl::opt` in a permanently loaded
+plugin is not invocation-local: its constructor runs only for the first load,
+so it registers in only that invocation, and its stored value would be shared
+if it were instead registered process-wide.  A repeatable plugin should keep
+only a stable `ContextManagedStatic` key at process lifetime and put its option
+objects in the context-owned value:
+
+```cpp
+#include "llvm/Plugins/PassPlugin.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ManagedStatic.h"
+
+#include <string>
+
+namespace {
+struct PluginOptions {
+  llvm::cl::opt<std::string> Mode{
+      "my-plugin-mode", llvm::cl::init("default")};
+};
+
+llvm::ContextManagedStatic<PluginOptions> Options;
+} // namespace
+
+extern "C" llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
+  // PassPlugin::Load calls the entry point on every request, even after the
+  // DSO has been loaded permanently.  This constructs and registers one
+  // PluginOptions object in the command-line context which is parsing now.
+  (void)*Options;
+  return {/* plugin information */};
+}
+```
+
+Code belonging to the plugin accesses `Options->Mode`.  A propagated
+`cl::ContextToken` or `ToolExecutionContext` makes all workers in one
+invocation resolve the same `PluginOptions` instance, while overlapping
+invocations resolve different instances.  Context teardown invokes the real
+C++ deleter in reverse construction order, so class-valued option storage such
+as `std::string` is destroyed before the parser is released; this is not a
+bump-allocation-only lifetime.
+
+The plugin image must remain loaded until every context which constructed one
+of its values has finished, because the context retains the plugin's key and
+deleter function.  Process-wide registry contributions made by loading the DSO
+must be populated during serialized setup and frozen before concurrent tool
+dispatch.  Invocation-owned option construction may then occur on each plugin
+entry-point call.  Unloading arbitrary LLVM plugins and making legacy plugins
+whose entry point is called only once repeatable are separate problems.

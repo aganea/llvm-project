@@ -1498,6 +1498,16 @@ function(export_executable_symbols target)
             list(APPEND other_libs ${lib})
           endif()
           get_target_property(transitive_libs ${lib} INTERFACE_LINK_LIBRARIES)
+          # An object library's private link dependencies become part of the
+          # final link closure of anything that consumes its objects.  They do
+          # not appear in INTERFACE_LINK_LIBRARIES, so inspect LINK_LIBRARIES
+          # as well when determining which archives supply exported symbols.
+          if("${lib_type}" STREQUAL "OBJECT_LIBRARY")
+            get_target_property(object_link_libs ${lib} LINK_LIBRARIES)
+            if(object_link_libs)
+              list(APPEND transitive_libs ${object_link_libs})
+            endif()
+          endif()
           foreach(transitive_lib ${transitive_libs})
             if(TARGET ${transitive_lib} AND NOT ${transitive_lib} IN_LIST link_libs)
               list(APPEND newer_libs ${transitive_lib})

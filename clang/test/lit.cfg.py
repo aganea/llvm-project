@@ -328,6 +328,36 @@ if not (config.build_shared_libs or config.link_llvm_dylib or config.link_clang_
 if config.has_plugins and config.llvm_plugin_ext:
     config.available_features.add("plugins")
 
+clang_driver_per_invocation_plugin = os.path.join(
+    config.llvm_shlib_dir,
+    "ClangDriverPerInvocationPlugin" + config.llvm_plugin_ext,
+)
+clang_driver_per_invocation_host = lit.util.which("llvm", config.llvm_tools_dir)
+if (
+    config.have_clang_driver_per_invocation_plugin
+    and os.path.exists(clang_driver_per_invocation_plugin)
+    and clang_driver_per_invocation_host
+):
+    config.available_features.add("clang-driver-per-invocation-plugin")
+    config.substitutions.append(
+        (
+            "%clang_driver_per_invocation_host",
+            '"{}" clang'.format(clang_driver_per_invocation_host),
+        )
+    )
+    config.substitutions.append(
+        (
+            "%clang_driver_per_invocation_plugin",
+            clang_driver_per_invocation_plugin,
+        )
+    )
+    config.substitutions.append(
+        (
+            "%clang_driver_per_invocation_triple",
+            config.clang_driver_per_invocation_plugin_triple,
+        )
+    )
+
 if config.clang_default_pie_on_linux:
     config.available_features.add("default-pie-on-linux")
 
