@@ -38,8 +38,8 @@ namespace llvm {
   LLVM_ABI void
   EnablePrettyStackTraceOnSigInfoForThisThread(bool ShouldEnable = true);
 
-  /// Replaces the generic bug report message that is output upon
-  /// a crash.
+  /// Replaces the generic bug report message that is output upon a crash.
+  /// Msg must remain valid for the rest of the process lifetime.
   LLVM_ABI void setBugReportMsg(const char *Msg);
 
   /// Get the bug report message that will be output upon a crash.

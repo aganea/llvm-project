@@ -10,6 +10,7 @@
 
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/ToolExecutionContext.h"
 #if defined(_WIN32)
@@ -56,6 +57,17 @@ static LLVMStaticArenaVarV1 OptionLocationRecord = {
     UINT64_MAX, sizeof(int), alignof(int), nullptr,
     "StaticArenaTest.OptionLocation"};
 
+static std::array<std::atomic<unsigned>, 2> LazyConstructionCounts;
+
+template <unsigned Index> struct LazyContextValue {
+  LazyContextValue() {
+    LazyConstructionCounts[Index].fetch_add(1, std::memory_order_relaxed);
+  }
+};
+
+static ContextManagedStatic<LazyContextValue<0>> FirstLazyContextValue;
+static ContextManagedStatic<LazyContextValue<1>> SecondLazyContextValue;
+
 } // namespace
 
 #if defined(_MSC_VER)
@@ -77,7 +89,7 @@ static LLVMStaticArenaVarV1 OptionLocationRecord = {
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_TEST_ENTRY(Name, Record)                                  \
-  extern "C" __attribute__((section("llvma_v1"), used))                        \
+  extern "C" LLVM_ATTRIBUTE_RETAIN __attribute__((section("llvma_v1"), used))  \
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #else
 #define STATIC_ARENA_TEST_ENTRY(Name, Record)
@@ -495,6 +507,60 @@ TEST(StaticArenaTest, ToolExecutionContextPropagatesArenaAndCommandLine) {
       finishArena(*Arena);
       EXPECT_EQ(0u, cl::getRegisteredOptions().count("arena-option"));
     }
+  }
+#endif
+}
+
+TEST(StaticArenaTest, ConcurrentWorkersConstructContextStaticsOnce) {
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  for (std::atomic<unsigned> &Count : LazyConstructionCounts)
+    Count.store(0, std::memory_order_relaxed);
+
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  {
+    ScopedStaticArenaBinding ArenaBinding(*Arena);
+    cl::ScopedContext CommandLineContext;
+
+    std::array<std::atomic<unsigned>, 2> Ready{};
+    std::array<std::atomic<unsigned>, 2> Done{};
+    std::array<std::array<const void *, 2>, 2> Addresses{};
+    ToolExecutionContext FirstContext = ToolExecutionContext::capture();
+    ToolExecutionContext SecondContext = FirstContext;
+
+    auto Worker = [&](unsigned WorkerIndex, ToolExecutionContext Context) {
+      ScopedToolExecutionContext Binding(std::move(Context));
+      for (unsigned Round = 0; Round != 2; ++Round) {
+        Ready[Round].fetch_add(1, std::memory_order_release);
+        while (Ready[Round].load(std::memory_order_acquire) != 2)
+          std::this_thread::yield();
+
+        Addresses[WorkerIndex][Round] =
+            Round == 0 ? static_cast<const void *>(&*FirstLazyContextValue)
+                       : static_cast<const void *>(&*SecondLazyContextValue);
+
+        Done[Round].fetch_add(1, std::memory_order_release);
+        while (Done[Round].load(std::memory_order_acquire) != 2)
+          std::this_thread::yield();
+      }
+    };
+
+    std::thread FirstWorker(Worker, 0, std::move(FirstContext));
+    std::thread SecondWorker(Worker, 1, std::move(SecondContext));
+    FirstWorker.join();
+    SecondWorker.join();
+
+    EXPECT_EQ(Addresses[0][0], Addresses[1][0]);
+    EXPECT_EQ(Addresses[0][1], Addresses[1][1]);
+    EXPECT_NE(Addresses[0][0], Addresses[0][1]);
+    EXPECT_EQ(LazyConstructionCounts[0].load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(LazyConstructionCounts[1].load(std::memory_order_relaxed), 1u);
+
+    CommandLineContext.beginClosing();
+    finishArena(*Arena);
   }
 #endif
 }

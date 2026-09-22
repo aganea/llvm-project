@@ -37,7 +37,7 @@ static LLVMStaticArenaVarV1 DuplicateRecord = {
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
-  extern "C" __attribute__((section("llvma_v1"), used))                        \
+  extern "C" LLVM_ATTRIBUTE_RETAIN __attribute__((section("llvma_v1"), used))  \
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #else
 #define STATIC_ARENA_ENTRY(Name, Record)

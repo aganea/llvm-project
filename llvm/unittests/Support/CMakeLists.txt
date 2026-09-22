@@ -165,6 +165,26 @@ add_llvm_unittest(StaticArenaDuplicateTests
   )
 target_link_libraries(StaticArenaDuplicateTests PRIVATE LLVMTestingSupport)
 
+# The hand-written ELF records above model compiler-generated llvm.used
+# entries. LLVM_ATTRIBUTE_RETAIN provides SHF_GNU_RETAIN under Clang; root each
+# entry for GCC hosts, where that portable macro is empty.
+if(LLVM_HAVE_LINK_VERSION_SCRIPT AND
+   NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_link_options(SupportTests PRIVATE
+    "LINKER:-u,LLVMStaticArenaTestTemplateEntry"
+    "LINKER:-u,LLVMStaticArenaTestOverAlignedEntry"
+    "LINKER:-u,LLVMStaticArenaTestCallbackEntry"
+    "LINKER:-u,LLVMStaticArenaTestOptionEntry"
+    "LINKER:-u,LLVMStaticArenaTestOptionLocationEntry")
+  target_link_options(StaticArenaDeathTests PRIVATE
+    "LINKER:-u,LLVMStaticArenaDeathTestEntry")
+  target_link_options(StaticArenaInvalidRecordTests PRIVATE
+    "LINKER:-u,LLVMStaticArenaInvalidRecordTestEntry")
+  target_link_options(StaticArenaDuplicateTests PRIVATE
+    "LINKER:-u,LLVMStaticArenaDuplicateTestEntryA"
+    "LINKER:-u,LLVMStaticArenaDuplicateTestEntryB")
+endif()
+
 # Disable all warning for AlignOfTest.cpp,
 # as it does things intentionally, and there is no reliable way of
 # disabling all warnings for all the compilers by using pragmas.

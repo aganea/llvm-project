@@ -38,14 +38,17 @@
 
 using namespace llvm;
 
-static const char *BugReportMsg =
+static std::atomic<const char *> BugReportMsg{
     "PLEASE submit a bug report to " BUG_REPORT_URL
-    " and include the crash backtrace and instructions to reproduce the bug.\n";
+    " and include the crash backtrace and instructions to reproduce the bug.\n"};
 
 // If backtrace support is not enabled, compile out support for pretty stack
 // traces.  This has the secondary effect of not requiring thread local storage
 // when backtrace support is disabled.
 #if ENABLE_BACKTRACES
+
+static_assert(decltype(BugReportMsg)::is_always_lock_free,
+              "crash-handler message access must be signal-safe");
 
 // We need a thread local pointer to manage the stack of our stack trace
 // objects, but we *really* cannot tolerate destructors running and do not want
@@ -164,7 +167,7 @@ alignas(CrashHandlerString) static CrashHandlerStringStorage
 /// This callback is run if a fatal signal is delivered to the process, it
 /// prints the pretty stack trace.
 static void CrashHandler(void *) {
-  errs() << BugReportMsg ;
+  errs() << BugReportMsg.load(std::memory_order_acquire);
 
 #ifndef __APPLE__
   // On non-apple systems, just emit the crash stack trace to stderr.
@@ -219,11 +222,11 @@ static void printForSigInfoIfNeeded() {
 #endif // ENABLE_BACKTRACES
 
 void llvm::setBugReportMsg(const char *Msg) {
-  BugReportMsg = Msg;
+  BugReportMsg.store(Msg, std::memory_order_release);
 }
 
 const char *llvm::getBugReportMsg() {
-  return BugReportMsg;
+  return BugReportMsg.load(std::memory_order_acquire);
 }
 
 PrettyStackTraceEntry::PrettyStackTraceEntry() {

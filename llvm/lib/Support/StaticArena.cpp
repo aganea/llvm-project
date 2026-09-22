@@ -23,6 +23,15 @@
 
 using namespace llvm;
 
+#if defined(__ELF__) || defined(__wasm__)
+// Keep the linker-synthesized range symbols in the global namespace. GCC
+// gives C-linkage declarations inside an unnamed namespace internal linkage,
+// which leaves references to mangled, undefined symbols and makes the runtime
+// see an empty record range.
+extern "C" LLVMStaticArenaVarV1 *const __start_llvma_v1[] __attribute__((weak));
+extern "C" LLVMStaticArenaVarV1 *const __stop_llvma_v1[] __attribute__((weak));
+#endif
+
 namespace {
 
 enum class LayoutState : uint8_t { UnlaidOut, Ready };
@@ -78,9 +87,6 @@ static uintptr_t recordEnd() {
 }
 
 #elif defined(__ELF__) || defined(__wasm__)
-
-extern "C" LLVMStaticArenaVarV1 *const __start_llvma_v1[] __attribute__((weak));
-extern "C" LLVMStaticArenaVarV1 *const __stop_llvma_v1[] __attribute__((weak));
 
 static uintptr_t recordBegin() {
   return reinterpret_cast<uintptr_t>(__start_llvma_v1);

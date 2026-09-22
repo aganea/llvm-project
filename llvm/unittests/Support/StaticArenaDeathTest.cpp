@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/StaticArena.h"
 #include "llvm/Support/ToolExecutionContext.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
@@ -44,7 +46,7 @@ static LLVMStaticArenaVarV1 ResolverRecord = {UINT64_MAX, sizeof(uint32_t),
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #elif defined(__ELF__) || defined(__wasm__)
 #define STATIC_ARENA_ENTRY(Name, Record)                                       \
-  extern "C" __attribute__((section("llvma_v1"), used))                        \
+  extern "C" LLVM_ATTRIBUTE_RETAIN __attribute__((section("llvma_v1"), used))  \
   LLVMStaticArenaVarV1 *const Name = &(Record)
 #else
 #define STATIC_ARENA_ENTRY(Name, Record)
@@ -89,6 +91,41 @@ TEST(StaticArenaDeathTest, ClosingAllowsAccessButFinalizedRejectsIt) {
     Arena->runDestructors();
     EXPECT_DEATH((void)__llvm_arena_addr_v1(&ResolverRecord), "inactive arena");
   }
+#endif
+}
+
+TEST(StaticArenaDeathTest, ReleasedStorageIsPoisoned) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#elif !LLVM_ADDRESS_SANITIZER_BUILD
+  GTEST_SKIP() << "requires an AddressSanitizer-instrumented executable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  EXPECT_DEATH(
+      {
+        uint32_t *SavedAddress = nullptr;
+        {
+          std::unique_ptr<StaticArena> Arena = StaticArena::create();
+          {
+            ScopedStaticArenaBinding Binding(*Arena);
+            SavedAddress =
+                static_cast<uint32_t *>(__llvm_arena_addr_v1(&ResolverRecord));
+            Arena->beginClosing();
+            Arena->runDestructors();
+          }
+          Arena.reset();
+        }
+
+        // This deliberately bypasses the resolver to model an escaped raw
+        // address. Arena release must make the dangling access observable to
+        // ASan, independently of the runtime's state checks.
+        volatile uint32_t Value = *SavedAddress;
+        (void)Value;
+      },
+      ::testing::AnyOf(
+          ::testing::HasSubstr("AddressSanitizer: heap-use-after-free"),
+          ::testing::HasSubstr("AddressSanitizer: use-after-poison")));
 #endif
 }
 
