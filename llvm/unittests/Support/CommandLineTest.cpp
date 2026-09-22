@@ -2850,6 +2850,120 @@ TEST(CommandLineTest, OptionDestroyedInsideContextUnregisters) {
   cl::ResetCommandLineParser();
 }
 
+TEST(CommandLineTest, DestroyedNamedOptionKeepsSameNameInOuterContext) {
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext OuterContext;
+    auto Outer = std::make_unique<cl::opt<int>>("same-name-transient");
+    ASSERT_EQ(Outer.get(),
+              cl::getRegisteredOptions().lookup("same-name-transient"));
+
+    {
+      cl::ScopedContext InnerContext;
+      auto Inner = std::make_unique<cl::opt<int>>("same-name-transient");
+      ASSERT_EQ(Inner.get(),
+                cl::getRegisteredOptions().lookup("same-name-transient"));
+      Inner.reset();
+      EXPECT_EQ(0u, cl::getRegisteredOptions().count("same-name-transient"));
+    }
+
+    // Destroying the inner option visits every pushed context. The direct
+    // lookup must compare pointers before erasing an identically named outer
+    // option.
+    EXPECT_EQ(Outer.get(),
+              cl::getRegisteredOptions().lookup("same-name-transient"));
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, DestroyedUnnamedLiteralOptionUnregistersEveryName) {
+  enum LiteralOption { FirstLiteral, SecondLiteral };
+
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext Context;
+    auto Literal = std::make_unique<cl::opt<LiteralOption>>(
+        cl::desc("transient literal option"));
+    // Plugins and registries may add literal spellings after the option has
+    // finished constructing. These names are only available from the derived
+    // parser, which has already died when Option::~Option runs.
+    Literal->getParser().addLiteralOption("first-transient-literal",
+                                          FirstLiteral, "");
+    Literal->getParser().addLiteralOption("second-transient-literal",
+                                          SecondLiteral, "");
+    ASSERT_EQ(Literal.get(),
+              cl::getRegisteredOptions().lookup("first-transient-literal"));
+    ASSERT_EQ(Literal.get(),
+              cl::getRegisteredOptions().lookup("second-transient-literal"));
+
+    Literal.reset();
+    EXPECT_EQ(0u, cl::getRegisteredOptions().count("first-transient-literal"));
+    EXPECT_EQ(0u, cl::getRegisteredOptions().count("second-transient-literal"));
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, DestroyedNamedOptionUnregistersEarlierLiteralNames) {
+  enum LiteralOption { FirstLiteral, SecondLiteral };
+
+  cl::ResetCommandLineParser();
+
+  {
+    cl::ScopedContext Context;
+    // Modifier order matters: literals registered before the primary name
+    // remain separate command-line spellings for this option.
+    auto Literal = std::make_unique<cl::opt<LiteralOption>>(
+        cl::values(clEnumValN(FirstLiteral, "first-named-literal", ""),
+                   clEnumValN(SecondLiteral, "second-named-literal", "")),
+        "named-literal");
+    for (StringRef Name :
+         {"first-named-literal", "second-named-literal", "named-literal"})
+      ASSERT_EQ(Literal.get(), cl::getRegisteredOptions().lookup(Name));
+
+    Literal.reset();
+    for (StringRef Name :
+         {"first-named-literal", "second-named-literal", "named-literal"})
+      EXPECT_EQ(0u, cl::getRegisteredOptions().count(Name));
+  }
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, DestroyedRenamedOptionUnregistersInheritedOldName) {
+  cl::ResetCommandLineParser();
+
+  auto ProcessOption =
+      std::make_unique<cl::opt<int>>("inherited-name-before-rename");
+  {
+    cl::ScopedContext Outer;
+    {
+      cl::ScopedContext Inner;
+      ASSERT_EQ(ProcessOption.get(), cl::getRegisteredOptions().lookup(
+                                         "inherited-name-before-rename"));
+      ProcessOption->setArgStr("inherited-name-after-rename");
+      ASSERT_EQ(ProcessOption.get(), cl::getRegisteredOptions().lookup(
+                                         "inherited-name-after-rename"));
+
+      ProcessOption.reset();
+      EXPECT_EQ(
+          0u, cl::getRegisteredOptions().count("inherited-name-after-rename"));
+    }
+
+    // setArgStr() only updated the current (inner) parser. Destruction must
+    // still scrub the old spelling inherited by the outer parser.
+    EXPECT_EQ(0u,
+              cl::getRegisteredOptions().count("inherited-name-before-rename"));
+  }
+  EXPECT_EQ(0u,
+            cl::getRegisteredOptions().count("inherited-name-before-rename"));
+
+  cl::ResetCommandLineParser();
+}
+
 TEST(CommandLineTest, InheritedOptionDestructionUnregistersEveryContext) {
   cl::ResetCommandLineParser();
 

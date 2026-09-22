@@ -281,7 +281,12 @@ class LLVM_ABI Option {
   uint16_t Formatting : 2; // enum FormattingFlags
   uint16_t Misc : 5;
   uint16_t FullyInitialized : 1; // Has addArgument been called?
-  uint16_t Position;             // Position of last occurrence of the option
+  // The option may be registered under a name other than its current ArgStr.
+  // This uses the spare bit in the existing bit-field storage.
+  uint16_t NeedsPointerScanOnDestruction : 1;
+  uint16_t Position; // Position of last occurrence of the option
+
+  friend void AddLiteralOption(Option &O, StringRef Name);
 
 public:
   StringRef ArgStr;   // The argument string itself (ex: "help", "o")

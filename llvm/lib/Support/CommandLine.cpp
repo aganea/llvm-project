@@ -359,14 +359,29 @@ public:
   // Remove every occurrence by pointer instead. This also handles options
   // structurally inherited from the process parser: their Option::Subs still
   // names the process context's subcommands, not this parser's subcommands.
-  void removeOptionEverywhere(Option *O, SubCommand &All) {
-    auto RemoveFromSubCommand = [O](SubCommand &Sub) {
-      SmallVector<StringRef, 4> Names;
-      for (const auto &Entry : Sub.OptionsMap)
-        if (Entry.second == O)
-          Names.push_back(Entry.first);
-      for (StringRef Name : Names)
-        Sub.OptionsMap.erase(Name);
+  void removeOptionEverywhere(Option *O, SubCommand &All,
+                              bool NeedsPointerScan) {
+    auto RemoveFromSubCommand = [O, NeedsPointerScan](SubCommand &Sub) {
+      if (O->hasArgStr() && !NeedsPointerScan) {
+        // ArgStr belongs to the Option base and is still alive here. Named
+        // options normally have exactly this one map entry, so avoid scanning
+        // the complete map once for every option during arena teardown.
+        auto I = Sub.OptionsMap.find(O->ArgStr);
+        if (I != Sub.OptionsMap.end() && I->second == O)
+          Sub.OptionsMap.erase(I);
+      } else {
+        // An unnamed generic option can register one entry for every literal
+        // value. A named option can also have old or literal registrations if
+        // it was renamed after registration or cl::values() preceded its
+        // primary name. Its parser has already been destroyed, so remove those
+        // entries by pointer rather than calling getExtraOptionNames().
+        SmallVector<StringRef, 4> Names;
+        for (const auto &Entry : Sub.OptionsMap)
+          if (Entry.second == O)
+            Names.push_back(Entry.first);
+        for (StringRef Name : Names)
+          Sub.OptionsMap.erase(Name);
+      }
 
       // llvm::erase() still mutates the vector's size when the value is
       // absent.  A context-owned option is normally absent from the process
@@ -860,6 +875,11 @@ static bool parseBool(Option &O, StringRef ArgName, StringRef Arg, T &Value) {
 }
 
 void cl::AddLiteralOption(Option &O, StringRef Name) {
+  // If there is no primary name yet, this literal becomes a distinct map
+  // entry. Remember that in the Option base, because its derived parser (and
+  // thus the list of literal names) is gone by the time Option::~Option runs.
+  if (!O.hasArgStr())
+    O.NeedsPointerScanOnDestruction = true;
   globalParser().addLiteralOption(O, Name);
 }
 
@@ -870,7 +890,8 @@ extrahelp::extrahelp(StringRef Help) : morehelp(Help) {
 Option::Option(NumOccurrencesFlag OccurrencesFlag, OptionHidden Hidden)
     : Magic(ConstructedMagic), NumOccurrences(0), Occurrences(OccurrencesFlag),
       Value(0), HiddenFlag(Hidden), Formatting(NormalFormatting), Misc(0),
-      FullyInitialized(false), Position(0) {
+      FullyInitialized(false), NeedsPointerScanOnDestruction(false),
+      Position(0) {
   Categories.push_back(&getGeneralCategory());
 }
 
@@ -891,20 +912,22 @@ Option::Option(NumOccurrencesFlag OccurrencesFlag, OptionHidden Hidden)
 // every already-constructed parser that can contain the option, including the
 // process default when it still exists.
 //
-// The derived object is already gone here, so this cannot use ArgStr or
-// getExtraOptionNames(). removeOptionEverywhere() removes entries by pointer
-// and is therefore also correct for literal options and options registered for
-// all subcommands.
+// The derived object is already gone here, so this cannot use
+// getExtraOptionNames(). ArgStr remains alive in the Option base and provides a
+// fast path for ordinary named options; removeOptionEverywhere() falls back to
+// removing entries by pointer for literals and renamed options.
 Option::~Option() {
   for (CommandLineContext *Ctx = PushedCtx; Ctx; Ctx = Ctx->Prev)
     if (CommandLineParser *Parser = Ctx->getParserIfConstructed())
-      Parser->removeOptionEverywhere(this, Ctx->All);
+      Parser->removeOptionEverywhere(this, Ctx->All,
+                                     NeedsPointerScanOnDestruction);
 
   ManagedStatic<CommandLineContext> &DefaultCtx = defaultContextStorage();
   if (DefaultCtx.isConstructed()) {
     CommandLineContext &Ctx = *DefaultCtx;
     if (CommandLineParser *Parser = Ctx.getParserIfConstructed())
-      Parser->removeOptionEverywhere(this, Ctx.All);
+      Parser->removeOptionEverywhere(this, Ctx.All,
+                                     NeedsPointerScanOnDestruction);
   }
   Magic = 0;
 }
@@ -917,8 +940,13 @@ void Option::addArgument() {
 void Option::removeArgument() { globalParser().removeOption(this); }
 
 void Option::setArgStr(StringRef S) {
-  if (FullyInitialized)
+  if (FullyInitialized) {
+    // Only the current parser is updated. Other contexts may have inherited
+    // this option under its previous name, so destruction must find those
+    // registrations by pointer.
+    NeedsPointerScanOnDestruction = true;
     globalParser().updateArgStr(this, S);
+  }
   assert(!S.starts_with("-") && "Option can't start with '-");
   ArgStr = S;
   if (ArgStr.size() == 1)
