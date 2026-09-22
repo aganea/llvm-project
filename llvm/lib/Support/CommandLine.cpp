@@ -222,10 +222,12 @@ public:
   // region cannot replace a real context teardown.
   void detachOptionsFrom(SubCommand &Sub) {
     for (auto &E : Sub.OptionsMap)
-      E.second->Subs.erase(&Sub);
+      if (!InheritedOptions.contains(E.second))
+        E.second->Subs.erase(&Sub);
     for (Option *O : Sub.PositionalOpts)
-      O->Subs.erase(&Sub);
-    if (Sub.ConsumeAfterOpt)
+      if (!InheritedOptions.contains(O))
+        O->Subs.erase(&Sub);
+    if (Sub.ConsumeAfterOpt && !InheritedOptions.contains(Sub.ConsumeAfterOpt))
       Sub.ConsumeAfterOpt->Subs.erase(&Sub);
   }
 
@@ -239,7 +241,7 @@ public:
   // a pushed context needs to start as an overlay rather than empty.
   void inheritFrom(CommandLineContext &From, CommandLineContext &To);
 
-  void ResetAllOptionOccurrences();
+  void ResetAllOptionOccurrences(bool ResetInherited = true);
 
   bool ParseCommandLineOptions(int argc, const char *const *argv,
                                StringRef Overview, raw_ostream *Errs = nullptr,
@@ -375,6 +377,7 @@ public:
       RemoveFromSubCommand(*Sub);
     RemoveFromSubCommand(All);
     llvm::erase(DefaultOptions, O);
+    InheritedOptions.erase(O);
   }
 
   bool hasOptions(const SubCommand &Sub) const {
@@ -461,7 +464,7 @@ public:
                       RegisteredSubCommands.end());
   }
 
-  void reset() {
+  void reset(bool ResetInherited = true) {
     ActiveSubCommand = nullptr;
     ProgramName.clear();
     ProgramOverview = StringRef();
@@ -473,7 +476,7 @@ public:
     // state so those pointers remain valid for categorized help.
     RegisteredOptionCategories.insert(&getGeneralCategory());
 
-    ResetAllOptionOccurrences();
+    ResetAllOptionOccurrences(ResetInherited);
     // Named SubCommand objects can outlive a test/reset. Empty their
     // containers and scrub their addresses from Option::Subs before dropping
     // the registry, so their eventual destructors never inspect stale option
@@ -490,10 +493,17 @@ public:
     registerSubCommand(&SubCommand::getTopLevel());
 
     DefaultOptions.clear();
+    InheritedOptions.clear();
   }
 
 private:
   SubCommand *ActiveSubCommand = nullptr;
+
+  // Options copied from the process parser are borrowed registrations, not
+  // state owned by this parser. In particular, their Option::Subs members do
+  // not contain this context's SubCommands, and their parsed values are shared
+  // by every context that inherited them.
+  SmallPtrSet<Option *, 32> InheritedOptions;
 
   Option *LookupOption(SubCommand &Sub, StringRef &Arg, StringRef &Value);
   Option *LookupLongOption(SubCommand &Sub, StringRef &Arg, StringRef &Value,
@@ -576,6 +586,24 @@ struct CommandLineContext {
 // The context is invocation/task-keyed rather than worker-thread-keyed: task
 // dispatch captures a lifetime-checked token and installs it around execution.
 static LLVM_THREAD_LOCAL CommandLineContext *PushedCtx = nullptr;
+
+// Serializes explicit-context publication and the short, parser-facing part of
+// teardown. Process-default Option objects are structurally inherited by every
+// explicit context, so only the last context may reset their shared values.
+// Holding this lock while making that decision also prevents a new context
+// from inheriting those values until the reset is complete.
+struct ExplicitContextTransitionState {
+  std::mutex Mutex;
+  unsigned ActiveContexts = 0;
+};
+
+static ExplicitContextTransitionState &explicitContextTransitionState() {
+  // Context teardown can run during process shutdown. Keep the transition
+  // state available until process exit rather than depending on destructor
+  // order with clients of Support.
+  static auto *State = new ExplicitContextTransitionState();
+  return *State;
+}
 
 struct PendingContextStaticChecks {
   CommandLineContext *Context;
@@ -1894,10 +1922,14 @@ bool cl::ParseCommandLineOptions(int argc, const char *const *argv,
 }
 
 /// Reset all options at least once, so that we can parse different options.
-void CommandLineParser::ResetAllOptionOccurrences() {
+void CommandLineParser::ResetAllOptionOccurrences(bool ResetInherited) {
   // Reset all option values to look like they have never been seen before.
   // Options might be reset twice (they can be reference in both OptionsMap
   // and one of the other members), but that does not harm.
+  auto Reset = [&](Option *O) {
+    if (ResetInherited || !InheritedOptions.contains(O))
+      O->reset();
+  };
   for (auto *SC : RegisteredSubCommands) {
     // reset() removes default options from OptionsMap (via removeArgument), so
     // collect the options first to avoid invalidating the map iterator.
@@ -1906,11 +1938,11 @@ void CommandLineParser::ResetAllOptionOccurrences() {
     for (auto &O : SC->OptionsMap)
       Opts.push_back(O.second);
     for (Option *O : Opts)
-      O->reset();
+      Reset(O);
     for (Option *O : SC->PositionalOpts)
-      O->reset();
+      Reset(O);
     if (SC->ConsumeAfterOpt)
-      SC->ConsumeAfterOpt->reset();
+      Reset(SC->ConsumeAfterOpt);
   }
 }
 
@@ -3290,18 +3322,26 @@ void CommandLineParser::inheritFrom(CommandLineContext &From,
   for (auto [F, T] : {std::pair(&From.TopLevel, &To.TopLevel),
                       std::pair(&From.All, &To.All)}) {
     for (auto &E : F->OptionsMap)
-      if (!Skip(E.second))
-        T->OptionsMap.insert(E); // Ours wins if the key is already taken.
+      if (!Skip(E.second) && T->OptionsMap.insert(E).second)
+        // Ours wins if the key is already taken.
+        InheritedOptions.insert(E.second);
     for (Option *O : F->PositionalOpts)
-      if (!Skip(O))
+      if (!Skip(O)) {
         T->PositionalOpts.push_back(O);
-    if (!T->ConsumeAfterOpt && F->ConsumeAfterOpt && !Skip(F->ConsumeAfterOpt))
+        InheritedOptions.insert(O);
+      }
+    if (!T->ConsumeAfterOpt && F->ConsumeAfterOpt &&
+        !Skip(F->ConsumeAfterOpt)) {
       T->ConsumeAfterOpt = F->ConsumeAfterOpt;
+      InheritedOptions.insert(F->ConsumeAfterOpt);
+    }
   }
 
   for (Option *O : FromParser->DefaultOptions)
-    if (!Skip(O))
+    if (!Skip(O)) {
       DefaultOptions.push_back(O);
+      InheritedOptions.insert(O);
+    }
 
   llvm::append_range(MoreHelp, FromParser->MoreHelp);
 
@@ -3320,6 +3360,10 @@ void CommandLineParser::inheritFrom(CommandLineContext &From,
 } // End anonymous namespace
 
 cl::ScopedContext::ScopedContext() {
+  ExplicitContextTransitionState &Transitions =
+      explicitContextTransitionState();
+  std::lock_guard<std::mutex> TransitionLock(Transitions.Mutex);
+
   // Construct the process-default signal options before installing an explicit
   // context. Explicit contexts create their own copies in commonOptions(), but
   // tokenless signal-handler threads still need stable fallback registrations
@@ -3353,6 +3397,7 @@ cl::ScopedContext::ScopedContext() {
   // inherits is the process's dynamic initializers, and nesting must not let
   // one tool's options reach another's.
   globalParser().inheritFrom(defaultContext(), *C);
+  ++Transitions.ActiveContexts;
 }
 
 cl::ContextToken::ContextToken(void *OpaqueCtx) : Ctx(OpaqueCtx) {
@@ -3451,12 +3496,21 @@ cl::ScopedContext::~ScopedContext() {
   // reverse construction order.
   C->destroyContextStatics();
 
+  ExplicitContextTransitionState &Transitions =
+      explicitContextTransitionState();
+  std::lock_guard<std::mutex> TransitionLock(Transitions.Mutex);
+  if (Transitions.ActiveContexts == 0)
+    report_fatal_error("command-line context transition count underflow");
+  const bool ResetInherited = Transitions.ActiveContexts == 1;
+
   if (CommandLineParser *Parser = C->getParserIfConstructed()) {
     // Option objects outlive every context, but Option::Subs holds raw
     // SubCommand pointers into this one. Scrub them before the SubCommands die,
-    // then clear the occurrences so the next invocation starts from defaults.
+    // then clear this context's occurrences. Process-default options are shared
+    // by every context that inherited them, so defer resetting those until the
+    // final overlapping context reaches teardown.
     Parser->detachOptionsFrom(C->TopLevel, C->All);
-    Parser->reset();
+    Parser->reset(ResetInherited);
   }
 
   // Only now, once reset() has emptied the maps: it walks every option still
@@ -3468,6 +3522,7 @@ cl::ScopedContext::~ScopedContext() {
   PushedCtx = C->Prev;
   delete C;
   llvm::detail::finishExplicitInvocationContextTeardown();
+  --Transitions.ActiveContexts;
 }
 
 const void *cl::getCurrentContextIdentity() { return &clContext(); }

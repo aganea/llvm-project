@@ -27,6 +27,7 @@
 #include "llvm/Testing/Support/SupportHelpers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <atomic>
 #include <fstream>
 #include <stdlib.h>
 #include <string>
@@ -2697,6 +2698,43 @@ TEST(CommandLineTest, ScopedContextInheritsProcessWideOptions) {
   // Popping resets what the invocation parsed, and leaves the registration.
   EXPECT_EQ(1u, cl::getRegisteredOptions().count("library-opt"));
   EXPECT_EQ("", Library);
+
+  cl::ResetCommandLineParser();
+}
+
+TEST(CommandLineTest, ConcurrentContextTeardownDefersInheritedReset) {
+  cl::ResetCommandLineParser();
+
+  StackOption<int> ProcessOption("concurrent-inherited-reset", cl::init(0));
+  const char *Args[] = {"tool", "--concurrent-inherited-reset=7"};
+  ASSERT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                          &llvm::nulls()));
+  ASSERT_EQ(7, ProcessOption);
+
+  std::atomic<unsigned> Ready{0};
+  std::atomic<bool> ReleaseFirst{false};
+  std::atomic<bool> ReleaseSecond{false};
+  auto HoldContext = [&](std::atomic<bool> &Release) {
+    cl::ScopedContext Context;
+    Ready.fetch_add(1, std::memory_order_release);
+    while (!Release.load(std::memory_order_acquire))
+      std::this_thread::yield();
+  };
+
+  std::thread First(HoldContext, std::ref(ReleaseFirst));
+  std::thread Second(HoldContext, std::ref(ReleaseSecond));
+  while (Ready.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+
+  ReleaseFirst.store(true, std::memory_order_release);
+  First.join();
+  EXPECT_EQ(7, ProcessOption)
+      << "one context must not reset storage still shared by another";
+
+  ReleaseSecond.store(true, std::memory_order_release);
+  Second.join();
+  EXPECT_EQ(0, ProcessOption)
+      << "the final context must restore process options for sequential reuse";
 
   cl::ResetCommandLineParser();
 }
