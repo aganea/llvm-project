@@ -17,6 +17,7 @@
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/PassTimingInfo.h>
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Support/raw_ostream.h>
 
 using namespace llvm;
@@ -115,6 +116,43 @@ TEST(TimePassesTest, LegacyCustomOut) {
 
   // Reset flag to not affect other tests.
   TimePassesIsEnabled = false;
+}
+
+TEST(TimePassesTest, LegacyStateIsInvocationLocal) {
+  LLVMContext Context;
+  Module M("TestModule", Context);
+
+  {
+    cl::ScopedContext Invocation;
+    SmallString<0> Report;
+    raw_svector_ostream ReportStream(Report);
+    legacy::PassManager PM;
+    PM.add(new Pass1());
+
+    TimePassesIsEnabled = true;
+    PM.run(M);
+    reportAndResetTimings(&ReportStream);
+
+    EXPECT_TRUE(Report.str().contains("Pass1"));
+    EXPECT_FALSE(Report.str().contains("Pass2"));
+    TimePassesIsEnabled = false;
+  }
+
+  {
+    cl::ScopedContext Invocation;
+    SmallString<0> Report;
+    raw_svector_ostream ReportStream(Report);
+    legacy::PassManager PM;
+    PM.add(new Pass2());
+
+    TimePassesIsEnabled = true;
+    PM.run(M);
+    reportAndResetTimings(&ReportStream);
+
+    EXPECT_FALSE(Report.str().contains("Pass1"));
+    EXPECT_TRUE(Report.str().contains("Pass2"));
+    TimePassesIsEnabled = false;
+  }
 }
 
 class MyPass1 : public OptionalPassInfoMixin<MyPass1> {};

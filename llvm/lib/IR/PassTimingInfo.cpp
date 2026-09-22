@@ -66,11 +66,13 @@ private:
   TimerGroup *PassTG = nullptr;
 
 public:
-  /// Initializes the static \p TheTimeInfo member to a non-null value when
-  /// -time-passes is enabled. Leaves it null otherwise.
+  PassTimingInfo();
+
+  /// Returns the timing state for the current invocation when -time-passes is
+  /// enabled. Leaves it unconstructed otherwise.
   ///
   /// This method may be called multiple times.
-  static void init();
+  static PassTimingInfo *get();
 
   /// Prints out timing information and then resets the timers.
   /// By default it uses the stream created by CreateInfoOutputFile().
@@ -86,20 +88,28 @@ private:
 static ContextManagedStatic<sys::SmartMutex<true>> TimingInfoMutex;
 static ContextManagedStatic<PassTimingInfo> TTI;
 
-void PassTimingInfo::init() {
-  if (TTI.isConstructed() || !TimePassesIsEnabled)
-    return;
+PassTimingInfo::PassTimingInfo()
+    : PassTG(&NamedRegionTimer::getNamedTimerGroup(
+          TimePassesHandler::PassGroupName, TimePassesHandler::PassGroupDesc)) {
+}
+
+PassTimingInfo *PassTimingInfo::get() {
+  // Keep the disabled fast path free of ContextManagedStatic lookups. Legacy
+  // pass managers ask for a timer for every pass, while timing is normally
+  // disabled, and a context lookup takes a lock and searches the invocation's
+  // registered statics.
+  if (!TimePassesIsEnabled)
+    return nullptr;
 
   // Constructed once for the current invocation, iff -time-passes is enabled.
-  // Context teardown destroys it before earlier context-owned timer state.
-  if (!TTI->PassTG)
-    TTI->PassTG = &NamedRegionTimer::getNamedTimerGroup(
-        TimePassesHandler::PassGroupName, TimePassesHandler::PassGroupDesc);
+  // Its constructor creates the context-owned timer state before publishing
+  // this object, so context teardown destroys this object first.
+  return &*TTI;
 }
 
 /// Prints out timing information and then resets the timers.
 void PassTimingInfo::print(raw_ostream *OutStream) {
-  assert(PassTG && "PassTG is null, did you call PassTimingInfo::Init()?");
+  assert(PassTG && "pass timing state was not initialized");
   PassTG->print(OutStream ? *OutStream : *CreateInfoOutputFile(), true);
 }
 
@@ -109,7 +119,7 @@ Timer *PassTimingInfo::newPassTimer(StringRef PassID, StringRef PassDesc) {
   // Appending description with a pass-instance number for all but the first one
   std::string PassDescNumbered =
       num <= 1 ? PassDesc.str() : formatv("{0} #{1}", PassDesc, num).str();
-  assert(PassTG && "PassTG is null, did you call PassTimingInfo::Init()?");
+  assert(PassTG && "pass timing state was not initialized");
   return new Timer(PassID, PassDescNumbered, *PassTG);
 }
 
@@ -117,7 +127,6 @@ Timer *PassTimingInfo::getPassTimer(Pass *P, PassInstanceID Pass) {
   if (P->getAsPMDataManager())
     return nullptr;
 
-  init();
   sys::SmartScopedLock<true> Lock(*TimingInfoMutex);
   StringRef PassName = P->getPassName();
   StringRef PassArgument;
@@ -141,9 +150,8 @@ Timer *PassTimingInfo::getPassTimer(Pass *P, PassInstanceID Pass) {
 } // namespace
 
 Timer *llvm::getPassTimer(Pass *P) {
-  legacy::PassTimingInfo::init();
-  if (legacy::TTI.isConstructed())
-    return legacy::TTI->getPassTimer(P, P);
+  if (legacy::PassTimingInfo *TimeInfo = legacy::PassTimingInfo::get())
+    return TimeInfo->getPassTimer(P, P);
   return nullptr;
 }
 
