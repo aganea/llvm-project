@@ -14,6 +14,27 @@
 
 namespace llvm {
 
+/// Permits the current thread to perform one synchronized, lazy population of
+/// process-wide registries while unrelated tool invocations are alive.
+///
+/// This is an expert-only bootstrap mechanism. The caller must ensure that
+/// concurrent invocations cannot consume the catalogs being populated and
+/// must independently serialize the complete initialization sequence. A
+/// registry freeze is never bypassed. Ordinary late registration must not use
+/// this class and remains fail-closed while invocations overlap or tear down.
+class LLVM_ABI ProcessWideRegistryBootstrap {
+public:
+  ProcessWideRegistryBootstrap();
+  ~ProcessWideRegistryBootstrap();
+
+  ProcessWideRegistryBootstrap(const ProcessWideRegistryBootstrap &) = delete;
+  ProcessWideRegistryBootstrap &
+  operator=(const ProcessWideRegistryBootstrap &) = delete;
+
+private:
+  bool Acquired = false;
+};
+
 /// Holds the process-wide catalog mutation lock for one complete write.
 ///
 /// Registries may be populated during process startup or serialized setup.

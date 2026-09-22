@@ -199,11 +199,52 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND LLVM_ENABLE_THREADS AND
         DISABLE_LLVM_LINK_LLVM_DYLIB
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/llvm-driver/Inputs/per-invocation.cpp
         )
+      # Compile the harness against the same rewritten references as the
+      # private library closure. This lets it observe that process executors
+      # enforce two simultaneous arenas' independently parsed strategies,
+      # rather than accidentally testing the ordinary process-global symbol.
+      target_compile_options(llvm-driver-per-invocation-test PRIVATE
+        "SHELL:-Xclang -fstatic-arena=llvmi_per_invocation_test"
+        "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+      llvm_add_driver_producer_list_dependencies(
+        llvm-driver-per-invocation-test)
       target_link_libraries(llvm-driver-per-invocation-test PRIVATE
         obj.llvm-ar
         obj.lld)
     endfunction()
     add_llvm_driver_per_invocation_test()
+
+    # Clang is configured after llvm/test in an integrated build. Defer the
+    # optional edge to the end of the top-level directory, when both the test
+    # helper and obj.clang (including its lifecycle runner) are visible.
+    # LLVM-only builds retain the llvm-ar/LLD coverage above.
+    function(llvm_configure_driver_per_invocation_clang_test)
+      if(NOT TARGET llvm-driver-per-invocation-test OR NOT TARGET obj.clang)
+        return()
+      endif()
+      get_property(clang_lifecycle_runner TARGET obj.clang
+        PROPERTY LLVM_DRIVER_LIFECYCLE_RUNNER)
+      if(NOT clang_lifecycle_runner)
+        return()
+      endif()
+
+      set(llvm_driver_test_clang_triple)
+      if("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+        set(llvm_driver_test_clang_triple x86_64-unknown-linux-gnu)
+      elseif("WebAssembly" IN_LIST LLVM_TARGETS_TO_BUILD)
+        set(llvm_driver_test_clang_triple wasm32-unknown-unknown)
+      endif()
+      if(NOT llvm_driver_test_clang_triple)
+        return()
+      endif()
+
+      target_link_libraries(llvm-driver-per-invocation-test PRIVATE obj.clang)
+      target_compile_definitions(llvm-driver-per-invocation-test PRIVATE
+        "LLVM_DRIVER_TEST_CLANG_TRIPLE=\"${llvm_driver_test_clang_triple}\"")
+    endfunction()
+    cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
+      llvm_configure_driver_per_invocation_clang_test)
+
     list(APPEND LLVM_TEST_DEPENDS llvm-driver-per-invocation-test)
   endif()
 endif()

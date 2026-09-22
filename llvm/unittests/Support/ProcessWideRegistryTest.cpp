@@ -8,6 +8,7 @@
 
 #include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Registry.h"
 #include "gtest/gtest.h"
 
@@ -26,6 +27,21 @@ using TestRegistry = llvm::Registry<Plugin>;
 
 LLVM_DECLARE_REGISTRY(process_wide_registry_test::TestRegistry)
 LLVM_DEFINE_REGISTRY(process_wide_registry_test::TestRegistry)
+
+namespace {
+std::atomic<bool> *TeardownReady;
+std::atomic<bool> *ReleaseTeardown;
+
+struct BlockingContextTeardown {
+  ~BlockingContextTeardown() {
+    TeardownReady->store(true, std::memory_order_release);
+    while (!ReleaseTeardown->load(std::memory_order_acquire))
+      std::this_thread::yield();
+  }
+};
+
+llvm::ContextManagedStatic<BlockingContextTeardown> BlockingTeardown;
+} // namespace
 
 TEST(ProcessWideRegistryTest, PluginRegistrationAllowedInOneInvocation) {
   llvm::cl::ScopedContext Context;
@@ -93,6 +109,86 @@ TEST(ProcessWideRegistryTest, CannotAddPluginAcrossInvocations) {
             Registration("late", "late plugin");
       },
       "complete process-wide registration before concurrent tool execution");
+#endif
+}
+
+TEST(ProcessWideRegistryTest,
+     BootstrapAllowsRegistrationAcrossKnownIsolatedInvocations) {
+  std::atomic<unsigned> Ready{0};
+  std::atomic<bool> Release{false};
+  auto HoldContext = [&] {
+    llvm::cl::ScopedContext Context;
+    Ready.fetch_add(1, std::memory_order_release);
+    while (!Release.load(std::memory_order_acquire))
+      std::this_thread::yield();
+  };
+
+  std::thread First(HoldContext);
+  std::thread Second(HoldContext);
+  while (Ready.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+
+  using Registration = process_wide_registry_test::TestRegistry::Add<
+      process_wide_registry_test::LatePlugin>;
+  static Registration *BootstrapRegistration;
+  {
+    llvm::ProcessWideRegistryBootstrap Bootstrap;
+    BootstrapRegistration =
+        new Registration("bootstrap", "bootstrap registration");
+  }
+
+  Release.store(true, std::memory_order_release);
+  First.join();
+  Second.join();
+
+  ASSERT_NE(BootstrapRegistration, nullptr);
+  auto Entries = process_wide_registry_test::TestRegistry::entries();
+  EXPECT_NE(Entries.end(), llvm::find_if(Entries, [](const auto &Entry) {
+              return Entry.getName() == "bootstrap";
+            }));
+}
+
+TEST(ProcessWideRegistryTest, BootstrapAllowsRegistrationDuringTeardown) {
+  std::atomic<bool> Ready{false};
+  std::atomic<bool> Release{false};
+  TeardownReady = &Ready;
+  ReleaseTeardown = &Release;
+
+  std::thread ClosingContext([] {
+    llvm::cl::ScopedContext Context;
+    (void)*BlockingTeardown;
+  });
+  while (!Ready.load(std::memory_order_acquire))
+    std::this_thread::yield();
+
+  {
+    llvm::ProcessWideRegistryBootstrap Bootstrap;
+    static auto *Registration =
+        new process_wide_registry_test::TestRegistry::Add<
+            process_wide_registry_test::LatePlugin>(
+            "bootstrap-closing", "bootstrap registration during teardown");
+    EXPECT_NE(Registration, nullptr);
+  }
+
+  Release.store(true, std::memory_order_release);
+  ClosingContext.join();
+  TeardownReady = nullptr;
+  ReleaseTeardown = nullptr;
+}
+
+TEST(ProcessWideRegistryTest, BootstrapDoesNotOverrideRegistryFreeze) {
+#if !GTEST_HAS_DEATH_TEST
+  GTEST_SKIP() << "death tests are unavailable";
+#else
+  EXPECT_DEATH(
+      {
+        llvm::ProcessWideRegistryBootstrap Bootstrap;
+        llvm::ProcessWideRegistryFreeze Freeze;
+        process_wide_registry_test::TestRegistry::Add<
+            process_wide_registry_test::LatePlugin>
+            Registration("bootstrap-frozen", "frozen bootstrap plugin");
+      },
+      "process-wide plugin registry.*registration was frozen");
 #endif
 }
 

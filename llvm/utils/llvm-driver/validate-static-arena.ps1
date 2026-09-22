@@ -261,17 +261,33 @@ try {
   if (-not [string]::IsNullOrEmpty($DispatchFile)) {
     $DispatchCount = 0
     $DispatchOne = 0
+    $ProcessClassificationCount = 0
+    $ProcessInitializationCount = 0
     Get-Content -LiteralPath $DispatchFile | ForEach-Object {
-      if ($_ -match '^LLVM_DRIVER_TOOL\(.*,[ ]*([01])\)$') {
+      if ($_ -match
+          '^LLVM_DRIVER_TOOL\("[^"]+",[ ]*[^,]+,[ ]*([01])(?:,[ ]*([01]))?\)$') {
         ++$DispatchCount
         if ($Matches[1] -eq '1') { ++$DispatchOne }
+        if ($Matches.Count -gt 2 -and $Matches[2] -ne '') {
+          ++$ProcessClassificationCount
+          if ($Matches[2] -eq '1') { ++$ProcessInitializationCount }
+        }
       }
     }
-    Write-Output ('DISPATCH Entries={0} ArenaBitOne={1} Other={2}' -f
+    $DispatchFormat = 'DISPATCH Entries={0} ArenaBitOne={1} Other={2} ' +
+        'ProcessInitialization={3} Lightweight={4} Unclassified={5}'
+    Write-Output ($DispatchFormat -f
                   $DispatchCount, $DispatchOne,
-                  ($DispatchCount - $DispatchOne))
+                  ($DispatchCount - $DispatchOne),
+                  $ProcessInitializationCount,
+                  ($ProcessClassificationCount -
+                   $ProcessInitializationCount),
+                  ($DispatchCount - $ProcessClassificationCount))
     if ($DispatchCount -eq 0 -or $DispatchCount -ne $DispatchOne) {
       throw 'one or more folded-driver dispatch entries are not arena-enabled'
+    }
+    if ($ProcessClassificationCount -ne $DispatchCount) {
+      throw 'one or more folded-driver entries lack process initialization policy'
     }
   }
 

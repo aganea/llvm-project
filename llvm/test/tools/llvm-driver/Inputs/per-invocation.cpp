@@ -1,4 +1,4 @@
-//===- per-invocation.cpp - Folded llvm-ar lifecycle smoke test -----------===//
+//===- per-invocation.cpp - Folded tool lifecycle smoke test --------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,11 +6,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/PassRegistry.h"
 #include "llvm/Support/Driver.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Parallel.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/Threading.h"
+#include "llvm/Support/ToolExecutionContext.h"
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +31,10 @@ int llvm_ar_main(int Argc, char **Argv, const llvm::ToolContext &);
 void llvm_ar_init_lifecycle();
 int lld_main(int Argc, char **Argv, const llvm::ToolContext &);
 void lld_init_lifecycle();
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+int clang_main(int Argc, char **Argv, const llvm::ToolContext &);
+void clang_init_lifecycle();
+#endif
 
 namespace {
 
@@ -47,6 +59,86 @@ static int invokeAr(std::vector<std::string> Args) {
 
 static int invokeLld(std::vector<std::string> Args) {
   return invokeTool(lld_init_lifecycle, lld_main, std::move(Args));
+}
+
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+static int invokeClang(std::vector<std::string> Args) {
+  return invokeTool(clang_init_lifecycle, clang_main, std::move(Args));
+}
+#endif
+
+static std::atomic<unsigned> LightweightReady{0};
+static std::atomic<bool> ReleaseLightweight{false};
+static std::atomic<bool> ProcessInitializationWasNeutral{false};
+
+static void initializeProcessCatalogs();
+
+static int holdLightweightMain(int, char **, const llvm::ToolContext &) {
+  LightweightReady.fetch_add(1, std::memory_order_release);
+  while (!ReleaseLightweight.load(std::memory_order_acquire))
+    std::this_thread::yield();
+  // Model a first catalog-using tool dispatched synchronously from this
+  // lightweight outer invocation. Both callers race the same process once.
+  initializeProcessCatalogs();
+  return 0;
+}
+
+static void initializeProcessCatalogs() {
+  static llvm::once_flag InitializationFlag;
+  llvm::call_once(InitializationFlag, [] {
+    llvm::ScopedToolExecutionContext NeutralContext{
+        llvm::ToolExecutionContext()};
+    ProcessInitializationWasNeutral.store(!llvm::hasCurrentStaticArena(),
+                                          std::memory_order_release);
+    llvm::ProcessWideRegistryBootstrap Bootstrap;
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+    llvm::InitializeAllTargets();
+#else
+    llvm::InitializeAllTargetInfos();
+#endif
+    llvm::InitializeAllTargetMCs();
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+    llvm::InitializeAllAsmPrinters();
+#endif
+    llvm::InitializeAllAsmParsers();
+
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+    llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
+    llvm::initializeCore(Registry);
+    llvm::initializeCodeGen(Registry);
+    llvm::initializeScalarOpts(Registry);
+    llvm::initializeIPO(Registry);
+    llvm::initializeVectorization(Registry);
+    llvm::initializeTransformUtils(Registry);
+#endif
+  });
+}
+
+static bool testColdProcessInitialization() {
+  LightweightReady.store(0, std::memory_order_relaxed);
+  ReleaseLightweight.store(false, std::memory_order_relaxed);
+  auto HoldLightweight = [] {
+    return invokeTool(+[] {}, holdLightweightMain, {"lightweight"});
+  };
+
+  int FirstResult = -1;
+  int SecondResult = -1;
+  std::thread FirstLightweight(
+      [&] { FirstResult = HoldLightweight(); });
+  std::thread SecondLightweight(
+      [&] { SecondResult = HoldLightweight(); });
+  while (LightweightReady.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+
+  // Let two nested cold target-using dispatches race while their lightweight
+  // outer tools own invocation contexts. Exactly one neutral process context
+  // populates the catalogs, and the generic late-mutation policy remains
+  // strict for every thread outside the scoped bootstrap.
+  ReleaseLightweight.store(true, std::memory_order_release);
+  FirstLightweight.join();
+  SecondLightweight.join();
+  return FirstResult == 0 && SecondResult == 0 &&
+         ProcessInitializationWasNeutral.load(std::memory_order_acquire);
 }
 
 static bool writeFile(const fs::path &Path, const std::string &Contents) {
@@ -178,6 +270,157 @@ static bool testConcurrentSameTool(const fs::path &Root) {
                          NormalInputs);
 }
 
+static std::atomic<bool> FirstQuotaConfigured{false};
+static std::atomic<bool> SecondQuotaConfigured{false};
+static std::atomic<bool> ReleaseQuotaWork{false};
+static std::atomic<unsigned> QuotaSubmitted{0};
+static std::array<std::atomic<unsigned>, 2> QuotaActive{};
+static std::array<std::atomic<unsigned>, 2> QuotaMaximum{};
+static std::array<std::atomic<unsigned>, 2> QuotaStarted{};
+
+static void updateMaximum(std::atomic<unsigned> &Maximum, unsigned Value) {
+  unsigned OldMaximum = Maximum.load(std::memory_order_relaxed);
+  while (Value > OldMaximum &&
+         !Maximum.compare_exchange_weak(OldMaximum, Value,
+                                        std::memory_order_relaxed)) {
+  }
+}
+
+static int quotaToolMain(int Argc, char **Argv,
+                         const llvm::ToolContext &) {
+  if (Argc != 2 || (Argv[1][0] != '0' && Argv[1][0] != '1') || Argv[1][1])
+    return 1;
+  const unsigned Index = static_cast<unsigned>(Argv[1][0] - '0');
+  const unsigned Width = Index + 1;
+
+  if (Index == 0) {
+    llvm::parallel::strategy = llvm::hardware_concurrency(Width);
+    FirstQuotaConfigured.store(true, std::memory_order_release);
+    while (!SecondQuotaConfigured.load(std::memory_order_acquire))
+      std::this_thread::yield();
+  } else {
+    while (!FirstQuotaConfigured.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    llvm::parallel::strategy = llvm::hardware_concurrency(Width);
+    SecondQuotaConfigured.store(true, std::memory_order_release);
+  }
+
+  llvm::parallel::TaskGroup Tasks;
+  for (unsigned I = 0; I != 8; ++I) {
+    Tasks.spawn([Index] {
+      unsigned Current =
+          QuotaActive[Index].fetch_add(1, std::memory_order_relaxed) + 1;
+      updateMaximum(QuotaMaximum[Index], Current);
+      QuotaStarted[Index].fetch_add(1, std::memory_order_release);
+      while (!ReleaseQuotaWork.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      QuotaActive[Index].fetch_sub(1, std::memory_order_relaxed);
+    });
+  }
+  QuotaSubmitted.fetch_add(1, std::memory_order_release);
+  return 0;
+}
+
+static bool testSharedExecutorInvocationQuotas() {
+  if (llvm::hardware_concurrency().compute_thread_count() < 3)
+    return true;
+
+  FirstQuotaConfigured.store(false, std::memory_order_relaxed);
+  SecondQuotaConfigured.store(false, std::memory_order_relaxed);
+  ReleaseQuotaWork.store(false, std::memory_order_relaxed);
+  QuotaSubmitted.store(0, std::memory_order_relaxed);
+  for (unsigned Index = 0; Index != 2; ++Index) {
+    QuotaActive[Index].store(0, std::memory_order_relaxed);
+    QuotaMaximum[Index].store(0, std::memory_order_relaxed);
+    QuotaStarted[Index].store(0, std::memory_order_relaxed);
+  }
+
+  auto InvokeQuotaTool = [](const char *Index) {
+    return invokeTool(+[] {}, quotaToolMain, {"quota-tool", Index});
+  };
+  int FirstResult = -1;
+  int SecondResult = -1;
+  std::thread First([&] { FirstResult = InvokeQuotaTool("0"); });
+  std::thread Second([&] { SecondResult = InvokeQuotaTool("1"); });
+
+  while (QuotaSubmitted.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+  auto Deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((QuotaStarted[0].load(std::memory_order_acquire) < 1 ||
+          QuotaStarted[1].load(std::memory_order_acquire) < 2) &&
+         std::chrono::steady_clock::now() < Deadline)
+    std::this_thread::yield();
+  const bool ReachedExpectedConcurrency =
+      QuotaStarted[0].load(std::memory_order_acquire) >= 1 &&
+      QuotaStarted[1].load(std::memory_order_acquire) >= 2;
+  ReleaseQuotaWork.store(true, std::memory_order_release);
+  First.join();
+  Second.join();
+
+  return ReachedExpectedConcurrency && FirstResult == 0 &&
+         SecondResult == 0 &&
+         QuotaMaximum[0].load(std::memory_order_relaxed) == 1 &&
+         QuotaMaximum[1].load(std::memory_order_relaxed) <= 2;
+}
+
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+static std::vector<std::string>
+clangArguments(const fs::path &Input, const fs::path &Output,
+               const char *OptimizationLevel) {
+  return {"clang", "-cc1", "-triple", LLVM_DRIVER_TEST_CLANG_TRIPLE,
+          "-emit-obj", OptimizationLevel, "-o", Output.string(),
+          Input.string()};
+}
+#endif
+
+static bool isNonEmptyFile(const fs::path &Path) {
+  std::error_code EC;
+  uintmax_t Size = fs::file_size(Path, EC);
+  return !EC && Size != 0;
+}
+
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+static bool testConcurrentClang(const fs::path &Root) {
+  fs::path FirstInput = Root / "clang-first.c";
+  fs::path SecondInput = Root / "clang-second.c";
+  fs::path FirstOutput = Root / "clang-first.o";
+  fs::path SecondOutput = Root / "clang-second.o";
+  fs::path ReusedOutput = Root / "clang-reused.o";
+  if (!writeFile(FirstInput, "int first(void) { return 1; }\n") ||
+      !writeFile(SecondInput, "int second(void) { return 2; }\n"))
+    return false;
+
+  std::vector<std::string> FirstArgs =
+      clangArguments(FirstInput, FirstOutput, "-O0");
+  std::vector<std::string> SecondArgs =
+      clangArguments(SecondInput, SecondOutput, "-O2");
+  std::atomic<unsigned> Ready{0};
+  std::atomic<bool> Start{false};
+  int FirstResult = -1;
+  int SecondResult = -1;
+  auto Run = [&](std::vector<std::string> &Args, int &Result) {
+    Ready.fetch_add(1, std::memory_order_release);
+    while (!Start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    Result = invokeClang(Args);
+  };
+
+  std::thread FirstThread(Run, std::ref(FirstArgs), std::ref(FirstResult));
+  std::thread SecondThread(Run, std::ref(SecondArgs), std::ref(SecondResult));
+  while (Ready.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+  Start.store(true, std::memory_order_release);
+  FirstThread.join();
+  SecondThread.join();
+
+  if (FirstResult != 0 || SecondResult != 0 ||
+      !isNonEmptyFile(FirstOutput) || !isNonEmptyFile(SecondOutput))
+    return false;
+  return invokeClang(clangArguments(FirstInput, ReusedOutput, "-O1")) == 0 &&
+         isNonEmptyFile(ReusedOutput);
+}
+#endif
+
 static std::vector<std::string>
 machOArguments(const fs::path &Input, const fs::path &Output,
                const fs::path &Map) {
@@ -214,12 +457,6 @@ static bool invokeLldConcurrently(std::vector<std::string> FirstArgs,
   FirstThread.join();
   SecondThread.join();
   return FirstResult == 0 && SecondResult == 0;
-}
-
-static bool isNonEmptyFile(const fs::path &Path) {
-  std::error_code EC;
-  uintmax_t Size = fs::file_size(Path, EC);
-  return !EC && Size != 0;
 }
 
 static bool testLldSequentialAndConcurrent(const fs::path &Root,
@@ -270,11 +507,11 @@ int main(int Argc, char **Argv) {
     return 1;
   }
 
-  // llvm.exe performs process-wide target registration before two folded
-  // invocations can overlap. Match the subset llvm-ar itself consumes.
-  llvm::InitializeAllTargetInfos();
-  llvm::InitializeAllTargetMCs();
-  llvm::InitializeAllAsmParsers();
+  if (!testColdProcessInitialization()) {
+    std::fputs("cold process initialization failed\n", stderr);
+    return 1;
+  }
+  std::puts("cold-process-initialization=ok");
 
   fs::path Root(Argv[1]);
   if (!testSequentialReset(Root)) {
@@ -288,6 +525,22 @@ int main(int Argc, char **Argv) {
     return 1;
   }
   std::puts("concurrent-same-tool=ok");
+
+  if (!testSharedExecutorInvocationQuotas()) {
+    std::fputs("shared executor invocation quotas failed\n", stderr);
+    return 1;
+  }
+  std::puts("shared-executor-quotas=ok");
+
+#ifdef LLVM_DRIVER_TEST_CLANG_TRIPLE
+  if (!testConcurrentClang(Root)) {
+    std::fputs("concurrent folded Clang invocation failed\n", stderr);
+    return 1;
+  }
+  std::puts("clang-concurrent=ok");
+#else
+  std::puts("clang-concurrent=unavailable");
+#endif
 
   if (!testLldSequentialAndConcurrent(Root, Argv[2], Argv[3])) {
     std::fputs("folded LLD sequential/concurrent invocation failed\n", stderr);

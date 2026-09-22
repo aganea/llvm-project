@@ -7,8 +7,11 @@
 # RUN: llvm-driver-per-invocation-test %t %t/macho.o %t/wasm.o > %t.out
 # RUN: FileCheck %s < %t.out
 
-# CHECK: sequential-reset=ok
+# CHECK: cold-process-initialization=ok
+# CHECK-NEXT: sequential-reset=ok
 # CHECK-NEXT: concurrent-same-tool=ok
+# CHECK-NEXT: shared-executor-quotas=ok
+# CHECK-NEXT: clang-concurrent={{ok|unavailable}}
 # CHECK-NEXT: lld-sequential-concurrent=ok
 
 #--- macho.s

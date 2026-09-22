@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/HTTP/HTTPClient.h"
@@ -14,12 +13,15 @@
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/Driver.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ProcessWideRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/Threading.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
-#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation, process_initialization)  \
   int entry##_main(int argc, char **argv, const llvm::ToolContext &);
 #include "LLVMDriverTools.def"
 
@@ -27,21 +29,95 @@ using namespace llvm;
 // globals, so an unconditional declaration would be an undefined reference.
 #define LLVM_DRIVER_LIFECYCLE_DECL_0(entry)
 #define LLVM_DRIVER_LIFECYCLE_DECL_1(entry) void entry##_init_lifecycle();
-#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation, process_initialization)  \
   LLVM_DRIVER_LIFECYCLE_DECL_##per_invocation(entry)
 #include "LLVMDriverTools.def"
 
-// Targets and their components are an immutable process-wide catalog. In
-// per-invocation mode, populate it before any invocation can overlap. Tool
-// entry points may still repeat these calls; TargetRegistry makes identical
-// component registrations synchronized no-ops.
-static constexpr bool HasPerInvocationGlobals =
-#define LLVM_DRIVER_TOOL(tool, entry, per_invocation) per_invocation ||
-#include "LLVMDriverTools.def"
-    false;
+#if LLVM_DRIVER_HAS_PROCESS_INITIALIZATION
+static llvm::once_flag LLVMDriverProcessInitializationFlag;
+
+static void initializeLLVMDriverProcessState() {
+  llvm::call_once(LLVMDriverProcessInitializationFlag, [] {
+    // A catalog-using tool may be called synchronously by an already-running
+    // lightweight tool. Process initialization must not borrow that outer
+    // invocation's arena or command-line context. Mask both bindings so any
+    // accidental arena dependency fails closed and command-line registration
+    // remains process-owned.
+    llvm::ScopedToolExecutionContext NeutralContext{
+        llvm::ToolExecutionContext()};
+
+    // The generated dispatch classification keeps target and CodeGen catalog
+    // consumers behind this call_once. Other tools may already be running, so
+    // permit only this bootstrap thread to perform the audited late writes.
+    llvm::ProcessWideRegistryBootstrap Bootstrap;
+
+    // Targets and their components are an immutable process-wide catalog.
+    // Populate them before the first target-using invocation installs its
+    // context. Registration is internally synchronized, so this first use may
+    // overlap a lightweight tool whose finalized closure cannot consume the
+    // target or CodeGen catalogs.
+#if LLVM_DRIVER_HAS_TARGETS
+    llvm::InitializeAllTargets();
+#elif LLVM_DRIVER_HAS_TARGET_INFOS
+    llvm::InitializeAllTargetInfos();
+#endif
+#if LLVM_DRIVER_HAS_TARGET_MCS
+    llvm::InitializeAllTargetMCs();
+#endif
+#if LLVM_DRIVER_HAS_TARGET_MCAS
+    llvm::InitializeAllTargetMCAs();
+#endif
+#if LLVM_DRIVER_HAS_ASM_PRINTERS
+    llvm::InitializeAllAsmPrinters();
+#endif
+#if LLVM_DRIVER_HAS_ASM_PARSERS
+    llvm::InitializeAllAsmParsers();
+#endif
+#if LLVM_DRIVER_HAS_DISASSEMBLERS
+    llvm::InitializeAllDisassemblers();
+#endif
+
+#if LLVM_DRIVER_HAS_CORE_PASSES || LLVM_DRIVER_HAS_CODEGEN_PASSES ||           \
+    LLVM_DRIVER_HAS_SCALAR_PASSES || LLVM_DRIVER_HAS_IPO_PASSES ||             \
+    LLVM_DRIVER_HAS_VECTORIZE_PASSES || LLVM_DRIVER_HAS_TRANSFORM_UTILS_PASSES
+    // LTO backends still construct legacy IR and CodeGen passes. Register the
+    // linked subset of llc's production pass set before a nested linker
+    // invocation can start worker threads.
+    llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
+#endif
+#if LLVM_DRIVER_HAS_CORE_PASSES
+    llvm::initializeCore(Registry);
+#endif
+#if LLVM_DRIVER_HAS_CODEGEN_PASSES
+    llvm::initializeCodeGen(Registry);
+#endif
+#if LLVM_DRIVER_HAS_SCALAR_PASSES
+    llvm::initializeScalarOpts(Registry);
+#endif
+#if LLVM_DRIVER_HAS_IPO_PASSES
+    llvm::initializeIPO(Registry);
+#endif
+#if LLVM_DRIVER_HAS_VECTORIZE_PASSES
+    llvm::initializeVectorization(Registry);
+#endif
+#if LLVM_DRIVER_HAS_TRANSFORM_UTILS_PASSES
+    llvm::initializeTransformUtils(Registry);
+#endif
+  });
+}
+
+#define LLVM_DRIVER_PROCESS_INITIALIZATION(requires_initialization)            \
+  do {                                                                         \
+    if constexpr (requires_initialization)                                     \
+      initializeLLVMDriverProcessState();                                      \
+  } while (false)
+#else
+#define LLVM_DRIVER_PROCESS_INITIALIZATION(requires_initialization)
+#endif
 
 constexpr char subcommands[] =
-#define LLVM_DRIVER_TOOL(tool, entry, per_invocation) "  " tool "\n"
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation, process_initialization)  \
+  "  " tool "\n"
 #include "LLVMDriverTools.def"
     ;
 
@@ -59,14 +135,21 @@ int main(int Argc, char **Argv) {
   const CallableTool Tools[] = {
 #define LLVM_DRIVER_LIFECYCLE_INIT_0(entry) nullptr
 #define LLVM_DRIVER_LIFECYCLE_INIT_1(entry) entry##_init_lifecycle
-#define LLVM_DRIVER_TOOL(tool, entry, per_invocation)                          \
+#define LLVM_DRIVER_TOOL(tool, entry, per_invocation, process_initialization)  \
   {tool, [](int Argc, char **Argv, const ToolContext &Context) {               \
+     LLVM_DRIVER_PROCESS_INITIALIZATION(process_initialization);               \
      return runLLVMDriverTool(                                                 \
          LLVM_DRIVER_LIFECYCLE_INIT_##per_invocation(entry), entry##_main,     \
          Argc, Argv, Context);                                                 \
    }},
 #include "LLVMDriverTools.def"
   };
+
+  // curl_global_init was not guaranteed thread-safe before libcurl 7.84.
+  // Preserve lazy initialization on capable libcurl and WinHTTP builds, but
+  // initialize older libcurl while llvm-driver is still single-threaded.
+  if (HTTPClient::isAvailable() && !HTTPClient::isInitializationThreadSafe())
+    HTTPClient::initialize();
 
   ToolSession Session(Argc, Argv, Tools);
 
@@ -87,35 +170,5 @@ int main(int Argc, char **Argv) {
     return *Result;
   };
 
-  if constexpr (HasPerInvocationGlobals) {
-    // HTTP is a process-wide runtime service.  Initialize it once on the
-    // startup thread so folded tools may use independent clients concurrently
-    // without racing their otherwise-idempotent initialize() calls.
-    llvm::HTTPClient::initialize();
-    llvm::scope_exit HTTPClientCleanup([] { llvm::HTTPClient::cleanup(); });
-
-    llvm::InitializeAllTargets();
-    llvm::InitializeAllTargetMCs();
-    llvm::InitializeAllAsmPrinters();
-    llvm::InitializeAllAsmParsers();
-    llvm::InitializeAllDisassemblers();
-    // LTO backends still construct legacy IR and CodeGen passes. Register the
-    // same production pass set as llc before a nested linker invocation can
-    // start worker threads; lazy registration from one of those workers would
-    // mutate the process-wide registry while invocation contexts are active.
-    llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
-    llvm::initializeCore(Registry);
-    llvm::initializeCodeGen(Registry);
-    llvm::initializeLoopStrengthReducePass(Registry);
-    llvm::initializePostInlineEntryExitInstrumenterPass(Registry);
-    llvm::initializeUnreachableBlockElimLegacyPassPass(Registry);
-    llvm::initializeConstantHoistingLegacyPassPass(Registry);
-    llvm::initializeScalarOpts(Registry);
-    llvm::initializeIPO(Registry);
-    llvm::initializeVectorization(Registry);
-    llvm::initializeScalarizeMaskedMemIntrinLegacyPassPass(Registry);
-    llvm::initializeTransformUtils(Registry);
-    return RunTool();
-  }
   return RunTool();
 }

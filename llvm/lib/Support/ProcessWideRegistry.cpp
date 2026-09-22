@@ -15,6 +15,8 @@
 using namespace llvm;
 
 namespace {
+thread_local unsigned RegistryBootstrapDepth = 0;
+
 struct InvocationPolicyState {
   std::mutex Mutex;
   unsigned ActiveContexts = 0;
@@ -30,6 +32,19 @@ InvocationPolicyState &invocationPolicyState() {
   return *State;
 }
 } // namespace
+
+ProcessWideRegistryBootstrap::ProcessWideRegistryBootstrap() {
+  ++RegistryBootstrapDepth;
+  Acquired = true;
+}
+
+ProcessWideRegistryBootstrap::~ProcessWideRegistryBootstrap() {
+  if (!Acquired)
+    return;
+  if (RegistryBootstrapDepth == 0)
+    report_fatal_error("process-wide registry bootstrap underflow");
+  --RegistryBootstrapDepth;
+}
 
 namespace llvm::detail {
 void registerExplicitInvocationContext() {
@@ -157,9 +172,9 @@ ProcessWideRegistryMutation::ProcessWideRegistryMutation(
   } Err = Error::None;
   if (State.RegistryFreezes != 0)
     Err = Error::RegistryIsFrozen;
-  else if (State.ClosingContexts != 0)
+  else if (State.ClosingContexts != 0 && RegistryBootstrapDepth == 0)
     Err = Error::ContextIsClosing;
-  else if (State.ActiveContexts > 1)
+  else if (State.ActiveContexts > 1 && RegistryBootstrapDepth == 0)
     Err = Error::MultipleInvocations;
 
   if (Err != Error::None)

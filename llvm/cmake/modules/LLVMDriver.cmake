@@ -455,9 +455,17 @@ function(llvm_configure_driver_per_invocation_library name)
   add_library(${driver_per_invocation_target} STATIC EXCLUDE_FROM_ALL
     ${ARG_SOURCES})
 
-  # Read compile properties from the normal target through generator
-  # expressions so flags added by its CMakeLists after add_llvm_library() are
-  # preserved by the driver-private copy.
+  # Object-backed libraries compile their ordinary sources in obj.<name>; the
+  # archive target is only a wrapper and deliberately lacks flags such as the
+  # LLVM RTTI/EH policy.  Mirror the target that actually compiles the sources.
+  set(driver_per_invocation_compile_target ${name})
+  if(TARGET "obj.${name}")
+    set(driver_per_invocation_compile_target "obj.${name}")
+  endif()
+
+  # Read compile properties through generator expressions so flags added by
+  # the library's CMakeLists after add_llvm_library() are preserved by the
+  # driver-private copy.
   foreach(prop
       COMPILE_DEFINITIONS
       COMPILE_FEATURES
@@ -465,10 +473,12 @@ function(llvm_configure_driver_per_invocation_library name)
       INCLUDE_DIRECTORIES
       SYSTEM_INCLUDE_DIRECTORIES)
     set_property(TARGET ${driver_per_invocation_target} PROPERTY ${prop}
-      "$<TARGET_PROPERTY:${name},${prop}>")
+      "$<TARGET_PROPERTY:${driver_per_invocation_compile_target},${prop}>")
   endforeach()
+  # Producer PCHs were built without -fstatic-arena and must not be reused.
 
   target_compile_options(${driver_per_invocation_target} PRIVATE
+    "SHELL:$<TARGET_PROPERTY:${driver_per_invocation_compile_target},COMPILE_FLAGS>"
     "SHELL:-Xclang -fstatic-arena=${driver_lifecycle_section}"
     "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
   set_property(TARGET ${driver_per_invocation_target} PROPERTY
@@ -582,7 +592,134 @@ function(llvm_finalize_driver_per_invocation_graph driver_target)
   llvm_finalize_driver_per_invocation_libraries()
   get_property(driver_tools GLOBAL PROPERTY LLVM_DRIVER_TOOLS)
   set(driver_final_per_invocation_tools)
+  set(driver_process_initialization_tools)
+  set(driver_process_initialization_capabilities)
   set(driver_runner_library_closure)
+
+  # Target and legacy-pass registration is process-wide and must finish before
+  # target-using invocations are allowed to overlap.  Keep the provider groups
+  # separate: a restricted distribution can, for example, link every target's
+  # Info/Desc/AsmParser library without linking any CodeGen, MCA, printer or
+  # disassembler implementation.  InitializeAll* is safe only when its whole
+  # configured provider group is present in the final image.
+  llvm_map_components_to_libnames(driver_process_target_info_libraries
+    AllTargetsInfos)
+  llvm_map_components_to_libnames(driver_process_target_mc_libraries
+    AllTargetsDescs)
+  llvm_map_components_to_libnames(driver_process_target_mca_libraries
+    AllTargetsMCAs)
+  llvm_map_components_to_libnames(driver_process_asm_parser_libraries
+    AllTargetsAsmParsers)
+  llvm_map_components_to_libnames(driver_process_target_codegen_libraries
+    AllTargetsCodeGens)
+  llvm_map_components_to_libnames(driver_process_disassembler_libraries
+    AllTargetsDisassemblers)
+
+  # Asm-printer implementations normally live in the target CodeGen archive;
+  # retain support for a target which splits them into a dedicated component.
+  # Match the same source predicate used to generate AsmPrinters.def.
+  set(driver_process_asm_printer_libraries)
+  foreach(driver_llvm_target ${LLVM_TARGETS_TO_BUILD})
+    file(GLOB driver_target_asm_printer_sources
+      "${LLVM_MAIN_SRC_DIR}/lib/Target/${driver_llvm_target}/*AsmPrinter.cpp")
+    if(NOT driver_target_asm_printer_sources)
+      continue()
+    endif()
+    if(TARGET LLVM${driver_llvm_target}AsmPrinter)
+      list(APPEND driver_process_asm_printer_libraries
+        LLVM${driver_llvm_target}AsmPrinter)
+    elseif(TARGET LLVM${driver_llvm_target}CodeGen)
+      list(APPEND driver_process_asm_printer_libraries
+        LLVM${driver_llvm_target}CodeGen)
+    elseif(TARGET LLVM${driver_llvm_target})
+      list(APPEND driver_process_asm_printer_libraries
+        LLVM${driver_llvm_target})
+    else()
+      message(FATAL_ERROR
+        "configured LLVM target ${driver_llvm_target} has an asm printer but "
+        "no provider library")
+    endif()
+  endforeach()
+
+  # InitializeAllTargets also initializes every TargetInfo.
+  set(driver_process_target_libraries
+    ${driver_process_target_codegen_libraries}
+    ${driver_process_target_info_libraries})
+  # Unlike InitializeAllTargets(), the legacy-pass initialization entry points
+  # are independently linkable.  Keep one capability per provider so a
+  # minimal folded image containing LLVMCore does not also have to link every
+  # CodeGen and transform library.
+  llvm_map_components_to_libnames(driver_process_core_pass_libraries Core)
+  llvm_map_components_to_libnames(driver_process_codegen_pass_libraries
+    CodeGen)
+  llvm_map_components_to_libnames(driver_process_scalar_pass_libraries
+    ScalarOpts)
+  llvm_map_components_to_libnames(driver_process_ipo_pass_libraries IPO)
+  llvm_map_components_to_libnames(driver_process_vectorize_pass_libraries
+    Vectorize)
+  llvm_map_components_to_libnames(driver_process_transform_utils_pass_libraries
+    TransformUtils)
+  set(driver_process_legacy_pass_libraries
+    ${driver_process_core_pass_libraries}
+    ${driver_process_codegen_pass_libraries}
+    ${driver_process_scalar_pass_libraries}
+    ${driver_process_ipo_pass_libraries}
+    ${driver_process_vectorize_pass_libraries}
+    ${driver_process_transform_utils_pass_libraries})
+
+  set(driver_process_initialization_provider_libraries
+    ${driver_process_target_info_libraries}
+    ${driver_process_target_mc_libraries}
+    ${driver_process_target_mca_libraries}
+    ${driver_process_asm_parser_libraries}
+    ${driver_process_target_libraries}
+    ${driver_process_asm_printer_libraries}
+    ${driver_process_disassembler_libraries}
+    ${driver_process_legacy_pass_libraries})
+  list(REMOVE_DUPLICATES driver_process_initialization_provider_libraries)
+
+  # Libraries which consult TargetRegistry are consumers even when their own
+  # archive is not a registration provider.  Classifying them conservatively
+  # keeps the bit-0 set limited to utilities whose final closure is known not
+  # to observe a catalog while another invocation may be populating it.
+  set(driver_process_initialization_consumer_libraries
+    LLVMAsmPrinter
+    LLVMBitWriter
+    LLVMCodeGen
+    LLVMDebugInfoDWARF
+    LLVMDebugInfoLogicalView
+    LLVMDWARFCFIChecker
+    LLVMDWARFLinker
+    LLVMDWARFLinkerClassic
+    LLVMDWARFLinkerParallel
+    LLVMExecutionEngine
+    LLVMInterpreter
+    LLVMJITLink
+    LLVMMC
+    LLVMMCDisassembler
+    LLVMMCJIT
+    LLVMObject
+    LLVMOrcDebugging
+    LLVMOrcJIT
+    LLVMOrcShared
+    LLVMOrcTargetProcess
+    LLVMPasses
+    LLVMRuntimeDyld
+    LLVMFrontendOpenMP
+    LLVMLTO
+    LLVMTarget
+    LLVMTextAPI
+    LLVMipo)
+
+  # New folded tools default to the safe side of the process-initialization
+  # boundary. Only these audited utilities may avoid first-use target/pass
+  # setup, and even they lose that exemption automatically if their finalized
+  # closure acquires a known catalog provider or consumer. This makes the
+  # consumer list a check on a tiny allowlist rather than the safety boundary
+  # for every tool added to llvm-driver in the future.
+  set(driver_process_initialization_lightweight_tools
+    llvm-cxxfilt
+    llvm-remarkutil)
 
   # Rewrite every aggregate-driver edge before inspecting it so normal archives
   # cannot win extraction ahead of their driver-private copy.  Do not infer the
@@ -662,6 +799,59 @@ function(llvm_finalize_driver_per_invocation_graph driver_target)
     llvm_collect_driver_per_invocation_library_closure(
       driver_tool_local_closure
       ${driver_tool_link_items} ${driver_tool_interface_items})
+
+    # Image-shared roots are deliberately absent from a folded tool's normal
+    # link interface. A tool which actually executes one may declare that
+    # association explicitly so process-registry classification sees the
+    # root's closure without conservatively charging it to every tool in the
+    # aggregate image.
+    get_property(driver_tool_process_initialization_shared_roots
+      TARGET obj.${driver_tool} PROPERTY
+        LLVM_DRIVER_PROCESS_INITIALIZATION_SHARED_LINK_ROOTS)
+    if(driver_tool_process_initialization_shared_roots MATCHES "-NOTFOUND$")
+      set(driver_tool_process_initialization_shared_roots)
+    endif()
+    foreach(driver_tool_process_initialization_shared_root
+        ${driver_tool_process_initialization_shared_roots})
+      if(NOT driver_tool_process_initialization_shared_root IN_LIST
+          driver_direct_link_roots)
+        message(FATAL_ERROR
+          "llvm-driver tool ${driver_tool} declares non-shared process "
+          "initialization root "
+          "${driver_tool_process_initialization_shared_root}")
+      endif()
+    endforeach()
+    llvm_collect_driver_per_invocation_library_closure(
+      driver_tool_process_initialization_shared_closure
+      ${driver_tool_process_initialization_shared_roots})
+    set(driver_tool_process_initialization_closure
+      ${driver_tool_local_closure}
+      ${driver_tool_process_initialization_shared_closure})
+    list(REMOVE_DUPLICATES driver_tool_process_initialization_closure)
+
+    # Run process catalog setup outside this tool's invocation context. New
+    # tools require it by default; only the audited lightweight allowlist can
+    # opt out. Deliberately inspect the tool-local closure plus only its
+    # explicitly associated shared roots: an image-shared service such as
+    # Debuginfod does not make an otherwise lightweight utility a target user.
+    set(driver_tool_requires_process_initialization TRUE)
+    if(driver_tool IN_LIST driver_process_initialization_lightweight_tools)
+      set(driver_tool_requires_process_initialization FALSE)
+      foreach(driver_tool_library
+          ${driver_tool_process_initialization_closure})
+        if(driver_tool_library IN_LIST
+             driver_process_initialization_provider_libraries OR
+           driver_tool_library IN_LIST
+             driver_process_initialization_consumer_libraries)
+          set(driver_tool_requires_process_initialization TRUE)
+          break()
+        endif()
+      endforeach()
+    endif()
+    if(driver_tool_requires_process_initialization)
+      list(APPEND driver_process_initialization_tools ${driver_tool})
+    endif()
+
     list(APPEND driver_attributed_library_closure
       ${driver_tool_local_closure})
     # Direct driver roots are image-shared.  Merge their authoritative closure
@@ -800,6 +990,9 @@ function(llvm_finalize_driver_per_invocation_graph driver_target)
   list(REMOVE_DUPLICATES driver_final_per_invocation_tools)
   set_property(GLOBAL PROPERTY LLVM_DRIVER_PER_INVOCATION_TOOLS
     "${driver_final_per_invocation_tools}")
+  list(REMOVE_DUPLICATES driver_process_initialization_tools)
+  set_property(GLOBAL PROPERTY LLVM_DRIVER_PROCESS_INITIALIZATION_TOOLS
+    "${driver_process_initialization_tools}")
 
   # One final walk is deliberately redundant with the per-tool walks.  It
   # catches a direct llvm-driver dependency that was not attached to an object
@@ -812,6 +1005,139 @@ function(llvm_finalize_driver_per_invocation_graph driver_target)
   llvm_collect_driver_per_invocation_library_closure(driver_image_closure
     ${driver_link_items} ${driver_interface_items})
   list(REMOVE_DUPLICATES driver_image_closure)
+
+  # Record complete target catalog groups and each independently linkable pass
+  # provider. The generated driver uses these as compile-time guards, so a
+  # minimal folded image never gains an undefined reference merely because a
+  # different catalog family is present.
+  foreach(driver_process_capability IN ITEMS
+      target_infos
+      target_mcs
+      target_mcas
+      asm_parsers
+      targets
+      asm_printers
+      disassemblers
+      core_passes
+      codegen_passes
+      scalar_passes
+      ipo_passes
+      vectorize_passes
+      transform_utils_passes)
+    if(driver_process_capability STREQUAL "target_infos")
+      set(driver_process_capability_libraries
+        ${driver_process_target_info_libraries})
+    elseif(driver_process_capability STREQUAL "target_mcs")
+      set(driver_process_capability_libraries
+        ${driver_process_target_mc_libraries})
+    elseif(driver_process_capability STREQUAL "target_mcas")
+      set(driver_process_capability_libraries
+        ${driver_process_target_mca_libraries})
+    elseif(driver_process_capability STREQUAL "asm_parsers")
+      set(driver_process_capability_libraries
+        ${driver_process_asm_parser_libraries})
+    elseif(driver_process_capability STREQUAL "targets")
+      set(driver_process_capability_libraries
+        ${driver_process_target_libraries})
+    elseif(driver_process_capability STREQUAL "asm_printers")
+      set(driver_process_capability_libraries
+        ${driver_process_asm_printer_libraries})
+    elseif(driver_process_capability STREQUAL "disassemblers")
+      set(driver_process_capability_libraries
+        ${driver_process_disassembler_libraries})
+    elseif(driver_process_capability STREQUAL "core_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_core_pass_libraries})
+    elseif(driver_process_capability STREQUAL "codegen_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_codegen_pass_libraries})
+    elseif(driver_process_capability STREQUAL "scalar_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_scalar_pass_libraries})
+    elseif(driver_process_capability STREQUAL "ipo_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_ipo_pass_libraries})
+    elseif(driver_process_capability STREQUAL "vectorize_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_vectorize_pass_libraries})
+    elseif(driver_process_capability STREQUAL "transform_utils_passes")
+      set(driver_process_capability_libraries
+        ${driver_process_transform_utils_pass_libraries})
+    endif()
+
+    if(NOT driver_process_capability_libraries)
+      continue()
+    endif()
+
+    # A TargetInfo-only image has no Target implementations to initialize, so
+    # do not classify it as a partial `targets` group merely because that
+    # capability also depends on TargetInfo. Once any CodeGen provider is
+    # present, however, the complete configured Target+TargetInfo group is
+    # required. Other capabilities use their provider list directly.
+    if(driver_process_capability STREQUAL "targets")
+      set(driver_process_presence_libraries
+        ${driver_process_target_codegen_libraries})
+    else()
+      set(driver_process_presence_libraries
+        ${driver_process_capability_libraries})
+    endif()
+
+    set(driver_process_has_any_capability_provider FALSE)
+    set(driver_process_present_capability_libraries)
+    foreach(driver_process_presence_library
+        ${driver_process_presence_libraries})
+      if(driver_process_presence_library IN_LIST driver_image_closure)
+        set(driver_process_has_any_capability_provider TRUE)
+        list(APPEND driver_process_present_capability_libraries
+          ${driver_process_presence_library})
+      endif()
+    endforeach()
+
+    set(driver_process_has_complete_capability TRUE)
+    set(driver_process_missing_capability_libraries)
+    foreach(driver_process_capability_library
+        ${driver_process_capability_libraries})
+      if(NOT driver_process_capability_library IN_LIST driver_image_closure)
+        set(driver_process_has_complete_capability FALSE)
+        list(APPEND driver_process_missing_capability_libraries
+          ${driver_process_capability_library})
+      endif()
+    endforeach()
+
+    # The dispatch table has one process-initialization once_flag. Silently
+    # omitting a partial InitializeAll* target family would permanently
+    # complete that once while leaving a folded tool to perform
+    # InitializeNative* inside its invocation context. Reject that
+    # configuration instead of permitting a late process-registry mutation
+    # when invocations overlap. Pass-provider capabilities each contain one
+    # independently linkable archive and therefore cannot be partial.
+    if(driver_process_has_any_capability_provider AND
+       NOT driver_process_has_complete_capability)
+      string(REPLACE ";" ", " driver_process_present_capability_text
+        "${driver_process_present_capability_libraries}")
+      string(REPLACE ";" ", " driver_process_missing_capability_text
+        "${driver_process_missing_capability_libraries}")
+      message(FATAL_ERROR
+        "LLVM_DRIVER_PER_INVOCATION_GLOBALS=ON cannot safely build "
+        "llvm-driver with a partial ${driver_process_capability} process "
+        "initialization provider group.\n"
+        "  present: ${driver_process_present_capability_text}\n"
+        "  missing: ${driver_process_missing_capability_text}\n"
+        "Align LLVM_TARGETS_TO_BUILD and the folded tool/library closure so "
+        "the image contains either none or all providers in this group.")
+    endif()
+
+    if(driver_process_has_complete_capability)
+      string(TOUPPER "${driver_process_capability}"
+        driver_process_capability_name)
+      list(APPEND driver_process_initialization_capabilities
+        ${driver_process_capability_name})
+    endif()
+  endforeach()
+  set_property(GLOBAL PROPERTY
+    LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES
+    "${driver_process_initialization_capabilities}")
+
   list(REMOVE_DUPLICATES driver_attributed_library_closure)
   list(REMOVE_DUPLICATES driver_runner_library_closure)
   foreach(driver_image_library ${driver_image_closure})

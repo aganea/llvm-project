@@ -28,6 +28,20 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
   set_property(TARGET llvm-driver APPEND PROPERTY
     LLVM_DRIVER_PER_INVOCATION_SHARED_LINK_ROOTS
     ${LLVM_DRIVER_DEBUGINFOD_TARGET})
+  # The root is linked once by the aggregate, so llvm-debuginfod's object
+  # target has no ordinary edge from which the graph finalizer can infer that
+  # it executes this code. Associate only that actual consumer with the shared
+  # closure for process-registry initialization classification. Other tools
+  # must not inherit the root merely because it is present in the image.
+  if(llvm-debuginfod IN_LIST LLVM_DRIVER_TOOLS)
+    if(NOT TARGET obj.llvm-debuginfod)
+      message(FATAL_ERROR
+        "folded llvm-debuginfod has no object target")
+    endif()
+    set_property(TARGET obj.llvm-debuginfod APPEND PROPERTY
+      LLVM_DRIVER_PROCESS_INITIALIZATION_SHARED_LINK_ROOTS
+      ${LLVM_DRIVER_DEBUGINFOD_TARGET})
+  endif()
 else()
   target_link_libraries(llvm-driver PUBLIC LLVMDebuginfod)
 endif()
@@ -47,6 +61,13 @@ endif()
 # closure, so do not snapshot it before finalization.
 get_property(LLVM_DRIVER_PER_INVOCATION_TOOLS GLOBAL PROPERTY
   LLVM_DRIVER_PER_INVOCATION_TOOLS)
+get_property(LLVM_DRIVER_PROCESS_INITIALIZATION_TOOLS GLOBAL PROPERTY
+  LLVM_DRIVER_PROCESS_INITIALIZATION_TOOLS)
+get_property(LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES GLOBAL PROPERTY
+  LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES)
+if(LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES MATCHES "-NOTFOUND$")
+  set(LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES)
+endif()
 
 if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
   # Recompute the producer predicate from each tool object and the authoritative
@@ -96,21 +117,67 @@ foreach(tool ${LLVM_DRIVER_TOOLS})
   else()
     set(tool_per_invocation 0)
   endif()
+  # Fourth field: whether this tool conservatively requires the target and
+  # legacy-pass catalogs populated before its invocation context becomes
+  # visible to other threads. Only audited lightweight closures receive zero.
+  if("${tool}" IN_LIST LLVM_DRIVER_PROCESS_INITIALIZATION_TOOLS)
+    set(tool_process_initialization 1)
+  else()
+    set(tool_process_initialization 0)
+  endif()
   get_property(tool_aliases GLOBAL PROPERTY LLVM_DRIVER_TOOL_ALIASES_${tool})
   foreach(alias ${tool_aliases})
     set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_SYMLINKS ${alias})
     string(REPLACE "llvm-" "" alias ${alias})
-    set(def_decl "${def_decl}LLVM_DRIVER_TOOL(\"${alias}\", ${tool_entry}, ${tool_per_invocation})\n")
+    string(APPEND def_decl
+      "LLVM_DRIVER_TOOL(\"${alias}\", ${tool_entry}, "
+      "${tool_per_invocation}, ${tool_process_initialization})\n")
   endforeach()
   get_property(hidden_tool_aliases GLOBAL PROPERTY LLVM_DRIVER_HIDDEN_TOOL_ALIASES_${tool})
   foreach(alias ${hidden_tool_aliases})
     string(REPLACE "llvm-" "" alias ${alias})
-    set(def_decl "${def_decl}LLVM_DRIVER_TOOL(\"${alias}\", ${tool_entry}, ${tool_per_invocation})\n")
+    string(APPEND def_decl
+      "LLVM_DRIVER_TOOL(\"${alias}\", ${tool_entry}, "
+      "${tool_per_invocation}, ${tool_process_initialization})\n")
   endforeach()
 endforeach()
 
+set(driver_has_process_initialization 0)
+if(LLVM_DRIVER_PROCESS_INITIALIZATION_TOOLS)
+  set(driver_has_process_initialization 1)
+endif()
+set(driver_process_initialization_defines)
+foreach(driver_process_capability IN ITEMS
+    TARGET_INFOS
+    TARGET_MCS
+    TARGET_MCAS
+    ASM_PARSERS
+    TARGETS
+    ASM_PRINTERS
+    DISASSEMBLERS
+    CORE_PASSES
+    CODEGEN_PASSES
+    SCALAR_PASSES
+    IPO_PASSES
+    VECTORIZE_PASSES
+    TRANSFORM_UTILS_PASSES)
+  set(driver_has_process_capability 0)
+  if(driver_process_capability IN_LIST
+     LLVM_DRIVER_PROCESS_INITIALIZATION_CAPABILITIES)
+    set(driver_has_process_capability 1)
+  endif()
+  string(APPEND driver_process_initialization_defines
+    "#ifndef LLVM_DRIVER_HAS_${driver_process_capability}\n"
+    "#define LLVM_DRIVER_HAS_${driver_process_capability} "
+    "${driver_has_process_capability}\n"
+    "#endif\n")
+endforeach()
 file(WRITE
   "${CMAKE_CURRENT_BINARY_DIR}/LLVMDriverTools.def"
+  "#ifndef LLVM_DRIVER_HAS_PROCESS_INITIALIZATION\n"
+  "#define LLVM_DRIVER_HAS_PROCESS_INITIALIZATION ${driver_has_process_initialization}\n"
+  "#endif\n"
+  "${driver_process_initialization_defines}"
   "${def_decl}#undef LLVM_DRIVER_TOOL\n")
 
 macro(generate_driver_tool_targets)
