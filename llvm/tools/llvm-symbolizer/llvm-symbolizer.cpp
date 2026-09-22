@@ -43,7 +43,6 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
-#include <mutex>
 #include <string>
 
 using namespace llvm;
@@ -116,11 +115,10 @@ static void enableDebuginfod(LLVMSymbolizer &Symbolizer,
   Symbolizer.setBuildIDFetcher(std::make_unique<DebuginfodFetcher>(
       Args.getAllArgValues(OPT_debug_file_directory_EQ)));
   // HTTP is a process-wide runtime service, while the fetcher belongs to this
-  // symbolizer invocation. The folded driver initializes HTTP before dispatch;
-  // call_once also keeps direct embedders and the standalone executable
-  // race-free.
-  static std::once_flag HTTPClientInit;
-  std::call_once(HTTPClientInit, [] { HTTPClient::initialize(); });
+  // symbolizer invocation. LLVM serializes and makes initialization
+  // idempotent. The folded driver initializes old libcurl before threading;
+  // direct embedders must honor HTTPClient::isInitializationThreadSafe().
+  HTTPClient::initialize();
 }
 
 static StringRef getSpaceDelimitedWord(StringRef &Source) {

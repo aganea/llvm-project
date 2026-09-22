@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/HTTP/HTTPClient.h"
 #include "llvm/HTTP/HTTPServer.h"
 #include "llvm/Support/Error.h"
@@ -15,7 +16,39 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
+#include <atomic>
+#if LLVM_ENABLE_THREADS
+#include <thread>
+#endif
+
 using namespace llvm;
+
+TEST(HTTPClient, ConcurrentInitialize) {
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#else
+  if (!HTTPClient::isAvailable())
+    GTEST_SKIP() << "HTTP client support is unavailable";
+  if (!HTTPClient::isInitializationThreadSafe())
+    GTEST_SKIP() << "HTTP global initialization must precede threads";
+
+  HTTPClient::cleanup();
+  std::atomic<unsigned> Ready{0};
+  auto Initialize = [&] {
+    Ready.fetch_add(1, std::memory_order_release);
+    while (Ready.load(std::memory_order_acquire) != 2)
+      std::this_thread::yield();
+    HTTPClient::initialize();
+  };
+
+  std::thread First(Initialize);
+  std::thread Second(Initialize);
+  First.join();
+  Second.join();
+  EXPECT_TRUE(HTTPClient::isInitialized());
+  HTTPClient::cleanup();
+#endif
+}
 
 #ifdef LLVM_ENABLE_HTTPLIB
 
@@ -102,6 +135,40 @@ TEST_F(HTTPClientServerTest, Hello) {
   EXPECT_EQ(Handler.ResponseBody, Response.Body);
   EXPECT_EQ(Client.responseCode(), Response.Code);
   Server.stop();
+}
+
+TEST_F(HTTPClientServerTest, ConcurrentClients) {
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#else
+  HTTPServer Server;
+  EXPECT_THAT_ERROR(Server.get(UrlPathPattern, Handler), Succeeded());
+  Expected<unsigned> PortOrErr = Server.bind();
+  EXPECT_THAT_EXPECTED(PortOrErr, Succeeded());
+  unsigned Port = *PortOrErr;
+  DefaultThreadPool Pool(hardware_concurrency(1));
+  Pool.async([&]() { EXPECT_THAT_ERROR(Server.listen(), Succeeded()); });
+  std::string Url = "http://localhost:" + utostr(Port);
+
+  std::atomic<unsigned> Ready{0};
+  auto RequestOnce = [&] {
+    Ready.fetch_add(1, std::memory_order_release);
+    while (Ready.load(std::memory_order_acquire) != 2)
+      std::this_thread::yield();
+    HTTPRequest Request(Url);
+    StringHTTPResponseHandler ResponseHandler;
+    HTTPClient Client;
+    EXPECT_THAT_ERROR(Client.perform(Request, ResponseHandler), Succeeded());
+    EXPECT_EQ(ResponseHandler.ResponseBody, Response.Body);
+    EXPECT_EQ(Client.responseCode(), Response.Code);
+  };
+
+  std::thread First(RequestOnce);
+  std::thread Second(RequestOnce);
+  First.join();
+  Second.join();
+  Server.stop();
+#endif
 }
 
 TEST_F(HTTPClientServerTest, LambdaHandlerHello) {

@@ -63,15 +63,30 @@ public:
   HTTPClient();
   ~HTTPClient();
 
+  /// Legacy, non-atomic initialization snapshot. This field is not safe to
+  /// read concurrently with initialize() or cleanup(). New code should use
+  /// isInitialized(), which is safe to query concurrently with initialize().
   static bool IsInitialized;
+
+  /// Returns whether the process-wide HTTP service is initialized.
+  static bool isInitialized();
 
   /// Returns true only if LLVM has been compiled with a working HTTPClient.
   static bool isAvailable();
 
-  /// Must be called at the beginning of a program, while it is a single thread.
+  /// Returns whether initialize() may first be called after other threads have
+  /// started. This is false for libcurl versions which do not advertise
+  /// thread-safe global initialization. Query this during controlled process
+  /// startup, before allowing unrelated users to enter libcurl.
+  static bool isInitializationThreadSafe();
+
+  /// Initializes the process-wide HTTP service. Calls through LLVM are
+  /// serialized and idempotent. When isInitializationThreadSafe() is false,
+  /// the first call must still occur before the host starts other threads.
   static void initialize();
 
-  /// Must be called at the end of a program, while it is a single thread.
+  /// Must be called only after all HTTP clients and requests have finished.
+  /// It does not synchronize with live clients.
   static void cleanup();
 
   /// Sets the timeout for the entire request, in milliseconds. A zero or

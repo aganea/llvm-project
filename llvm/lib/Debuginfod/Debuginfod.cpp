@@ -237,12 +237,12 @@ Expected<std::string> getCachedOrDownloadArtifact(
     return createStringError(errc::io_error,
                              "No working HTTP client is available.");
 
-  if (!HTTPClient::IsInitialized)
+  if (!HTTPClient::isInitialized())
     return createStringError(
         errc::io_error,
         "A working HTTP client is available, but it is not initialized. To "
         "allow Debuginfod to make HTTP requests, call HTTPClient::initialize() "
-        "at the beginning of main.");
+        "before issuing requests.");
 
   HTTPClient Client;
   Client.setTimeout(Timeout);

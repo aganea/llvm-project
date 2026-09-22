@@ -16,6 +16,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -25,6 +26,10 @@
 #endif
 #ifdef _WIN32
 #include "llvm/Support/ConvertUTF.h"
+#endif
+#include <atomic>
+#if LLVM_ENABLE_THREADS
+#include <mutex>
 #endif
 
 using namespace llvm;
@@ -41,6 +46,23 @@ HTTPResponseHandler::~HTTPResponseHandler() = default;
 
 bool HTTPClient::IsInitialized = false;
 
+namespace {
+std::atomic<bool> HTTPClientInitialized{false};
+
+#if (defined(LLVM_ENABLE_CURL) || defined(_WIN32)) && LLVM_ENABLE_THREADS
+// HTTP global setup is a process service. Keep the synchronization primitive
+// alive through llvm_shutdown(), where HTTPClientCleanup calls cleanup().
+std::mutex &httpClientInitializationMutex() {
+  static auto *Mutex = new std::mutex();
+  return *Mutex;
+}
+#endif
+} // namespace
+
+bool HTTPClient::isInitialized() {
+  return HTTPClientInitialized.load(std::memory_order_acquire);
+}
+
 class HTTPClientCleanup {
 public:
   ~HTTPClientCleanup() { HTTPClient::cleanup(); }
@@ -51,17 +73,38 @@ ManagedStatic<HTTPClientCleanup> Cleanup;
 
 bool HTTPClient::isAvailable() { return true; }
 
+bool HTTPClient::isInitializationThreadSafe() {
+#if !LLVM_ENABLE_THREADS
+  return true;
+#elif LIBCURL_VERSION_NUM >= 0x075400
+  const curl_version_info_data *Version = curl_version_info(CURLVERSION_NOW);
+  return Version && (Version->features & CURL_VERSION_THREADSAFE);
+#else
+  return false;
+#endif
+}
+
 void HTTPClient::initialize() {
-  if (!IsInitialized) {
+#if LLVM_ENABLE_THREADS
+  std::lock_guard<std::mutex> Lock(httpClientInitializationMutex());
+#endif
+  if (!HTTPClientInitialized.load(std::memory_order_relaxed)) {
     curl_global_init(CURL_GLOBAL_ALL);
     IsInitialized = true;
+    HTTPClientInitialized.store(true, std::memory_order_release);
   }
+  // Pair process-lifetime lazy initialization with InitLLVM's llvm_shutdown().
+  (void)*Cleanup;
 }
 
 void HTTPClient::cleanup() {
-  if (IsInitialized) {
+#if LLVM_ENABLE_THREADS
+  std::lock_guard<std::mutex> Lock(httpClientInitializationMutex());
+#endif
+  if (HTTPClientInitialized.load(std::memory_order_relaxed)) {
     curl_global_cleanup();
     IsInitialized = false;
+    HTTPClientInitialized.store(false, std::memory_order_release);
   }
 }
 
@@ -95,8 +138,8 @@ static size_t curlWriteFunction(char *Contents, size_t Size, size_t NMemb,
 }
 
 HTTPClient::HTTPClient() {
-  assert(IsInitialized &&
-         "Must call HTTPClient::initialize() at the beginning of main().");
+  assert(isInitialized() &&
+         "Must call HTTPClient::initialize() before constructing a client.");
   if (Handle)
     return;
   Handle = curl_easy_init();
@@ -218,15 +261,26 @@ HTTPClient::~HTTPClient() { delete static_cast<WinHTTPSession *>(Handle); }
 
 bool HTTPClient::isAvailable() { return true; }
 
+bool HTTPClient::isInitializationThreadSafe() { return true; }
+
 void HTTPClient::initialize() {
-  if (!IsInitialized) {
+#if LLVM_ENABLE_THREADS
+  std::lock_guard<std::mutex> Lock(httpClientInitializationMutex());
+#endif
+  if (!HTTPClientInitialized.load(std::memory_order_relaxed)) {
     IsInitialized = true;
+    HTTPClientInitialized.store(true, std::memory_order_release);
   }
+  (void)*Cleanup;
 }
 
 void HTTPClient::cleanup() {
-  if (IsInitialized) {
+#if LLVM_ENABLE_THREADS
+  std::lock_guard<std::mutex> Lock(httpClientInitializationMutex());
+#endif
+  if (HTTPClientInitialized.load(std::memory_order_relaxed)) {
     IsInitialized = false;
+    HTTPClientInitialized.store(false, std::memory_order_release);
   }
 }
 
@@ -451,6 +505,8 @@ HTTPClient::HTTPClient() = default;
 HTTPClient::~HTTPClient() = default;
 
 bool HTTPClient::isAvailable() { return false; }
+
+bool HTTPClient::isInitializationThreadSafe() { return true; }
 
 void HTTPClient::initialize() {}
 
