@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/TargetParser/Host.h"
 #include <atomic>
@@ -496,10 +497,19 @@ class DirectoryBasedGlobalCompilationDatabase::BroadcastThread {
   struct Task {
     CDBLookupResult Lookup;
     Context Ctx;
+    llvm::ToolExecutionContext ToolContext;
   };
   std::deque<Task> Queue;
   std::optional<Task> ActiveTask;
-  std::thread Thread; // Must be last member.
+  bool Discarding = false; // Protected by Mu.
+  std::thread Thread;      // Must be last member.
+
+  static void destroyTask(Task &T) {
+    llvm::ScopedToolExecutionContext WithToolContext(std::move(T.ToolContext));
+    WithContext WithCtx(std::move(T.Ctx));
+    // Release task captures while their originating contexts are installed.
+    T.Lookup = {};
+  }
 
   // Thread body: this is just the basic queue procesing boilerplate.
   void run() {
@@ -511,7 +521,14 @@ class DirectoryBasedGlobalCompilationDatabase::BroadcastThread {
                !Queue.empty();
       });
       if (Stopping) {
-        Queue.clear();
+        Discarding = true;
+        std::deque<Task> Discarded;
+        Discarded.swap(Queue);
+        Lock.unlock();
+        for (Task &T : Discarded)
+          destroyTask(T);
+        Lock.lock();
+        Discarding = false;
         CV.notify_all();
         return;
       }
@@ -520,8 +537,11 @@ class DirectoryBasedGlobalCompilationDatabase::BroadcastThread {
 
       Lock.unlock();
       {
+        llvm::ScopedToolExecutionContext WithToolContext(
+            std::move(ActiveTask->ToolContext));
         WithContext WithCtx(std::move(ActiveTask->Ctx));
         process(ActiveTask->Lookup);
+        ActiveTask->Lookup = {};
       }
       Lock.lock();
       ActiveTask.reset();
@@ -537,22 +557,32 @@ public:
       : Parent(Parent), Thread([this] { run(); }) {}
 
   void enqueue(CDBLookupResult Lookup) {
+    Task NewTask{std::move(Lookup), Context::current().clone(),
+                 llvm::ToolExecutionContext::capture()};
+    std::deque<Task> Replaced;
     {
-      assert(!Lookup.PI.SourceRoot.empty());
+      assert(!NewTask.Lookup.PI.SourceRoot.empty());
       std::lock_guard<std::mutex> Lock(Mu);
       // New CDB takes precedence over any queued one for the same directory.
-      llvm::erase_if(Queue, [&](const Task &T) {
-        return T.Lookup.PI.SourceRoot == Lookup.PI.SourceRoot;
-      });
-      Queue.push_back({std::move(Lookup), Context::current().clone()});
+      for (auto It = Queue.begin(); It != Queue.end();) {
+        if (It->Lookup.PI.SourceRoot == NewTask.Lookup.PI.SourceRoot) {
+          Replaced.push_back(std::move(*It));
+          It = Queue.erase(It);
+        } else {
+          ++It;
+        }
+      }
+      Queue.push_back(std::move(NewTask));
     }
+    for (Task &T : Replaced)
+      destroyTask(T);
     CV.notify_all();
   }
 
   bool blockUntilIdle(Deadline Timeout) {
     std::unique_lock<std::mutex> Lock(Mu);
     return wait(Lock, CV, Timeout,
-                [&] { return Queue.empty() && !ActiveTask; });
+                [&] { return Queue.empty() && !ActiveTask && !Discarding; });
   }
 
   ~BroadcastThread() {

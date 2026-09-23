@@ -17,10 +17,13 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <optional>
@@ -192,6 +195,37 @@ TEST_F(OverlayCDBTest, ExpandedResponseFiles) {
   CDB.setCompileCommand(testPath("foo.cc"), Override);
   EXPECT_THAT(CDB.getCompileCommand(testPath("foo.cc"))->CommandLine,
               Contains("-Wall"));
+}
+
+TEST(GlobalCompilationDatabaseTest, BroadcastPropagatesToolInvocation) {
+  const char *const CDB = R"cdb(
+    [{
+      "file": "a.cc",
+      "command": "clang a.cc",
+      "directory": "{0}"
+    }]
+  )cdb";
+  MockFS FS;
+  FS.Files[testPath("compile_commands.json")] =
+      llvm::formatv(CDB, llvm::sys::path::convert_to_slash(testRoot()));
+
+  // Construct the database and its worker before the invocation. Each queued
+  // broadcast must carry the context of the request that discovered it.
+  DirectoryBasedGlobalCompilationDatabase DB(FS);
+  std::atomic<const void *> ObservedContext{nullptr};
+  auto Sub = DB.watch([&](const std::vector<std::string> &) {
+    ObservedContext.store(llvm::cl::getCurrentContextIdentity(),
+                          std::memory_order_relaxed);
+  });
+
+  const void *InvocationContext = nullptr;
+  {
+    llvm::ScopedToolInvocation Invocation;
+    InvocationContext = llvm::cl::getCurrentContextIdentity();
+    EXPECT_TRUE(DB.getCompileCommand(testPath("a.cc")));
+    ASSERT_TRUE(DB.blockUntilIdle(timeoutSeconds(10)));
+  }
+  EXPECT_EQ(ObservedContext.load(std::memory_order_relaxed), InvocationContext);
 }
 
 TEST(GlobalCompilationDatabaseTest, DiscoveryWithNestedCDBs) {

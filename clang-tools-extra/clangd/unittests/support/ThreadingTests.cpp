@@ -8,9 +8,14 @@
 
 #include "support/Threading.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Driver.h"
+#include "llvm/Support/StaticArena.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 
 namespace clang {
@@ -62,6 +67,70 @@ TEST_F(ThreadingTest, TaskRunner) {
   // Check that destructor has waited for tasks to finish.
   std::lock_guard<std::mutex> Lock(Mutex);
   ASSERT_EQ(Counter, TasksCnt * IncrementsPerTask);
+}
+
+struct ToolContextDestructionProbe {
+  const void *Arena;
+  const void *CommandLine;
+  std::atomic<bool> *Observed;
+
+  ToolContextDestructionProbe(const void *Arena, const void *CommandLine,
+                              std::atomic<bool> &Observed)
+      : Arena(Arena), CommandLine(CommandLine), Observed(&Observed) {}
+
+  ~ToolContextDestructionProbe() {
+    Observed->store(llvm::getCurrentStaticArenaIdentity() == Arena &&
+                        llvm::cl::getCurrentContextIdentity() == CommandLine,
+                    std::memory_order_relaxed);
+  }
+};
+
+static void expectToolExecutionContext(const void *Arena,
+                                       const void *CommandLine) {
+  AsyncTaskRunner Tasks;
+  std::atomic<bool> TaskRunnerObserved{false};
+  std::atomic<bool> TaskRunnerCaptureDestroyed{false};
+  Tasks.runAsync("tool-context",
+                 [&, Probe = std::make_unique<ToolContextDestructionProbe>(
+                         Arena, CommandLine, TaskRunnerCaptureDestroyed)] {
+                   (void)Probe;
+                   TaskRunnerObserved.store(
+                       llvm::getCurrentStaticArenaIdentity() == Arena &&
+                           llvm::cl::getCurrentContextIdentity() == CommandLine,
+                       std::memory_order_relaxed);
+                 });
+  Tasks.wait();
+  EXPECT_TRUE(TaskRunnerObserved.load(std::memory_order_relaxed));
+  EXPECT_TRUE(TaskRunnerCaptureDestroyed.load(std::memory_order_relaxed));
+
+  std::atomic<bool> FutureCaptureDestroyed{false};
+  std::future<bool> Future =
+      runAsync<bool>([Arena, CommandLine,
+                      Probe = std::make_unique<ToolContextDestructionProbe>(
+                          Arena, CommandLine, FutureCaptureDestroyed)] {
+        (void)Probe;
+        return llvm::getCurrentStaticArenaIdentity() == Arena &&
+               llvm::cl::getCurrentContextIdentity() == CommandLine;
+      });
+  EXPECT_TRUE(Future.get());
+  EXPECT_TRUE(FutureCaptureDestroyed.load(std::memory_order_relaxed));
+}
+
+TEST_F(ThreadingTest, PropagatesCommandLineToolContext) {
+  llvm::ScopedToolInvocation Invocation;
+  ASSERT_EQ(llvm::getCurrentStaticArenaIdentity(), nullptr);
+  expectToolExecutionContext(nullptr, llvm::cl::getCurrentContextIdentity());
+}
+
+TEST_F(ThreadingTest, PropagatesArenaToolContext) {
+#if defined(_WIN32) || defined(__ELF__) || defined(__wasm__)
+  llvm::ScopedToolInvocation Invocation(+[] {});
+  const void *Arena = llvm::getCurrentStaticArenaIdentity();
+  ASSERT_NE(Arena, nullptr);
+  expectToolExecutionContext(Arena, llvm::cl::getCurrentContextIdentity());
+#else
+  GTEST_SKIP() << "static-arena range discovery is unavailable";
+#endif
 }
 
 TEST_F(ThreadingTest, Memoize) {

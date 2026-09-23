@@ -6,16 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Support/Driver.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Driver.h"
 #include "llvm/Support/StaticArena.h"
 
 #include <memory>
 
 using namespace llvm;
 
-namespace {
-class ToolInvocationContext {
+struct ScopedToolInvocation::Impl {
   // Declaration order is lifecycle order. Destruction reverses it: command
   // line state goes away while finalized arena storage is still bound, then
   // the outer arena binding is restored, then storage is released.
@@ -23,14 +22,13 @@ class ToolInvocationContext {
   std::unique_ptr<ScopedStaticArenaBinding> ArenaBinding;
   cl::ScopedContext CommandLine;
 
-public:
-  explicit ToolInvocationContext(bool UsesPerInvocationGlobals)
+  explicit Impl(bool UsesPerInvocationGlobals)
       : Arena(UsesPerInvocationGlobals ? StaticArena::create() : nullptr),
         ArenaBinding(Arena ? std::make_unique<ScopedStaticArenaBinding>(*Arena)
                            : std::make_unique<ScopedStaticArenaBinding>(
                                  StaticArenaToken())) {}
 
-  ~ToolInvocationContext() {
+  ~Impl() {
     // Combined close always takes the command-line side first, then arena.
     // Both checks fail closed if queued/running task leases remain.
     CommandLine.beginClosing();
@@ -40,12 +38,21 @@ public:
     }
   }
 };
-} // namespace
 
-int llvm::runLLVMDriverTool(void (*InitLifecycle)(), LLVMDriverToolMain Main,
-                            int Argc, char **Argv, const ToolContext &Context) {
-  ToolInvocationContext Invocation(InitLifecycle != nullptr);
+ScopedToolInvocation::ScopedToolInvocation(
+    ToolLifecycleInitializer InitLifecycle)
+    : PImpl(std::make_unique<Impl>(InitLifecycle != nullptr)) {
+  // Run only after PImpl is fully installed. Besides making the public order
+  // explicit, this ensures an unwinding callback destroys the complete owner.
   if (InitLifecycle)
     InitLifecycle();
+}
+
+ScopedToolInvocation::~ScopedToolInvocation() = default;
+
+int llvm::runLLVMDriverTool(ToolLifecycleInitializer InitLifecycle,
+                            LLVMDriverToolMain Main, int Argc, char **Argv,
+                            const ToolContext &Context) {
+  ScopedToolInvocation Invocation(InitLifecycle);
   return Main(Argc, Argv, Context);
 }

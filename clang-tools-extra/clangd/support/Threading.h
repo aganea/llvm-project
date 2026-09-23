@@ -11,7 +11,9 @@
 
 #include "support/Context.h"
 #include "llvm/ADT/FunctionExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/ToolExecutionContext.h"
 #include <atomic>
 #include <cassert>
 #include <condition_variable>
@@ -127,11 +129,18 @@ template <typename T>
 std::future<T> runAsync(llvm::unique_function<T()> Action) {
   return std::async(
       std::launch::async,
-      [](llvm::unique_function<T()> &&Action, Context Ctx) {
+      [](llvm::unique_function<T()> &&Action, Context Ctx,
+         llvm::ToolExecutionContext ToolContext) {
+        llvm::ScopedToolExecutionContext WithToolContext(
+            std::move(ToolContext));
         WithContext WithCtx(std::move(Ctx));
+        // Destroy captures while both contexts are still installed. They may
+        // themselves own invocation-local values.
+        llvm::scope_exit DestroyAction([&] { Action = nullptr; });
         return Action();
       },
-      std::move(Action), Context::current().clone());
+      std::move(Action), Context::current().clone(),
+      llvm::ToolExecutionContext::capture());
 }
 
 /// Memoize is a cache to store and reuse computation results based on a key.

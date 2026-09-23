@@ -49,10 +49,12 @@ static int invokeTool(void (*InitLifecycle)(), llvm::LLVMDriverToolMain Main,
   for (std::string &Arg : Args)
     Argv.push_back(Arg.data());
 
+  // This harness is an ordinary executable, not llvm-driver. Exercise the
+  // public embedding boundary directly: a host needs only the generated
+  // lifecycle callback and the arena-built static-library closure.
+  llvm::ScopedToolInvocation Invocation(InitLifecycle);
   llvm::ToolContext Context{Argv.front(), nullptr, false};
-  return llvm::runLLVMDriverTool(InitLifecycle, Main,
-                                 static_cast<int>(Argv.size()), Argv.data(),
-                                 Context);
+  return Main(static_cast<int>(Argv.size()), Argv.data(), Context);
 }
 
 static int invokeAr(std::vector<std::string> Args) {

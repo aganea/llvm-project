@@ -80,6 +80,8 @@ bool AsyncTaskRunner::wait(Deadline D) const {
 
 void AsyncTaskRunner::runAsync(const llvm::Twine &Name,
                                llvm::unique_function<void()> Action) {
+  llvm::ToolExecutionContext ToolContext =
+      llvm::ToolExecutionContext::capture();
   {
     std::lock_guard<std::mutex> Lock(Mutex);
     ++InFlightTasks;
@@ -96,7 +98,9 @@ void AsyncTaskRunner::runAsync(const llvm::Twine &Name,
   });
 
   auto Task = [Name = Name.str(), Action = std::move(Action),
+               ToolContext = std::move(ToolContext),
                Cleanup = std::move(CleanupTask)]() mutable {
+    llvm::ScopedToolExecutionContext WithToolContext(std::move(ToolContext));
     llvm::set_thread_name(Name);
     Action();
     // Make sure function stored by ThreadFunc is destroyed before Cleanup runs.

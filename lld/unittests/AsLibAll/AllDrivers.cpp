@@ -37,18 +37,24 @@ TEST(AsLib, AllDrivers) {
   EXPECT_TRUE(lldInvoke({"wasm-ld"}));
 }
 
+#if defined(_WIN32) || defined(__ELF__) || defined(__wasm__)
 static void noOpLifecycle() {}
 
-static int invokeFoldedLld() {
+static int invokeScopedLld() {
   char Arg0[] = "ld.lld";
   char Arg1[] = "--version";
   char *Args[] = {Arg0, Arg1};
+  llvm::ScopedToolInvocation Invocation(noOpLifecycle);
   llvm::ToolContext Context{Arg0, nullptr, false};
-  return llvm::runLLVMDriverTool(noOpLifecycle, lld_main, std::size(Args), Args,
-                                 Context);
+  return lld_main(std::size(Args), Args, Context);
 }
+#endif
 
-TEST(AsLib, FoldedEntryReturnsAndCanRunAgain) {
-  EXPECT_EQ(0, invokeFoldedLld());
-  EXPECT_EQ(0, invokeFoldedLld());
+TEST(AsLib, ScopedInvocationReturnsAndCanRunAgain) {
+#if !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  EXPECT_EQ(0, invokeScopedLld());
+  EXPECT_EQ(0, invokeScopedLld());
+#endif
 }

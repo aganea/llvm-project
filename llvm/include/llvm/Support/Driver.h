@@ -63,6 +63,40 @@ public:
 
 using LLVMDriverToolMain = int (*)(int, char **, const ToolContext &);
 
+using ToolLifecycleInitializer = void (*)();
+
+/// Owns the isolated state for one in-process tool invocation.
+///
+/// A non-null \p InitLifecycle identifies an image built with
+/// `-fstatic-arena`. Construction creates and binds a fresh arena, pushes a
+/// fresh command-line context, and then runs the generated lifecycle callback
+/// exactly once. Destruction closes both contexts, runs arena destructors while
+/// the command-line context is still current, restores any enclosing
+/// invocation, and finally releases the arena storage. Arena-producing images
+/// are currently supported on COFF, ELF, and Wasm only.
+///
+/// A null callback still pushes an independent command-line context, but
+/// explicitly masks any enclosing arena. This is useful only when the complete
+/// invoked closure contains no references lowered for arena storage.
+///
+/// All work carrying a captured ToolExecutionContext must finish before this
+/// object is destroyed. Leaked or still-running work fails closed rather than
+/// permitting access to released invocation state. Construct and destroy the
+/// owner on the same thread; propagated work may run on other threads.
+class LLVM_ABI ScopedToolInvocation {
+public:
+  explicit ScopedToolInvocation(
+      ToolLifecycleInitializer InitLifecycle = nullptr);
+  ~ScopedToolInvocation();
+
+  ScopedToolInvocation(const ScopedToolInvocation &) = delete;
+  ScopedToolInvocation &operator=(const ScopedToolInvocation &) = delete;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> PImpl;
+};
+
 /// Run one folded tool with a fresh command-line context and, when
 /// \p InitLifecycle is non-null, a fresh static arena.
 ///
@@ -71,8 +105,8 @@ using LLVMDriverToolMain = int (*)(int, char **, const ToolContext &);
 /// its parser is still alive, and command-line state is then destroyed while
 /// finalized arena storage remains bound. The outer arena binding is restored
 /// before storage is released. Nested calls restore their enclosing invocation.
-LLVM_ABI int runLLVMDriverTool(void (*InitLifecycle)(), LLVMDriverToolMain Main,
-                               int Argc, char **Argv,
+LLVM_ABI int runLLVMDriverTool(ToolLifecycleInitializer InitLifecycle,
+                               LLVMDriverToolMain Main, int Argc, char **Argv,
                                const ToolContext &Context);
 
 /// Owns LLVM process initialization and an in-process tool registry.
