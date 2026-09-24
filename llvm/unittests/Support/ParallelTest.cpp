@@ -438,6 +438,41 @@ TEST(Parallel, SingleThreadArenaQuotaDoesNotRunInlineOnCallers) {
   Arena->runDestructors();
 }
 
+TEST(Parallel, SingleThreadArenaPreservesSubmissionOrder) {
+  if (!supportsStaticArenaRecords())
+    GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+
+  ThreadPoolStrategy SavedStrategy = parallel::strategy;
+  scope_exit RestoreStrategy([&] { parallel::strategy = SavedStrategy; });
+  std::unique_ptr<StaticArena> Arena = StaticArena::create();
+  ScopedStaticArenaBinding ArenaBinding(*Arena);
+  parallel::strategy = hardware_concurrency(1);
+
+  std::atomic<bool> BlockerStarted{false};
+  std::atomic<bool> ReleaseBlocker{false};
+  std::vector<unsigned> Order;
+  {
+    parallel::TaskGroup TG;
+    TG.spawn([&] {
+      BlockerStarted.store(true, std::memory_order_release);
+      while (!ReleaseBlocker.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      Order.push_back(0);
+    });
+
+    while (!BlockerStarted.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    for (unsigned I = 1; I != 8; ++I)
+      TG.spawn([&, I] { Order.push_back(I); });
+    ReleaseBlocker.store(true, std::memory_order_release);
+  }
+
+  EXPECT_EQ(Order, (std::vector<unsigned>{0, 1, 2, 3, 4, 5, 6, 7}));
+
+  Arena->beginClosing();
+  Arena->runDestructors();
+}
+
 TEST(Parallel, SingleThreadArenaWorkerRunsNestedAlgorithmsInline) {
   if (!supportsStaticArenaRecords())
     GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";

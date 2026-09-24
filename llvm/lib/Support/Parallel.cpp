@@ -52,7 +52,8 @@ struct ActiveExecution {
 // hosts, so their workers must not depend on a non-trivial TLS destructor.
 static thread_local ActiveExecution *CurrentExecution = nullptr;
 
-/// Runs closures on a thread pool in filo order.
+/// Runs closures on a thread pool. Wider invocations use filo order, while a
+/// width-one invocation preserves the serial submission order it replaces.
 class ThreadPoolExecutor {
 public:
   explicit ThreadPoolExecutor(ThreadPoolStrategy S, bool UseInvocationQuotas)
@@ -264,16 +265,29 @@ private:
       return true;
     }
 
-    auto It = llvm::find_if(reverse(WorkStack), [&](const WorkItem &Item) {
-      return isRunnable(Item);
-    });
-    if (It == WorkStack.rend())
+    auto ReverseIt =
+        llvm::find_if(reverse(WorkStack),
+                      [&](const WorkItem &Item) { return isRunnable(Item); });
+    if (ReverseIt == WorkStack.rend())
       return false;
+
+    auto It = std::next(ReverseIt).base();
+    if (It->MaxConcurrency == 1) {
+      // A width-one strategy historically ran TaskGroup work inline in
+      // submission order. It still has to enter the shared executor so two
+      // callers cannot bypass the invocation quota, but a filo queue would
+      // otherwise reverse pending work and observable diagnostics. Select the
+      // newest runnable invocation as usual, then its oldest pending item.
+      const void *Invocation = It->Invocation;
+      It = llvm::find_if(WorkStack, [&](const WorkItem &Item) {
+        return Item.Invocation == Invocation;
+      });
+    }
 
     ++ActiveWorkers[It->Invocation];
 
     WorkItem Item = std::move(*It);
-    WorkStack.erase(std::next(It).base());
+    WorkStack.erase(It);
     Lock.unlock();
     run(std::move(Item), Slot);
     return true;
