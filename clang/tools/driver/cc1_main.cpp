@@ -27,6 +27,7 @@
 #include "clang/FrontendTool/Utils.h"
 #include "clang/Options/Options.h"
 #include "clang/Serialization/ObjectFilePCHContainerReader.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Config/llvm-config.h"
@@ -285,8 +286,10 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
 
   // Set an error handler, so that any LLVM backend diagnostics go through our
   // error handler.
-  llvm::install_fatal_error_handler(LLVMErrorHandler,
-                                  static_cast<void*>(&Clang->getDiagnostics()));
+  llvm::install_fatal_error_handler(
+      LLVMErrorHandler, static_cast<void *>(&Clang->getDiagnostics()));
+  llvm::scope_exit RemoveFatalErrorHandler(
+      [] { llvm::remove_fatal_error_handler(); });
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success)
@@ -327,6 +330,7 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   // potentially about to delete. Uninstall the handler now so that any
   // later errors use the default handling behavior instead.
   llvm::remove_fatal_error_handler();
+  RemoveFatalErrorHandler.release();
 
   // When running with -disable-free, don't do any destruction or shutdown.
   if (Clang->getFrontendOpts().DisableFree) {

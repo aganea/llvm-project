@@ -234,6 +234,57 @@ TYPED_TEST(ThreadPoolTest, AsyncRAIICaptures) {
   ASSERT_EQ(42, value);
 }
 
+TYPED_TEST(ThreadPoolTest, AsyncCaptureCleanupKeepsInvocationContext) {
+  CHECK_UNSUPPORTED();
+  TypeParam Pool;
+  cl::ScopedContext Invocation;
+  const void *InvocationContext = cl::getCurrentContextIdentity();
+  std::atomic<const void *> CleanupContexts[2] = {nullptr, nullptr};
+  std::atomic<const void *> FollowupContexts[2] = {nullptr, nullptr};
+
+  auto MakeCleanup = [&](unsigned Index) {
+    return llvm::scope_exit([&, Index] {
+      CleanupContexts[Index].store(cl::getCurrentContextIdentity(),
+                                   std::memory_order_relaxed);
+      Pool.async([&, Index] {
+        FollowupContexts[Index].store(cl::getCurrentContextIdentity(),
+                                      std::memory_order_relaxed);
+      });
+    });
+  };
+
+  // Keep both completed futures alive while checking that capture cleanup
+  // has run and any followup work inherited this invocation.
+  {
+    auto VoidFuture = Pool.async([Cleanup = MakeCleanup(0)] {});
+    auto ValueFuture = Pool.async([Cleanup = MakeCleanup(1)] { return 42; });
+    VoidFuture.get();
+    EXPECT_EQ(ValueFuture.get(), 42);
+
+    bool AllCapturesCleaned = true;
+    for (unsigned Index = 0; Index != 2; ++Index) {
+      const void *Cleanup =
+          CleanupContexts[Index].load(std::memory_order_relaxed);
+      EXPECT_EQ(Cleanup, InvocationContext);
+      AllCapturesCleaned &= Cleanup != nullptr;
+    }
+
+    // The captures enqueue the followup work. Wait only after they have all
+    // run, as submitting tasks concurrently with Pool.wait() is unsupported.
+    if (AllCapturesCleaned)
+      Pool.wait();
+    for (unsigned Index = 0; Index != 2; ++Index) {
+      const void *Followup =
+          FollowupContexts[Index].load(std::memory_order_relaxed);
+      EXPECT_EQ(Followup, InvocationContext);
+    }
+  }
+
+  // A regression may enqueue the followup work when the futures are released.
+  Pool.wait();
+  Invocation.beginClosing();
+}
+
 TYPED_TEST(ThreadPoolTest, GetFuture) {
   CHECK_UNSUPPORTED();
   DefaultThreadPool Pool(hardware_concurrency(2));

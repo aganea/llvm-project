@@ -207,6 +207,23 @@ static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
   DiagClient->setPrefix(std::string(ExeBasename));
 }
 
+static bool wasSelectedByBPrefix(const llvm::opt::ArgList &Args,
+                                 StringRef Executable) {
+  // Match the program lookup in Driver::GetProgramPath: a -B value can name
+  // either a directory or a literal executable prefix.
+  for (const Arg *A : Args.filtered(options::OPT_B)) {
+    SmallString<128> Candidate(A->getValue());
+    if (llvm::sys::fs::is_directory(Candidate))
+      llvm::sys::path::append(Candidate, "wasm-ld");
+    else
+      Candidate.append("wasm-ld");
+    if (Executable == Candidate.str() &&
+        llvm::sys::fs::can_execute(Candidate.str()))
+      return true;
+  }
+  return false;
+}
+
 static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
                           const llvm::ToolContext &ToolContext,
                           IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS) {
@@ -415,11 +432,13 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
 
   // A Wasm host has no subprocess to launch for the ordinary built-in linker
   // selection. Route that job through the session's registered wasm-ld while
-  // preserving explicit-path and process-specific execution semantics.
+  // preserving explicit-path, -B, and process-specific execution semantics.
   if (!TheDriver.CCPrintProcessStats && !HasExplicitLinkerPath) {
     for (Command &Job : C->getJobs()) {
       if (!llvm::sys::path::stem(Job.getExecutable())
                .equals_insensitive("wasm-ld"))
+        continue;
+      if (wasSelectedByBPrefix(C->getArgs(), Job.getExecutable()))
         continue;
 
       llvm::ErrorOr<llvm::CallableTool> Tool =

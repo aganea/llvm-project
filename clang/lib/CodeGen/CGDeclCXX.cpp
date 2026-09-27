@@ -608,10 +608,12 @@ void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
 /// current target. The flag takes one C identifier and each object format gets
 /// the spelling its linker can actually bound a range with:
 ///
-///  - COFF: ".<group>$<key>$u", where <group> is the first underscore-separated
-///    component of <base> and <key> is the rest. The program brackets the range
-///    with "$a" and "$z" sentinel sections; '$' (0x24) sorts below every
-///    identifier character, so no <key> can interleave into another's range.
+///  - COFF: ".<group>$<key>$u", where <group> precedes the first underscore
+///    and <key> is the rest. An ID without an underscore uses the reserved key
+///    "$", so foo, foo_, and foo_bar use ".foo$$$u", ".foo$$u", and
+///    ".foo$bar$u", respectively. The program brackets each range with the
+///    corresponding "$a" and "$z" sentinel sections. '$' (0x24) sorts below
+///    every identifier character, keeping a key and its extensions apart.
 ///    The leading component is the grouped-section name, which keeps the output
 ///    section name short enough to survive PE's 8-byte section names.
 ///  - ELF and Wasm: <base> verbatim, so the linker synthesizes
@@ -621,8 +623,8 @@ static std::string deriveStaticArenaLifecycleSectionName(const llvm::Triple &T,
   if (!T.isOSBinFormatCOFF())
     return Base.str();
   auto [Group, Key] = Base.split('_');
-  if (Key.empty())
-    return ("." + Group + "$u").str();
+  if (!Base.contains('_'))
+    return ("." + Group + "$$$u").str();
   return ("." + Group + "$" + Key + "$u").str();
 }
 

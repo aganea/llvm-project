@@ -69,7 +69,14 @@ namespace {
 /// This class is also used to look up statistic values from applications that
 /// use LLVM.
 class StatisticInfo {
+  struct TouchedStatistic {
+    TrackingStatistic *Stat;
+    // Arena-owned statistics may already be finalized at context teardown.
+    bool ResetOnTeardown;
+  };
+
   std::vector<TrackingStatistic *> Stats;
+  std::vector<TouchedStatistic> TouchedStats;
 
   friend void llvm::PrintStatistics();
   friend void llvm::PrintStatistics(raw_ostream &OS);
@@ -84,7 +91,11 @@ public:
   StatisticInfo();
   ~StatisticInfo();
 
-  void addStatistic(TrackingStatistic *S) { Stats.push_back(S); }
+  void addStatistic(TrackingStatistic *S, bool Enabled, bool ResetOnTeardown) {
+    TouchedStats.push_back({S, ResetOnTeardown});
+    if (Enabled)
+      Stats.push_back(S);
+  }
 
   const_iterator begin() const { return Stats.begin(); }
   const_iterator end() const { return Stats.end(); }
@@ -100,20 +111,23 @@ static ContextManagedStatic<sys::SmartMutex<true>> StatLock;
 /// RegisterStatistic - The first time a statistic is bumped, this method is
 /// called.
 void TrackingStatistic::RegisterStatistic() {
-  // If stats are enabled, inform StatInfo that this statistic should be
-  // printed.
+  // Track this statistic in the current context, even when collection is
+  // disabled, so process-owned state can be reset at teardown.
   // Context teardown can end up calling PrintStatistics, which takes StatLock.
   // Dereference the context statics before taking StatLock so first
   // construction never inverts that lock ordering.
   if (!Initialized.load(std::memory_order_relaxed)) {
+    // Classify before taking StatLock to preserve the context-static lock
+    // ordering. Only process-owned statistics survive this context's teardown.
+    const bool ResetOnTeardown = !cl::isCurrentInvocationOwned(this);
     sys::SmartMutex<true> &Lock = *StatLock;
     StatisticInfo &SI = *StatInfo;
     sys::SmartScopedLock<true> Writer(Lock);
     // Check Initialized again after acquiring the lock.
     if (Initialized.load(std::memory_order_relaxed))
       return;
-    if (Settings->CommandLineEnabled || Settings->Enabled)
-      SI.addStatistic(this);
+    SI.addStatistic(this, Settings->CommandLineEnabled || Settings->Enabled,
+                    ResetOnTeardown);
 
     // Remember we have been registered.
     Initialized.store(true, std::memory_order_release);
@@ -137,6 +151,17 @@ StatisticInfo::StatisticInfo() {
 StatisticInfo::~StatisticInfo() {
   if (Settings->CommandLineEnabled || Settings->PrintOnExit)
     llvm::PrintStatistics();
+
+  // Unlowered globals retain their registration bit and count between
+  // invocations. Reset every process-owned statistic touched here, including
+  // those touched while collection was disabled.
+  sys::SmartScopedLock<true> Writer(*StatLock);
+  for (const TouchedStatistic &Touched : TouchedStats) {
+    if (!Touched.ResetOnTeardown)
+      continue;
+    Touched.Stat->Initialized = false;
+    Touched.Stat->Value = 0;
+  }
 }
 
 void llvm::EnableStatistics(bool DoPrintOnExit) {
@@ -168,11 +193,11 @@ void StatisticInfo::reset() {
   // again. We're holding the lock so it won't be able to do so until we're
   // finished. Once we've forced it to re-register (after we return), then zero
   // the value.
-  for (auto *Stat : Stats) {
+  for (const TouchedStatistic &Touched : TouchedStats) {
     // Value updates to a statistic that complete before this statement in the
     // iteration for that statistic will be lost as intended.
-    Stat->Initialized = false;
-    Stat->Value = 0;
+    Touched.Stat->Initialized = false;
+    Touched.Stat->Value = 0;
   }
 
   // Clear the registration list and release the lock once we're done. Any
@@ -181,6 +206,7 @@ void StatisticInfo::reset() {
   // but it's their responsibility to prevent concurrent compilations to make
   // a single compilation measurable.
   Stats.clear();
+  TouchedStats.clear();
 }
 
 void llvm::PrintStatistics(raw_ostream &OS) {

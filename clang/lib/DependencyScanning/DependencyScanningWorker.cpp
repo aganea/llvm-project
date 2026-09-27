@@ -527,7 +527,10 @@ public:
         llvm::ToolExecutionContext LocalContext =
             std::exchange(Context, llvm::ToolExecutionContext());
         llvm::ScopedToolExecutionContext Binding(std::move(LocalContext));
-        Compile();
+        // Captures can enqueue more work during destruction. Release them
+        // before the binding goes away, not when the thread exits.
+        llvm::unique_function<void()> LocalCompile = std::move(Compile);
+        LocalCompile();
       });
   }
 

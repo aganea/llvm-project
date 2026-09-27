@@ -21,6 +21,7 @@ namespace {
 STATISTIC(Counter, "Counts things");
 STATISTIC(Counter2, "Counts other things");
 ALWAYS_ENABLED_STATISTIC(AlwaysCounter, "Counts things always");
+ALWAYS_ENABLED_STATISTIC(ScopedContextCounter, "Counts scoped invocations");
 
 #if LLVM_ENABLE_STATS
 static void
@@ -170,6 +171,32 @@ TEST(StatisticTest, API) {
   // we can't tell if it failed anyway.
   ResetStatistics();
 #endif
+}
+
+TEST(StatisticTest, ProcessStatisticReregistersAcrossScopedContexts) {
+  // Even a bump made while collection is disabled must not mark a process
+  // global as registered in a later command-line context.
+  {
+    cl::ScopedContext Context;
+    ScopedContextCounter++;
+    EXPECT_TRUE(GetStatistics().empty());
+    EXPECT_EQ(1u, ScopedContextCounter.getValue());
+  }
+
+  for (int Invocation = 0; Invocation != 2; ++Invocation) {
+    cl::ScopedContext Context;
+    EXPECT_EQ(0u, ScopedContextCounter.getValue());
+    EnableStatistics(/*DoPrintOnExit=*/false);
+    ScopedContextCounter++;
+
+    OptionalStatistic Found;
+    for (const auto &Stat : GetStatistics())
+      if (Stat.first == "ScopedContextCounter")
+        Found = Stat;
+    ASSERT_TRUE(Found.has_value());
+    EXPECT_EQ(1u, Found->second);
+  }
+  EXPECT_EQ(0u, ScopedContextCounter.getValue());
 }
 
 TEST(StatisticTest, TeardownAfterStaticArenaFinalization) {

@@ -117,17 +117,19 @@ private:
     ToolExecutionContext Context = ToolExecutionContext::capture();
     auto WrappedTask = [Task = std::move(Task),
                         Context = std::move(Context)]() mutable -> ResTy {
-      // Empty the callable's captured token before the future is made ready;
-      // retaining it in a completed shared state would keep the invocation
-      // leased merely because a caller retained its shared_future.
+      // Empty the shared state's context before the future is made ready.
       ToolExecutionContext LocalContext =
           std::exchange(Context, ToolExecutionContext());
       ScopedToolExecutionContext Binding(std::move(LocalContext));
+      // Destroy the callable while its context is bound. Its captures may
+      // enqueue more work, and a completed shared_future may outlive this
+      // invocation.
+      llvm::unique_function<ResTy()> LocalTask = std::move(Task);
       if constexpr (std::is_void_v<ResTy>) {
-        Task();
+        LocalTask();
         return;
       } else {
-        return Task();
+        return LocalTask();
       }
     };
     auto Future =

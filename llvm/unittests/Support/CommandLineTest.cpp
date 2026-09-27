@@ -2551,6 +2551,20 @@ TEST(CommandLineTest, GeneralCategoryOutlivesScopedContexts) {
   EXPECT_EQ(ProcessCategory, &cl::getGeneralCategory());
 }
 
+TEST(CommandLineTest, ColorCategoryIsRegisteredInEveryScopedContext) {
+  for (int Invocation = 0; Invocation != 2; ++Invocation) {
+    cl::ScopedContext Context;
+    const char *Args[] = {"prog"};
+    ASSERT_TRUE(cl::ParseCommandLineOptions(std::size(Args), Args, StringRef(),
+                                            &llvm::nulls()));
+
+    std::string Output = interceptStdout(
+        []() { cl::PrintHelpMessage(/*Hidden=*/false, /*Categorized=*/true); });
+    EXPECT_NE(std::string::npos, Output.find("Color Options:")) << Output;
+    EXPECT_NE(std::string::npos, Output.find("-color")) << Output;
+  }
+}
+
 TEST(CommandLineTest, EmptyTokenBindingMasksTheOuterContext) {
   cl::ScopedContext Outer;
   {

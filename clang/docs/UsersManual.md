@@ -2298,6 +2298,14 @@ function-local static remains lazy; both its object and initialization guard
 live in the arena. Destructors are registered with the bound arena and run in
 reverse registration order when that invocation is finalized.
 
+On COFF, split a lifecycle ID at its first underscore into a section group and
+key. An ID without an underscore uses the reserved key `$`; a trailing
+underscore leaves an empty key. Initializer pointers use
+`.<group>$<key>$u`, bracketed by matching `$a` and `$z` sentinel sections.
+For example, `foo`, `foo_`, and `foo_bar` use `.foo$$$u`, `.foo$$u`, and
+`.foo$bar$u`, respectively. The distinct keys keep their lifecycle ranges
+separate when all three use the `.foo` output section.
+
 LLVM's multicall-driver integration is enabled as one unit by the
 `LLVM_DRIVER_PER_INVOCATION_GLOBALS` CMake option. It builds private copies of
 the participating libraries with the production arena list, emits the matching

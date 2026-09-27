@@ -3380,11 +3380,13 @@ void CommandLineParser::inheritFrom(CommandLineContext &From,
 
   llvm::append_range(MoreHelp, FromParser->MoreHelp);
 
-  // Categories are identified by name and registerCategory() asserts that a
-  // name is registered once, so insert directly and let this context's own
-  // categories -- notably its "Generic Options" -- stand.
+  // Categories owned by the default context belong to its local options,
+  // which were skipped above. Each explicit context constructs its own copy.
+  // Inherit only process-wide categories, keeping this context's same-named
+  // categories -- notably its "Generic Options" -- authoritative.
   for (OptionCategory *C : From.Parser->RegisteredOptionCategories)
-    if (none_of(RegisteredOptionCategories, [&](const OptionCategory *E) {
+    if (!From.ownsContextStaticAddress(C) &&
+        none_of(RegisteredOptionCategories, [&](const OptionCategory *E) {
           return E->getName() == C->getName();
         }))
       RegisteredOptionCategories.insert(C);

@@ -16,11 +16,13 @@
 
 using namespace llvm;
 
-cl::OptionCategory &llvm::getColorCategory() {
-  static cl::OptionCategory ColorCategory("Color Options");
-  return ColorCategory;
-}
 namespace {
+struct CreateColorCategory {
+  static void *call() { return new cl::OptionCategory("Color Options"); }
+};
+static ContextManagedStatic<cl::OptionCategory, CreateColorCategory>
+    ColorCategory;
+
 struct CreateUseColor {
   static void *call() {
     return new cl::opt<cl::boolOrDefault>(
@@ -30,6 +32,8 @@ struct CreateUseColor {
   }
 };
 } // namespace
+cl::OptionCategory &llvm::getColorCategory() { return *ColorCategory; }
+
 static ContextManagedStatic<cl::opt<cl::boolOrDefault>, CreateUseColor>
     UseColor;
 void llvm::initWithColorOptions() { *UseColor; }

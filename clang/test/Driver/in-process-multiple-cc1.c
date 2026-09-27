@@ -52,6 +52,13 @@
 // RUN:   | FileCheck %s --check-prefix=OBJECTS
 // OBJECTS-COUNT-2: Format: WASM
 
+// Invalid cc1 arguments must release the fatal-error handler before the
+// next in-process job installs its own handler.
+// RUN: cd %t && not %clang --target=wasm32-unknown-unknown \
+// RUN:   -fintegrated-cc1 -fsyntax-only -Xclang -invalid-cc1-option \
+// RUN:   first.c second.c 2>&1 | FileCheck %s --check-prefix=INVALID-CC1
+// INVALID-CC1-COUNT-2: error: unknown argument: '-invalid-cc1-option'
+
 //--- first.c
 int first(void) { return 1; }
 
