@@ -56,6 +56,37 @@ findReferencedArenaGlobal(const llvm::Constant *Root) {
   return nullptr;
 }
 
+/// Emit a call to the arena resolver.  Its result depends only on the record,
+/// whose offset is fixed before any arena can be bound, and on the calling
+/// thread's arena binding, which only changes inside opaque runtime calls.
+/// Modeling that binding as inaccessible memory lets ordinary stores and calls
+/// that provably leave inaccessible memory alone keep the result available,
+/// while every unknown call still forces a new resolution.  The attributes are
+/// also attached to the call because ThinLTO may replace this declaration by
+/// the runtime's definition.
+static llvm::Value *emitStaticArenaResolverCall(CodeGenModule &CGM,
+                                                CodeGenFunction &CGF,
+                                                llvm::GlobalVariable *Record,
+                                                const llvm::Twine &Name) {
+  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+  llvm::PointerType *PtrTy = llvm::PointerType::getUnqual(Ctx);
+  llvm::FunctionType *ResolverTy =
+      llvm::FunctionType::get(PtrTy, {PtrTy}, /*isVarArg=*/false);
+  llvm::MemoryEffects Effects =
+      llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref);
+  llvm::AttrBuilder FnAttrs(Ctx);
+  FnAttrs.addAttribute(llvm::Attribute::NoUnwind);
+  FnAttrs.addMemoryAttr(Effects);
+  llvm::AttributeList Attrs = llvm::AttributeList::get(
+      Ctx, llvm::AttributeList::FunctionIndex, FnAttrs);
+  llvm::FunctionCallee Resolver =
+      CGM.CreateRuntimeFunction(ResolverTy, "__llvm_arena_addr_v1", Attrs);
+  llvm::CallInst *Call = CGF.Builder.CreateCall(Resolver, {Record}, Name);
+  Call->setDoesNotThrow();
+  Call->setMemoryEffects(Effects);
+  return Call;
+}
+
 static bool hasDynamicInitialization(const VarDecl *D) {
   if (!D)
     return false;
@@ -425,13 +456,8 @@ Address CodeGenModule::emitStaticArenaAddress(CodeGenFunction &CGF,
                                               llvm::GlobalVariable *Storage) {
   llvm::GlobalVariable *Record = getStaticArenaRecord(D, Storage);
   assert(Record && "address requested for a non-arena variable");
-  llvm::PointerType *PtrTy = llvm::PointerType::getUnqual(getLLVMContext());
-  llvm::FunctionType *ResolverTy =
-      llvm::FunctionType::get(PtrTy, {PtrTy}, /*isVarArg=*/false);
-  llvm::FunctionCallee Resolver =
-      CreateRuntimeFunction(ResolverTy, "__llvm_arena_addr_v1");
-  llvm::Value *Pointer =
-      CGF.Builder.CreateCall(Resolver, {Record}, Storage->getName() + ".arena");
+  llvm::Value *Pointer = emitStaticArenaResolverCall(
+      *this, CGF, Record, Storage->getName() + ".arena");
   // A declaration-only record can intentionally have an opaque LLVM type.
   // Do not eagerly compute its ABI alignment when Clang already set one.
   llvm::MaybeAlign ExplicitAlignment = Storage->getAlign();
@@ -448,13 +474,8 @@ Address CodeGenModule::emitStaticArenaAddress(CodeGenFunction &CGF,
   auto It = StaticArenaGlobals.find(Storage->getName());
   assert(It != StaticArenaGlobals.end() && It->second.Record &&
          "unregistered static-arena storage");
-  llvm::PointerType *PtrTy = llvm::PointerType::getUnqual(getLLVMContext());
-  llvm::FunctionType *ResolverTy =
-      llvm::FunctionType::get(PtrTy, {PtrTy}, /*isVarArg=*/false);
-  llvm::FunctionCallee Resolver =
-      CreateRuntimeFunction(ResolverTy, "__llvm_arena_addr_v1");
-  llvm::Value *Pointer = CGF.Builder.CreateCall(Resolver, {It->second.Record},
-                                                Storage->getName() + ".arena");
+  llvm::Value *Pointer = emitStaticArenaResolverCall(
+      *this, CGF, It->second.Record, Storage->getName() + ".arena");
   llvm::Align Alignment = Storage->getAlign().value_or(
       getDataLayout().getABITypeAlign(Storage->getValueType()));
   return Address(Pointer, Storage->getValueType(),

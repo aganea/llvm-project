@@ -111,11 +111,21 @@ int use_arena_globals() {
 // ILP32: @__llvm_arena_var_v1.arena_zero = externally_initialized global { i64, i64, i64, ptr, ptr }
 // ILP32: @__llvm_arena_ptr_v1.arena_zero = private constant ptr @__llvm_arena_var_v1.arena_zero, section "llvma_v1", align 4
 
-// Optimization must not erase or speculate the conservative resolver calls.
-// OPT-DAG: declare ptr @__llvm_arena_addr_v1(ptr)
+// The resolver only reads the inaccessible arena binding. A store through the
+// resolved address therefore does not invalidate it: the second arena_zero
+// resolution is merged and the stored value is forwarded. The call is neither
+// speculatable nor willreturn, so it is never hoisted out of a condition or
+// erased while its result is used.
+// OPT: declare ptr @__llvm_arena_addr_v1(ptr) {{.*}}#[[RESOLVER_DECL:[0-9]+]]
 // OPT-LABEL: define {{.*}}i32 @_Z17use_arena_globalsv
-// OPT-COUNT-6: call ptr @__llvm_arena_addr_v1
-// OPT-NOT: memory(read)
+// OPT: call ptr @__llvm_arena_addr_v1(ptr nonnull @__llvm_arena_var_v1.arena_nonzero) #[[RESOLVER_CALL:[0-9]+]]
+// OPT: [[ZERO:%.*]] = tail call ptr @__llvm_arena_addr_v1(ptr nonnull @__llvm_arena_var_v1.arena_zero)
+// OPT-NEXT: store i32 {{%.*}}, ptr [[ZERO]]
+// OPT-NOT: @__llvm_arena_var_v1.arena_zero)
+// OPT: ret i32
+// OPT-DAG: attributes #[[RESOLVER_DECL]] = { {{.*}}nounwind memory(inaccessiblemem: read) }
+// OPT-DAG: attributes #[[RESOLVER_CALL]] = { nounwind memory(inaccessiblemem: read) }
+// OPT-NOT: speculatable
 
 // v1 deliberately emits no global-variable debug description for relocated
 // namespace storage.

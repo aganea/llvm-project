@@ -595,6 +595,12 @@ ScopedStaticArenaBinding::ScopedStaticArenaBinding(StaticArenaToken Token)
   bind(Lease.Arena, false);
 }
 
+// Compiler-emitted resolver calls are described as reading only inaccessible
+// memory, so a store to CurrentArena must never be visible to the optimizer at
+// a call site. Keeping both binding transitions out of line makes each one an
+// opaque call that may write inaccessible memory and therefore orders the
+// resolver calls.
+LLVM_ATTRIBUTE_NOINLINE
 void ScopedStaticArenaBinding::bind(StaticArena *Arena, bool Owner) {
   if (Arena) {
     std::lock_guard<std::mutex> Lock(Arena->PImpl->Mutex);
@@ -614,6 +620,7 @@ void ScopedStaticArenaBinding::bind(StaticArena *Arena, bool Owner) {
   IsInstalled = true;
 }
 
+LLVM_ATTRIBUTE_NOINLINE
 ScopedStaticArenaBinding::~ScopedStaticArenaBinding() {
   if (!IsInstalled)
     return;
@@ -647,18 +654,21 @@ bool llvm::hasCurrentStaticArena() { return CurrentArena != nullptr; }
 
 const void *llvm::getCurrentStaticArenaIdentity() { return CurrentArena; }
 
-extern "C" void *__llvm_arena_addr_v1(const LLVMStaticArenaVarV1 *Record) {
-  if (LayoutStatus.load(std::memory_order_acquire) != LayoutState::Ready)
-    fail(Record, "layout is not ready while accessing");
+// Kept out of line: Clang attaches memory(inaccessiblemem: read) to every call,
+// which is only sound for a call boundary, never for the inlined body below.
+extern "C" LLVM_ATTRIBUTE_NOINLINE void *
+__llvm_arena_addr_v1(const LLVMStaticArenaVarV1 *Record) {
   if (!Record)
     fail(nullptr, "null static-arena record");
 
+  // A bound arena implies a completed layout: create() finishes the layout
+  // before any binding can publish the arena to this thread.
   StaticArena *Arena = CurrentArena;
   if (!Arena)
     fail(Record, "no invocation is attached while accessing");
   StaticArena::Impl &PImpl = *Arena->PImpl;
   StaticArena::Impl::State State =
-      PImpl.CurrentState.load(std::memory_order_acquire);
+      PImpl.CurrentState.load(std::memory_order_relaxed);
   if (State != StaticArena::Impl::State::Live &&
       State != StaticArena::Impl::State::Closing &&
       State != StaticArena::Impl::State::Finalizing)

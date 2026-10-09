@@ -643,7 +643,9 @@ static void finish(Arena *A) {
 int main(int Argc, char **Argv) {
   if (Argc == 2 && std::strcmp(Argv[1], "--unbound") == 0) {
     (void)createArena();
-    (void)commonAddress();
+    // Use the address: the resolver only reads inaccessible memory, so an
+    // unused resolution may legitimately be removed.
+    std::printf("%p\n", commonAddress());
     return 1;
   }
 
