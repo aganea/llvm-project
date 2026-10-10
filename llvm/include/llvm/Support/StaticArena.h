@@ -49,6 +49,21 @@ __llvm_arena_addr_v1(const LLVMStaticArenaVarV1 *Record);
 extern "C" LLVM_ABI int __llvm_arena_atexit_v1(void (*Destroy)(void *),
                                                void *Object);
 
+/// The storage of the arena bound to the current thread, as an address.
+///
+/// Code compiled with -fno-static-arena-checks reads this directly and adds a
+/// record's Offset instead of calling __llvm_arena_addr_v1. While no arena is
+/// bound it holds LLVMStaticArenaUnboundBase, an address that user code cannot
+/// access, so an unbound access faults rather than reaching process memory.
+extern "C" LLVM_THREAD_LOCAL uintptr_t __llvm_arena_base_v1;
+
+/// The value of __llvm_arena_base_v1 while no arena is bound: the kernel half
+/// of the address space on 64-bit targets, so that adding any arena offset
+/// stays inaccessible to user mode.
+inline constexpr uintptr_t LLVMStaticArenaUnboundBase =
+    sizeof(uintptr_t) == 8 ? static_cast<uintptr_t>(0xFFFF800000000000ULL)
+                           : static_cast<uintptr_t>(0xC0000000U);
+
 namespace llvm {
 
 class ScopedStaticArenaBinding;
@@ -84,6 +99,10 @@ struct StaticArenaCreateStats {
 /// the owner remains bound. The destructor finally poisons and releases the
 /// storage, and therefore requires the arena to have reached Finalized and to
 /// have no bindings or task leases.
+///
+/// The state lives in a class derived from StaticArena that is private to
+/// StaticArena.cpp, so reaching it from an arena pointer costs no extra
+/// indirection.
 class LLVM_ABI StaticArena {
 public:
   static std::unique_ptr<StaticArena> create();
@@ -93,7 +112,7 @@ public:
   /// instrumentation on its implementation path.
   static std::unique_ptr<StaticArena> create(StaticArenaCreateStats &Stats);
 
-  ~StaticArena();
+  virtual ~StaticArena();
 
   StaticArena(const StaticArena &) = delete;
   StaticArena &operator=(const StaticArena &) = delete;
@@ -106,9 +125,9 @@ private:
   static std::unique_ptr<StaticArena> createImpl(StaticArenaCreateStats *Stats);
 
   class Impl;
-  explicit StaticArena(std::unique_ptr<Impl> PImpl);
-
-  std::unique_ptr<Impl> PImpl;
+  StaticArena() = default;
+  Impl &impl();
+  const Impl &impl() const;
 
   friend class ScopedStaticArenaBinding;
   friend class StaticArenaToken;

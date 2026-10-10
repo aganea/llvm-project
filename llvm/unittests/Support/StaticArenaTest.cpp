@@ -362,6 +362,55 @@ TEST(StaticArenaTest, EmptyTaskBindingMasksTheOuterArena) {
 #endif
 }
 
+// Code built with -fno-static-arena-checks computes addresses from the
+// published base instead of calling the resolver; both must always agree.
+TEST(StaticArenaTest, BindingsPublishTheArenaBase) {
+#if !LLVM_ENABLE_THREADS
+  GTEST_SKIP() << "thread support is unavailable";
+#elif !defined(_WIN32) && !defined(__ELF__) && !defined(__wasm__)
+  GTEST_SKIP() << "the v1 producer supports COFF, ELF, and Wasm only";
+#else
+  auto DirectAddress = [] {
+    return reinterpret_cast<char *>(__llvm_arena_base_v1) +
+           TemplateRecord.Offset;
+  };
+
+  EXPECT_EQ(LLVMStaticArenaUnboundBase, __llvm_arena_base_v1);
+  std::unique_ptr<StaticArena> ArenaA = StaticArena::create();
+  std::unique_ptr<StaticArena> ArenaB = StaticArena::create();
+  {
+    ScopedStaticArenaBinding BindingA(*ArenaA);
+    void *AddressA = __llvm_arena_addr_v1(&TemplateRecord);
+    EXPECT_EQ(AddressA, DirectAddress());
+    {
+      ScopedStaticArenaBinding BindingB(*ArenaB);
+      EXPECT_EQ(__llvm_arena_addr_v1(&TemplateRecord), DirectAddress());
+      EXPECT_NE(AddressA, DirectAddress());
+      {
+        ScopedStaticArenaBinding NoArena{StaticArenaToken()};
+        EXPECT_EQ(LLVMStaticArenaUnboundBase, __llvm_arena_base_v1);
+      }
+      EXPECT_EQ(__llvm_arena_addr_v1(&TemplateRecord), DirectAddress());
+      finishArena(*ArenaB);
+    }
+    EXPECT_EQ(AddressA, DirectAddress());
+
+    std::thread Worker([Token = StaticArenaToken::capture(), AddressA,
+                        DirectAddress]() mutable {
+      EXPECT_EQ(LLVMStaticArenaUnboundBase, __llvm_arena_base_v1);
+      {
+        ScopedStaticArenaBinding Binding(std::move(Token));
+        EXPECT_EQ(AddressA, DirectAddress());
+      }
+      EXPECT_EQ(LLVMStaticArenaUnboundBase, __llvm_arena_base_v1);
+    });
+    Worker.join();
+    finishArena(*ArenaA);
+  }
+  EXPECT_EQ(LLVMStaticArenaUnboundBase, __llvm_arena_base_v1);
+#endif
+}
+
 TEST(StaticArenaTest, TwoWorkersCanBindTheSameArenaConcurrently) {
 #if !LLVM_ENABLE_THREADS
   GTEST_SKIP() << "thread support is unavailable";

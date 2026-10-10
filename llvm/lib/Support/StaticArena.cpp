@@ -278,8 +278,10 @@ private:
 
 } // namespace
 
-class StaticArena::Impl {
+class StaticArena::Impl final : public StaticArena {
 public:
+  ~Impl() override;
+
   enum class State : uint8_t { Live, Closing, Finalizing, Finalized };
   using Destructor = std::pair<void (*)(void *), void *>;
 
@@ -303,8 +305,24 @@ public:
   std::atomic<State> CurrentState{State::Live};
 };
 
-StaticArena::StaticArena(std::unique_ptr<Impl> PImpl)
-    : PImpl(std::move(PImpl)) {}
+StaticArena::Impl &StaticArena::impl() { return static_cast<Impl &>(*this); }
+
+const StaticArena::Impl &StaticArena::impl() const {
+  return static_cast<const Impl &>(*this);
+}
+
+StaticArena::~StaticArena() = default;
+
+extern "C" LLVM_THREAD_LOCAL uintptr_t __llvm_arena_base_v1 =
+    LLVMStaticArenaUnboundBase;
+
+/// Publish \p Arena as this thread's binding, both to the runtime and to code
+/// that reads the arena base directly.
+static void publishBinding(StaticArena *Arena, char *Storage) {
+  CurrentArena = Arena;
+  __llvm_arena_base_v1 =
+      Arena ? reinterpret_cast<uintptr_t>(Storage) : LLVMStaticArenaUnboundBase;
+}
 
 template <bool CollectStats>
 std::unique_ptr<StaticArena>
@@ -430,7 +448,7 @@ StaticArena::createImpl(StaticArenaCreateStats *Stats) {
     Stats->UsedDemandZeroMapping = PImpl->UsesMappedStorage;
   }
 
-  std::unique_ptr<StaticArena> Arena(new StaticArena(std::move(PImpl)));
+  std::unique_ptr<StaticArena> Arena(std::move(PImpl));
   Profiler.finish();
   return Arena;
 }
@@ -444,33 +462,29 @@ StaticArena::create(StaticArenaCreateStats &Stats) {
   return createImpl<true>(&Stats);
 }
 
-StaticArena::~StaticArena() {
-  if (!PImpl)
-    return;
+StaticArena::Impl::~Impl() {
   {
-    std::lock_guard<std::mutex> Lock(PImpl->Mutex);
-    if (PImpl->CurrentState.load(std::memory_order_relaxed) !=
-            Impl::State::Finalized ||
-        PImpl->Attachments != 0 || PImpl->OwnerBindings != 0 ||
-        PImpl->OutstandingTasks != 0)
+    std::lock_guard<std::mutex> Lock(Mutex);
+    if (CurrentState.load(std::memory_order_relaxed) != State::Finalized ||
+        Attachments != 0 || OwnerBindings != 0 || OutstandingTasks != 0)
       fail(nullptr, "arena released before finalization and quiescence");
   }
   if (CurrentArena == this)
     fail(nullptr, "arena released while still current");
 
-  __asan_poison_memory_region(PImpl->Storage, PImpl->AllocationSize);
+  __asan_poison_memory_region(Storage, AllocationSize);
 #if LLVM_STATIC_ARENA_HAS_MAPPED_STORAGE
-  if (PImpl->UsesMappedStorage) {
-    if (std::error_code EC =
-            sys::Memory::releaseMappedMemory(PImpl->MappedStorage))
+  if (UsesMappedStorage) {
+    if (std::error_code EC = sys::Memory::releaseMappedMemory(MappedStorage))
       fail(nullptr, "static-arena mapped storage release failed");
     return;
   }
 #endif
-  deallocate_buffer(PImpl->Storage, PImpl->AllocationSize, PImpl->Alignment);
+  deallocate_buffer(Storage, AllocationSize, Alignment);
 }
 
 void StaticArena::beginClosing() {
+  Impl *PImpl = &impl();
   std::lock_guard<std::mutex> Lock(PImpl->Mutex);
   if (CurrentArena != this || PImpl->Attachments != 1 ||
       PImpl->OwnerBindings != 1 || PImpl->OutstandingTasks != 0 ||
@@ -480,6 +494,7 @@ void StaticArena::beginClosing() {
 }
 
 void StaticArena::runDestructors() {
+  Impl *PImpl = &impl();
   {
     std::lock_guard<std::mutex> Lock(PImpl->Mutex);
     if (CurrentArena != this || PImpl->Attachments != 1 ||
@@ -518,11 +533,11 @@ void StaticArena::runDestructors() {
 StaticArenaToken::StaticArenaToken(StaticArena *Arena) : Arena(Arena) {
   if (!Arena)
     return;
-  std::lock_guard<std::mutex> Lock(Arena->PImpl->Mutex);
-  if (Arena->PImpl->CurrentState.load(std::memory_order_relaxed) !=
+  std::lock_guard<std::mutex> Lock(Arena->impl().Mutex);
+  if (Arena->impl().CurrentState.load(std::memory_order_relaxed) !=
       StaticArena::Impl::State::Live)
     fail(nullptr, "capturing a closing static arena");
-  ++Arena->PImpl->OutstandingTasks;
+  ++Arena->impl().OutstandingTasks;
 }
 
 StaticArenaToken::StaticArenaToken(const StaticArenaToken &Other)
@@ -563,11 +578,11 @@ bool StaticArenaToken::tryCapture(StaticArenaToken &Result) {
   if (!Arena)
     return true;
 
-  std::lock_guard<std::mutex> Lock(Arena->PImpl->Mutex);
-  if (Arena->PImpl->CurrentState.load(std::memory_order_relaxed) !=
+  std::lock_guard<std::mutex> Lock(Arena->impl().Mutex);
+  if (Arena->impl().CurrentState.load(std::memory_order_relaxed) !=
       StaticArena::Impl::State::Live)
     return false;
-  ++Arena->PImpl->OutstandingTasks;
+  ++Arena->impl().OutstandingTasks;
   Result.Arena = Arena;
   return true;
 }
@@ -580,10 +595,10 @@ void StaticArenaToken::reset() {
   if (!Arena)
     return;
   StaticArena *OldArena = std::exchange(Arena, nullptr);
-  std::lock_guard<std::mutex> Lock(OldArena->PImpl->Mutex);
-  if (OldArena->PImpl->OutstandingTasks == 0)
+  std::lock_guard<std::mutex> Lock(OldArena->impl().Mutex);
+  if (OldArena->impl().OutstandingTasks == 0)
     fail(nullptr, "static-arena task lease underflow");
-  --OldArena->PImpl->OutstandingTasks;
+  --OldArena->impl().OutstandingTasks;
 }
 
 ScopedStaticArenaBinding::ScopedStaticArenaBinding(StaticArena &Arena) {
@@ -598,25 +613,26 @@ ScopedStaticArenaBinding::ScopedStaticArenaBinding(StaticArenaToken Token)
 // Compiler-emitted resolver calls are described as reading only inaccessible
 // memory, so a store to CurrentArena must never be visible to the optimizer at
 // a call site. Keeping both binding transitions out of line makes each one an
-// opaque call that may write inaccessible memory and therefore orders the
-// resolver calls.
+// opaque call that may write inaccessible memory and __llvm_arena_base_v1, and
+// therefore orders both resolver calls and direct base loads.
 LLVM_ATTRIBUTE_NOINLINE
 void ScopedStaticArenaBinding::bind(StaticArena *Arena, bool Owner) {
   if (Arena) {
-    std::lock_guard<std::mutex> Lock(Arena->PImpl->Mutex);
-    if (Arena->PImpl->CurrentState.load(std::memory_order_relaxed) !=
+    std::lock_guard<std::mutex> Lock(Arena->impl().Mutex);
+    if (Arena->impl().CurrentState.load(std::memory_order_relaxed) !=
         StaticArena::Impl::State::Live)
       fail(nullptr, "binding a closing static arena");
-    if (Owner && Arena->PImpl->OwnerBindings != 0)
+    if (Owner && Arena->impl().OwnerBindings != 0)
       fail(nullptr, "static arena already has an owner binding");
-    ++Arena->PImpl->Attachments;
+    ++Arena->impl().Attachments;
     if (Owner)
-      ++Arena->PImpl->OwnerBindings;
+      ++Arena->impl().OwnerBindings;
   }
   Bound = Arena;
   IsOwner = Owner;
   Previous = CurrentArena;
-  CurrentArena = Arena;
+  publishBinding(Arena,
+                 Arena ? static_cast<char *>(Arena->impl().Storage) : nullptr);
   IsInstalled = true;
 }
 
@@ -626,25 +642,27 @@ ScopedStaticArenaBinding::~ScopedStaticArenaBinding() {
     return;
   if (CurrentArena != Bound)
     fail(nullptr, "static-arena bindings destroyed out of order");
-  CurrentArena = Previous;
+  publishBinding(Previous, Previous
+                               ? static_cast<char *>(Previous->impl().Storage)
+                               : nullptr);
 
   if (!Bound)
     return;
-  std::lock_guard<std::mutex> Lock(Bound->PImpl->Mutex);
-  if (Bound->PImpl->Attachments == 0)
+  std::lock_guard<std::mutex> Lock(Bound->impl().Mutex);
+  if (Bound->impl().Attachments == 0)
     fail(nullptr, "static-arena attachment underflow");
-  --Bound->PImpl->Attachments;
+  --Bound->impl().Attachments;
   if (IsOwner) {
-    if (Bound->PImpl->OwnerBindings == 0)
+    if (Bound->impl().OwnerBindings == 0)
       fail(nullptr, "static-arena owner-binding underflow");
-    --Bound->PImpl->OwnerBindings;
+    --Bound->impl().OwnerBindings;
   }
 }
 
 bool llvm::isInCurrentStaticArena(const void *Pointer) {
   if (!CurrentArena || !Pointer)
     return false;
-  const StaticArena::Impl &PImpl = *CurrentArena->PImpl;
+  const StaticArena::Impl &PImpl = CurrentArena->impl();
   uintptr_t Begin = reinterpret_cast<uintptr_t>(PImpl.Storage);
   uintptr_t Address = reinterpret_cast<uintptr_t>(Pointer);
   return Address >= Begin && Address - Begin < PImpl.ObjectSpanSize;
@@ -666,7 +684,7 @@ __llvm_arena_addr_v1(const LLVMStaticArenaVarV1 *Record) {
   StaticArena *Arena = CurrentArena;
   if (!Arena)
     fail(Record, "no invocation is attached while accessing");
-  StaticArena::Impl &PImpl = *Arena->PImpl;
+  StaticArena::Impl &PImpl = Arena->impl();
   StaticArena::Impl::State State =
       PImpl.CurrentState.load(std::memory_order_relaxed);
   if (State != StaticArena::Impl::State::Live &&
@@ -689,19 +707,19 @@ extern "C" int __llvm_arena_atexit_v1(void (*Destroy)(void *), void *Object) {
   if (Object && !isInCurrentStaticArena(Object))
     fail(nullptr, "destructor object is outside the current static arena");
 
-  std::lock_guard<std::mutex> Lock(Arena->PImpl->Mutex);
+  std::lock_guard<std::mutex> Lock(Arena->impl().Mutex);
   StaticArena::Impl::State State =
-      Arena->PImpl->CurrentState.load(std::memory_order_relaxed);
+      Arena->impl().CurrentState.load(std::memory_order_relaxed);
   if (State != StaticArena::Impl::State::Live &&
       State != StaticArena::Impl::State::Closing &&
       State != StaticArena::Impl::State::Finalizing)
     fail(nullptr, "destructor registration on inactive arena");
   if (State != StaticArena::Impl::State::Live &&
-      (Arena->PImpl->Attachments != 1 || Arena->PImpl->OwnerBindings != 1 ||
-       Arena->PImpl->OutstandingTasks != 0))
+      (Arena->impl().Attachments != 1 || Arena->impl().OwnerBindings != 1 ||
+       Arena->impl().OutstandingTasks != 0))
     fail(nullptr, "destructor registration by non-owner during finalization");
 
-  Arena->PImpl->Destructors.emplace_back(Destroy, Object);
-  ++Arena->PImpl->RegisteredCallbacks;
+  Arena->impl().Destructors.emplace_back(Destroy, Object);
+  ++Arena->impl().RegisteredCallbacks;
   return 0;
 }
