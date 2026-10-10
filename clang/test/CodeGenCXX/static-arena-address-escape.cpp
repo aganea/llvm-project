@@ -9,6 +9,16 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
 // RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/all.list \
 // RUN:   -o /dev/null %t/accepted.cpp
+//
+// Inline address lowering happens after the check, so it diagnoses the same
+// stores.
+// RUN: not %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/value.list \
+// RUN:   -fno-static-arena-checks -o /dev/null %t/rejected.cpp \
+// RUN:   2>&1 | FileCheck %s --check-prefix=REJECT
+// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/all.list \
+// RUN:   -fno-static-arena-checks -o /dev/null %t/accepted.cpp
 
 // REJECT-COUNT-3: rejected.cpp:1:5: error: arena address of arena_value is stored to non-arena global bad_cache
 // REJECT: rejected.cpp:1:5: error: arena address of arena_value is stored to non-arena global bad_cache{{(_other)?}}

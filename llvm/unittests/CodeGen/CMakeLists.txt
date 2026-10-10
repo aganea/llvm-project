@@ -78,9 +78,10 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
   add_library(StaticArenaCommandFlagsObject OBJECT EXCLUDE_FROM_ALL
     ${LLVM_MAIN_SRC_DIR}/lib/CodeGen/CommandFlags.cpp)
   llvm_update_compile_flags(StaticArenaCommandFlagsObject)
+  llvm_driver_static_arena_options(driver_static_arena_options
+    llvmi_static_arena_command_flags_test)
   target_compile_options(StaticArenaCommandFlagsObject PRIVATE
-    "SHELL:-Xclang -fstatic-arena=llvmi_static_arena_command_flags_test"
-    "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+    ${driver_static_arena_options})
   add_dependencies(StaticArenaCommandFlagsObject intrinsics_gen)
   llvm_add_driver_producer_list_dependencies(StaticArenaCommandFlagsObject)
 

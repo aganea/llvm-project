@@ -37,6 +37,18 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
 // RUN:   -o - %t/test.cpp | FileCheck %s --check-prefix=DISABLED \
 // RUN:   --implicit-check-not=__llvm_arena_
+// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
+// RUN:   -fno-static-arena-checks -o - %t/test.cpp \
+// RUN:   | FileCheck %s --check-prefix=FAST --implicit-check-not=__llvm_arena_addr
+// RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -std=c++20 -emit-llvm \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
+// RUN:   -fno-static-arena-checks -o - %t/test.cpp \
+// RUN:   | FileCheck %s --check-prefix=FAST --implicit-check-not=__llvm_arena_addr
+// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++20 -emit-llvm -O2 \
+// RUN:   -fstatic-arena=arena_test -fstatic-arena-list=%t/arena.list \
+// RUN:   -fno-static-arena-checks -o - %t/test.cpp \
+// RUN:   | FileCheck %s --check-prefix=FAST-OPT --implicit-check-not=__llvm_arena_addr
 
 //--- arena.list
 [arena]
@@ -126,6 +138,22 @@ int use_arena_globals() {
 // OPT-DAG: attributes #[[RESOLVER_DECL]] = { {{.*}}nounwind memory(inaccessiblemem: read) }
 // OPT-DAG: attributes #[[RESOLVER_CALL]] = { nounwind memory(inaccessiblemem: read) }
 // OPT-NOT: speculatable
+
+// Without checks, each access is the thread's published arena base plus the
+// record's invariant offset, and no resolver is referenced.
+// FAST: @__llvm_arena_base_v1 = external dso_local thread_local(localexec) global ptr, align 8
+// FAST-LABEL: define {{.*}}i32 {{.*}}use_arena_globals{{.*}}
+// FAST: [[SLOT:%.*]] = call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @__llvm_arena_base_v1)
+// FAST-NEXT: [[BASE:%.*]] = load ptr, ptr [[SLOT]], align 8
+// FAST-NEXT: [[OFF:%.*]] = load i64, ptr @__llvm_arena_var_v1.arena_nonzero, align 8, !invariant.load
+// FAST-NEXT: getelementptr i8, ptr [[BASE]], i64 [[OFF]]
+// FAST: !{i32 1, !"static-arena-abi", i32 1}
+
+// One base load serves every selected global in the function.
+// FAST-OPT-LABEL: define {{.*}}i32 @_Z17use_arena_globalsv
+// FAST-OPT: call align 8 ptr @llvm.threadlocal.address.p0
+// FAST-OPT-NOT: @llvm.threadlocal.address
+// FAST-OPT: ret i32
 
 // v1 deliberately emits no global-variable debug description for relocated
 // namespace storage.

@@ -2562,6 +2562,16 @@ unassigned layout record, an out-of-bounds record, registration during an
 invalid lifecycle state, or teardown while tasks remain attached terminates
 with a diagnostic instead of falling back to process-global storage.
 
+By default every access calls the checked resolver `__llvm_arena_addr_v1`. The
+CC1 option `-fno-static-arena-checks` instead computes the address inline as
+the thread-local `__llvm_arena_base_v1`, which the runtime updates whenever a
+binding changes, plus the record's offset. Both forms use the same records and
+runtime, so translation units compiled either way can be linked together. The
+inline form skips the per-access validation: an access without a bound arena
+faults on an address that user code cannot access instead of being diagnosed.
+LLVM's multicall-driver build uses the inline form when assertions are
+disabled.
+
 :::{option} -f[no-]sanitize=check1,check2,...
 
 Turn on runtime checks or mitigations for various forms of undefined or

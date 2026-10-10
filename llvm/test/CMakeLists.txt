@@ -203,9 +203,10 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS AND LLVM_ENABLE_THREADS AND
       # private library closure. This lets it observe that process executors
       # enforce two simultaneous arenas' independently parsed strategies,
       # rather than accidentally testing the ordinary process-global symbol.
+      llvm_driver_static_arena_options(driver_static_arena_options
+        llvmi_per_invocation_test)
       target_compile_options(llvm-driver-per-invocation-test PRIVATE
-        "SHELL:-Xclang -fstatic-arena=llvmi_per_invocation_test"
-        "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+        ${driver_static_arena_options})
       llvm_add_driver_producer_list_dependencies(
         llvm-driver-per-invocation-test)
       target_link_libraries(llvm-driver-per-invocation-test PRIVATE

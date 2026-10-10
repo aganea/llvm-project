@@ -588,13 +588,16 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
 
     # Put the probe options after the sanitized base flags. Configuration
     # flags were also sanitized above, so no later flag can re-enable LTO or
-    # whole-program-vtables.
+    # whole-program-vtables. Probe the inline access form: builds without
+    # assertions use it, and it shares the record and lifecycle lowering with
+    # the checked form while additionally requiring the arena-base ABI.
     string(APPEND CMAKE_${language}_FLAGS
       " -fno-lto"
       " -fno-whole-program-vtables"
       " -Werror=unknown-argument"
       " -Xclang -fstatic-arena=llvmi_probe"
-      " -Xclang \"-fstatic-arena-list=${_static_arena_probe_list}\"")
+      " -Xclang \"-fstatic-arena-list=${_static_arena_probe_list}\""
+      " -Xclang -fno-static-arena-checks")
     set(_llvm_driver_probe_source_dir
       "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/StaticArenaProbe")
     file(MAKE_DIRECTORY "${_llvm_driver_probe_source_dir}")
@@ -702,6 +705,7 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
         (void)Record;
         return Storage;
       }
+      _Thread_local void *__llvm_arena_base_v1 = Storage;
       int main(void) { return Probe.Value == 0; }
       #else
       int main(void) { return 0; }
@@ -766,6 +770,7 @@ if(LLVM_DRIVER_PER_INVOCATION_GLOBALS)
       extern "C" void *__llvm_arena_addr_v1(const void *) {
         return Storage;
       }
+      extern "C" thread_local void *__llvm_arena_base_v1 = Storage;
       extern "C" int __llvm_arena_atexit_v1(void (*)(void *), void *) {
         return 0;
       }

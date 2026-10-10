@@ -28,6 +28,8 @@ constexpr llvm::StringLiteral StaticArenaTemplatePrefix =
     "__llvm_arena_template_v1.";
 constexpr llvm::StringLiteral StaticArenaEntryPrefix = "__llvm_arena_ptr_v1.";
 constexpr llvm::StringLiteral StaticArenaNamePrefix = "__llvm_arena_name_v1.";
+constexpr llvm::StringLiteral StaticArenaResolverName = "__llvm_arena_addr_v1";
+constexpr llvm::StringLiteral StaticArenaBaseName = "__llvm_arena_base_v1";
 
 static void copyStaticArenaProperties(const llvm::GlobalVariable &From,
                                       llvm::GlobalVariable &To) {
@@ -80,7 +82,7 @@ static llvm::Value *emitStaticArenaResolverCall(CodeGenModule &CGM,
   llvm::AttributeList Attrs = llvm::AttributeList::get(
       Ctx, llvm::AttributeList::FunctionIndex, FnAttrs);
   llvm::FunctionCallee Resolver =
-      CGM.CreateRuntimeFunction(ResolverTy, "__llvm_arena_addr_v1", Attrs);
+      CGM.CreateRuntimeFunction(ResolverTy, StaticArenaResolverName, Attrs);
   llvm::CallInst *Call = CGF.Builder.CreateCall(Resolver, {Record}, Name);
   Call->setDoesNotThrow();
   Call->setMemoryEffects(Effects);
@@ -521,4 +523,57 @@ void CodeGenModule::checkStaticArenaPlaceholders() {
     }
     Storage->eraseFromParent();
   }
+
+  if (!getCodeGenOpts().StaticArenaChecks)
+    lowerStaticArenaResolverCalls();
+}
+
+/// Replace every checked resolver call by base + offset, where the base is the
+/// thread's published arena storage and the offset is the record's first
+/// field. This runs after the escape check, which identifies arena addresses
+/// by their resolver calls. The offset load is invariant because the runtime
+/// assigns it before any arena can be bound, and the base is an ordinary
+/// thread-local load, so every opaque call (including the out-of-line binding
+/// transitions) still forces it to be reloaded.
+void CodeGenModule::lowerStaticArenaResolverCalls() {
+  llvm::Function *Resolver = getModule().getFunction(StaticArenaResolverName);
+  if (!Resolver)
+    return;
+
+  llvm::LLVMContext &Ctx = getLLVMContext();
+  const llvm::DataLayout &DL = getDataLayout();
+  llvm::PointerType *PtrTy = llvm::PointerType::getUnqual(Ctx);
+  llvm::GlobalVariable *Base = getModule().getNamedGlobal(StaticArenaBaseName);
+  if (!Base) {
+    Base = new llvm::GlobalVariable(
+        getModule(), PtrTy, /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage, /*Initializer=*/nullptr,
+        StaticArenaBaseName, /*InsertBefore=*/nullptr,
+        llvm::GlobalValue::LocalExecTLSModel);
+    // Arena-producing code must be linked into the main executable, which also
+    // defines the base, so the local-exec model is always valid.
+    Base->setDSOLocal(true);
+    Base->setAlignment(DL.getPointerABIAlignment(0));
+  }
+
+  llvm::MDNode *Invariant = llvm::MDNode::get(Ctx, {});
+  for (llvm::User *U : llvm::make_early_inc_range(Resolver->users())) {
+    auto *Call = dyn_cast<llvm::CallInst>(U);
+    if (!Call || Call->getCalledOperand() != Resolver)
+      continue;
+    llvm::IRBuilder<> B(Call);
+    llvm::Value *Slot = B.CreateThreadLocalAddress(Base);
+    llvm::Value *ArenaBase = B.CreateAlignedLoad(
+        PtrTy, Slot, DL.getPointerABIAlignment(0), "arena.base");
+    llvm::LoadInst *Offset =
+        B.CreateAlignedLoad(Int64Ty, Call->getArgOperand(0),
+                            DL.getABITypeAlign(Int64Ty), "arena.offset");
+    Offset->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
+    llvm::Value *Address = B.CreateGEP(Int8Ty, ArenaBase, Offset);
+    Address->takeName(Call);
+    Call->replaceAllUsesWith(Address);
+    Call->eraseFromParent();
+  }
+  if (Resolver->use_empty())
+    Resolver->eraseFromParent();
 }

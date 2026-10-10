@@ -2068,6 +2068,13 @@ def fstatic_arena_list_EQ : Joined<["-"], "fstatic-arena-list=">,
              "case list format and supports type:, src:, name: and global: "
              "prefixes under an [arena] section">,
     MarshallingInfoStringVector<CodeGenOpts<"StaticArenaListFiles">>;
+defm static_arena_checks : BoolFOption<"static-arena-checks",
+  CodeGenOpts<"StaticArenaChecks">, DefaultTrue,
+  NegFlag<SetFalse, [], [CC1Option],
+          "Compute static-arena addresses inline from the thread's arena base "
+          "instead of calling the checked runtime resolver. An access with no "
+          "bound arena faults instead of being diagnosed">,
+  PosFlag<SetTrue>>;
 def fprofile_function_groups : Joined<["-"], "fprofile-function-groups=">,
   Group<f_Group>, Visibility<[ClangOption, CC1Option]>, MetaVarName<"<N>">,
   HelpText<"Partition functions into N groups and select only functions in group i to be instrumented using -fprofile-selected-function-group">,

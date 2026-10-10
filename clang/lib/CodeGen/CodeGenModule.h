@@ -2170,6 +2170,7 @@ private:
   void markStaticArenaPlaceholder(const VarDecl *D,
                                   llvm::GlobalVariable *Storage);
   void checkStaticArenaPlaceholders();
+  void lowerStaticArenaResolverCalls();
 
   /// EmitCtorList - Generates a global array of functions and priorities using
   /// the given list and name. This array will have appending linkage and is

@@ -30,6 +30,31 @@
 // RUN: not --crash %t/e2e.exe --unbound 2>&1 \
 // RUN:   | FileCheck --check-prefix=TRAP %s
 //
+// Inline accesses (-fno-static-arena-checks) use the same runtime and must
+// behave identically. An unbound access faults instead of being diagnosed.
+// RUN: %clangxx -std=c++20 -O2 -ffunction-sections -fdata-sections \
+// RUN:   -Xclang -fstatic-arena=llvmi_e2e_common \
+// RUN:   -Xclang -fstatic-arena-list=%t/arena.list \
+// RUN:   -Xclang -fno-static-arena-checks \
+// RUN:   -c %t/common.cpp -o %t/common-fast.o
+// RUN: %clangxx -std=c++20 -O2 -ffunction-sections -fdata-sections \
+// RUN:   -Xclang -fstatic-arena=llvmi_e2e_a \
+// RUN:   -Xclang -fstatic-arena-list=%t/arena.list \
+// RUN:   -Xclang -fno-static-arena-checks \
+// RUN:   -c %t/tool-a.cpp -o %t/tool-a-fast.o
+// RUN: %clangxx -std=c++20 -O2 -ffunction-sections -fdata-sections \
+// RUN:   -Xclang -fstatic-arena=llvmi_e2e_b \
+// RUN:   -Xclang -fstatic-arena-list=%t/arena.list \
+// RUN:   -Xclang -fno-static-arena-checks \
+// RUN:   -c %t/tool-b.cpp -o %t/tool-b-fast.o
+// RUN: %clangxx -std=c++20 -O2 %if !system-windows %{ -pthread %} \
+// RUN:   %t/runtime.o %t/common-fast.o \
+// RUN:   %t/tool-a-fast.o %t/tool-b-fast.o %t/main.o \
+// RUN:   %if system-windows %{ -Wl,/OPT:REF %} \
+// RUN:   %else %{ -Wl,--gc-sections %} -o %t/e2e-fast.exe
+// RUN: %t/e2e-fast.exe | FileCheck %s
+// RUN: not --crash %t/e2e-fast.exe --unbound
+//
 // CHECK: constructed-before-main=0
 // CHECK: same-name-options=ok
 // CHECK: concurrent-independent=ok
@@ -195,6 +220,11 @@ struct LLVMStaticArenaVarV1 {
   const void *Templ;
   const char *Name;
 };
+
+// Read directly by accesses compiled with -fno-static-arena-checks.
+extern "C" thread_local std::uintptr_t __llvm_arena_base_v1 =
+    sizeof(void *) == 8 ? static_cast<std::uintptr_t>(0xFFFF800000000000ULL)
+                        : static_cast<std::uintptr_t>(0xC0000000U);
 
 namespace {
 
@@ -387,6 +417,16 @@ struct Arena {
 
 thread_local Arena *CurrentArena = nullptr;
 
+constexpr std::uintptr_t UnboundBase =
+    sizeof(void *) == 8 ? static_cast<std::uintptr_t>(0xFFFF800000000000ULL)
+                        : static_cast<std::uintptr_t>(0xC0000000U);
+
+static void publish(Arena *A) {
+  CurrentArena = A;
+  __llvm_arena_base_v1 =
+      A ? reinterpret_cast<std::uintptr_t>(A->Storage) : UnboundBase;
+}
+
 Arena *createArena() {
   ensureLayout();
   auto *A = new Arena;
@@ -427,13 +467,13 @@ Binding::Binding(Arena *A) : Bound(A), Previous(CurrentArena) {
   if (A->CurrentState != Arena::State::Live)
     fail(nullptr, "binding an inactive arena");
   ++A->Attachments;
-  CurrentArena = A;
+  publish(A);
 }
 
 Binding::~Binding() {
   if (CurrentArena != Bound)
     fail(nullptr, "bindings destroyed out of order");
-  CurrentArena = Previous;
+  publish(Previous);
   std::lock_guard<std::mutex> Lock(Bound->Mutex);
   if (!Bound->Attachments)
     fail(nullptr, "attachment underflow");
@@ -643,9 +683,9 @@ static void finish(Arena *A) {
 int main(int Argc, char **Argv) {
   if (Argc == 2 && std::strcmp(Argv[1], "--unbound") == 0) {
     (void)createArena();
-    // Use the address: the resolver only reads inaccessible memory, so an
-    // unused resolution may legitimately be removed.
-    std::printf("%p\n", commonAddress());
+    // Access the object: the checked resolver diagnoses the missing binding,
+    // while an inline address only faults once it is dereferenced.
+    std::printf("%d\n", *static_cast<volatile int *>(commonAddress()));
     return 1;
   }
 

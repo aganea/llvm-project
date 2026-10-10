@@ -1,5 +1,19 @@
 include_guard(GLOBAL)
 
+# The compile options that give a driver producer's selected globals
+# per-invocation storage and send their dynamic initializers to
+# lifecycle_section. Builds with assertions keep the checked runtime resolver
+# and its diagnostics; other builds compute arena addresses inline.
+function(llvm_driver_static_arena_options out_var lifecycle_section)
+  set(options
+    "SHELL:-Xclang -fstatic-arena=${lifecycle_section}"
+    "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+  if(NOT LLVM_ENABLE_ASSERTIONS)
+    list(APPEND options "SHELL:-Xclang -fno-static-arena-checks")
+  endif()
+  set(${out_var} "${options}" PARENT_SCOPE)
+endfunction()
+
 # Make the semantic lists consumed by the driver-only Clang options real build
 # inputs.  Merely putting a list path in target_compile_options() is not
 # sufficient: Clang does not currently report special-case-list files in its
@@ -552,10 +566,11 @@ function(llvm_configure_driver_per_invocation_library name)
   endforeach()
   # Producer PCHs were built without -fstatic-arena and must not be reused.
 
+  llvm_driver_static_arena_options(driver_static_arena_options
+    ${driver_lifecycle_section})
   target_compile_options(${driver_per_invocation_target} PRIVATE
     "SHELL:$<TARGET_PROPERTY:${driver_per_invocation_compile_target},COMPILE_FLAGS>"
-    "SHELL:-Xclang -fstatic-arena=${driver_lifecycle_section}"
-    "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+    ${driver_static_arena_options})
   set_property(TARGET ${driver_per_invocation_target} PROPERTY
     LLVM_DRIVER_PER_INVOCATION_PRODUCER TRUE)
   llvm_add_driver_producer_list_dependencies(${driver_per_invocation_target})
@@ -1307,9 +1322,10 @@ function(llvm_configure_driver_tool out_var name object_target)
       # Move this tool's selected globals into per-invocation storage and send
       # their dynamic initialization to its lifecycle section. TOOL_NAME
       # already has '-' replaced by '_', making it a valid section suffix.
+      llvm_driver_static_arena_options(driver_static_arena_options
+        llvmi_${TOOL_NAME})
       target_compile_options(${object_target} PRIVATE
-        "SHELL:-Xclang -fstatic-arena=llvmi_${TOOL_NAME}"
-        "SHELL:-Xclang \"-fstatic-arena-list=${LLVM_DRIVER_STATIC_ARENA_LIST}\"")
+        ${driver_static_arena_options})
       set_property(TARGET ${object_target} PROPERTY
         LLVM_DRIVER_PER_INVOCATION_PRODUCER TRUE)
 
