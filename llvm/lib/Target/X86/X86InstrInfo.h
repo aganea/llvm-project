@@ -544,6 +544,11 @@ public:
                             const MachineBasicBlock *MBB,
                             const MachineFunction &MF) const override;
 
+  /// A Windows x64 epilogue must stay one contiguous instruction range, so a
+  /// block cannot be split between SEH_BeginEpilogue and SEH_EndEpilogue.
+  bool isLegalToSplitMBBAt(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MBBI) const override;
+
   /// This is a used by the pre-regalloc scheduler to determine (in conjunction
   /// with areLoadsFromSameBasePtr) if two loads should be scheduled togther. On
   /// some targets if two loads are loading from addresses in the same cache

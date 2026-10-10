@@ -9339,6 +9339,21 @@ bool X86InstrInfo::shouldScheduleLoadsNear(SDNode *Load1, SDNode *Load2,
   return true;
 }
 
+bool X86InstrInfo::isLegalToSplitMBBAt(MachineBasicBlock &MBB,
+                                       MachineBasicBlock::iterator MBBI) const {
+  // Otherwise branch folding can share the tail of one epilogue with another,
+  // leaving a block that ends in SEH_BeginEpilogue and jumps into the middle
+  // of the other epilogue.
+  for (MachineBasicBlock::iterator I = MBBI; I != MBB.begin();) {
+    --I;
+    if (I->getOpcode() == X86::SEH_EndEpilogue)
+      return true;
+    if (I->getOpcode() == X86::SEH_BeginEpilogue)
+      return false;
+  }
+  return true;
+}
+
 bool X86InstrInfo::isSchedulingBoundary(const MachineInstr &MI,
                                         const MachineBasicBlock *MBB,
                                         const MachineFunction &MF) const {
